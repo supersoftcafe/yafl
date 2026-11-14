@@ -142,6 +142,7 @@ fun cpExpr(x, path, acc) => match(x)
                                fold(ne.fieldArgs, acc, (a2, fa) =>
                                  cpExpr(fa.faValue, path, a2)))
   (qq: PeCoalesce) => cpExpr(qq.qqFallback, path, cpExpr(qq.qqSubject, path, acc))
+  (pp: PePipe)     => cpExpr(pp.pipeStage, path, cpExpr(pp.pipeSubject, path, acc))
   (ar: PeArrayRead) => cpExpr(ar.arrIndex, path, cpExpr(ar.arrObj, path, acc))
   (cv: PeConvert)   => cpSpec(cv.convTarget, path, cpExpr(cv.convInner, path, acc))
   (wx: PeWith)      => cpExpr(wx.withRepls, path,

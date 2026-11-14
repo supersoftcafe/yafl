@@ -32,6 +32,12 @@ enum TokKind
 class [final] Token(kind: TokKind, text: System::String,
                     indent: System::Int, line: System::Int, col: System::Int)
 
+# A `#` comment, which the parser never sees: the formatter puts it back by
+# position. `cmText` runs from the `#` to the end of the line; `cmTrailing`
+# says code precedes it on its line.
+class [final] Comment(cmLine: System::Int, cmCol: System::Int, cmText: System::String,
+                      cmTrailing: System::Bool)
+
 fun kindName(k) => match(k)
   (a: KString) => "STRING"
   (b: KIdent)  => "IDENTIFIER"
@@ -199,33 +205,43 @@ fun nextToken(ln, pos): (kind: TokKind, stop: System::Int)
     ret (KNumber(), numberEnd(ln, pos))
   ret (KCrap(), pos + 1)
 
+# What the scan has produced: the tokens, and the comments beside them.
+class [final] Scanned(scToks: List<Token>, scComments: List<Comment>)
+
+# `coded`: a token has been taken from this line already.
 fun [tail] scanLine(ln, lineNo, indent,
-                    pos, acc: List<Token>): List<Token>
+                    pos, coded: System::Bool, acc: Scanned): Scanned
   let at = wsEnd(ln, pos)
-  if at >= System::length(ln) || System::byteAt(ln, at) == '#'
+  if at >= System::length(ln)
     ret acc
+  if System::byteAt(ln, at) == '#'
+    let c = Comment(lineNo, charCol(ln, at), System::slice(ln, at, System::length(ln)), coded)
+    ret Scanned(acc.scToks, append(acc.scComments, c))
   let t = nextToken(ln, at)
   let text = System::slice(ln, at, t.stop)
   let kind = match(t.kind)
     (i: KIdent) => isKeyword(text) ? KSymbol() : t.kind
     (other)     => t.kind
-  ret scanLine(ln, lineNo, indent, t.stop,
-               append(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
+  ret scanLine(ln, lineNo, indent, t.stop, true,
+               Scanned(append(acc.scToks, Token(kind, text, indent, lineNo, charCol(ln, at))),
+                       acc.scComments))
 
 # The line number travels in the accumulator beside the tokens.
-fun scanLines(lines: List<System::String>, lineNo, acc: List<Token>)
-  ret fold(lines, (toks = acc, n = lineNo),
+fun scanLines(lines: List<System::String>, lineNo, acc: Scanned): Scanned
+  ret fold(lines, (sc = acc, n = lineNo),
            (st, line) =>
-             (toks = scanLine(line, st.n, wsEnd(line, 0), 0, st.toks), n = st.n + 1)).toks
+             (sc = scanLine(line, st.n, wsEnd(line, 0), 0, false, st.sc), n = st.n + 1)).sc
 
 fun eofToken(toks: List<Token>) => match(head(takeLastOne(toks)))
   (t: Token) => Token(KEof(), "", 0, t.line,
                       t.col + countChars(t.text, 0, System::length(t.text), 0))
   ()         => Token(KEof(), "", 0, 1, 1)
 
-fun tokenize(src)
+fun tokenize(src) => tokenizeWithComments(src).scToks
+
+# The tokens, EOF-terminated, and every comment in source order.
+fun tokenizeWithComments(src): Scanned
   # The EOF token is derived from the LAST real token, so the stream is built
   # first and the terminator pushed onto a builder seeded from it.
-  let toks = scanLines(splitLines(src), 1, List())
-  ret append(toks,
-                 eofToken(toks))
+  let sc = scanLines(splitLines(src), 1, Scanned(List(), List()))
+  ret Scanned(append(sc.scToks, eofToken(sc.scToks)), sc.scComments)

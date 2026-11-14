@@ -113,11 +113,11 @@ fun dumpExprOpt(o: PExpr|None, depth, out) => match(o)
 
 fun dumpExpr(x, depth, out) => match(x)
   (i: PeInt)    => dLine(out, depth, "Int", i.peiLine,
-                         String(i.value) + ":" + String(i.precision))
+                         String(i.value) + ":" + String(i.precision) + ":" + pyRepr(i.peiSpelling))
   (f: PeFloat)  => dLine(out, depth, "Float", f.pefLine,
-                         f.floatText + ":" + String(f.fPrecision))
+                         f.floatText + ":" + String(f.fPrecision) + ":" + pyRepr(f.pefSpelling))
   (b: PeBool)   => dLine(out, depth, "Bool", b.pebLine, b.boolValue ? "True" : "False")
-  (s2: PeStr)   => dLine(out, depth, "Str", s2.pesLine, pyRepr(s2.strValue))
+  (s2: PeStr)   => dLine(out, depth, "Str", s2.pesLine, pyRepr(s2.strValue) + ":" + pyRepr(s2.pesSpelling))
   (r: PeRegex)  => dLine(out, depth, "Regex", r.perLine, pyRepr(r.pattern))
   (n: PeName)   => dLine(out, depth, "Name", n.penLine,
                          n.refName + "|" + tyList(n.refTypeParams))
@@ -173,6 +173,10 @@ fun dumpExpr(x, depth, out) => match(x)
   (qq: PeCoalesce)  => dLine(out, depth, "Coalesce", qq.peqqLine, "")
     |> (s1) => dumpExpr(qq.qqSubject, depth + 1, s1)
     |> (s2) => dumpExpr(qq.qqFallback, depth + 1, s2)
+  # Never dumped: fixupProgram lowers every pipeline before a dump can see it.
+  (pp: PePipe)      => dLine(out, depth, "Pipe", pp.pepiLine, "")
+    |> (s1) => dumpExpr(pp.pipeSubject, depth + 1, s1)
+    |> (s2) => dumpExpr(pp.pipeStage, depth + 1, s2)
   # tail_loop lowering only — exercised by the tail-stage contract.
   (lp: PeLoop)      => dLine(out, depth, "Loop", lp.pelpLine,
                              join(loopParamNames(lp.loopParams,

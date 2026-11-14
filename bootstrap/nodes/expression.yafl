@@ -48,6 +48,8 @@ fun compileExpr(x, r, expected): ExprOut => match(x)
   (wx: PeWith)   => compileWith(wx, r, expected)
   (cv: PeConvert) => compileConvert(cv, r, expected)
   (qq: PeCoalesce) => compileCoalesce(qq, r, expected)
+  # Unreachable: fixupProgram lowers every pipeline. Python raises here.
+  (pp: PePipe)   => noGlobals(x)
 
 fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
   (i: PeInt)      => noErrs()
@@ -75,6 +77,7 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
   (cv: PeConvert) => checkExpr(cv.convInner, r, None)
   (qq: PeCoalesce) => union(checkExpr(qq.qqSubject, r, None),
                             checkExpr(qq.qqFallback, r, expected))
+  (pp: PePipe)    => noErrs()   # unreachable: lowered by fixupProgram
   # tail_loop lowering only — never present at check time; mirrored from
   # loop.py's check methods for completeness.
   (lp: PeLoop)    => checkExpr(lp.loopBody, r, expected)
@@ -116,6 +119,7 @@ fun exprType(x, r): Spec|None => match(x)
   (ar: PeArrayRead) => typeOfArrayRead(ar, r)
   (cv: PeConvert)   => cv.convTarget
   (qq: PeCoalesce)  => typeOfCoalesce(qq, r)
+  (pp: PePipe)      => None   # unreachable: lowered by fixupProgram
 
 fun genExpr(x, r) => match(x)
   (i: PeInt)        => bundleValue(RpInteger(i.value, i.precision))
@@ -146,6 +150,7 @@ fun genExpr(x, r) => match(x)
   # emits the empty bundle, which fails loudly downstream rather than
   # silently generating a wrong value.
   (qq: PeCoalesce)  => emptyBundle()
+  (pp: PePipe)      => emptyBundle()   # unreachable: lowered by fixupProgram
   (lp: PeLoop)      => genLoop(lp, r, None)
   (rc: PeRecur)     => genRecur(rc, r)
   (lz: PeLazy)      => genLazy(lz, r)

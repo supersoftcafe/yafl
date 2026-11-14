@@ -1,4 +1,4 @@
-"""`ybootstrap project` — COMPILING WITH LIBRARIES, byte-identical to Python.
+"""`yaflc project` — COMPILING WITH LIBRARIES, byte-identical to Python.
 
 This is the test the discovery work exists for. Finding a library proves
 nothing on its own: the question is whether the port, handed a program that

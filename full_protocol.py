@@ -202,16 +202,16 @@ def _build_example_specs(run_dir: Path) -> list[Example]:
         Example("linenumbers", stdin="a\nb\nc\n"),
         Example("findstr", args=["hello", str(findroot)]),
         Example("raytracer", stdin=(EXAMPLES / "scenes" / "spheres.scene").read_text()),
-        Example("yaflc", stdin="fun main() => 6 * 7"),
         Example("ylisp", stdin="(print (+ 2 3))"),
         Example("yspell", args=["-d", str(dict_path), str(text_path)]),
     ]
 
 
 def _example_compiler(compiler: str) -> Path:
-    """The INSTALLABLE compiler of each kind: the port binary, or the
-    PyInstaller `yafl` — each finds System on YAFL_PATH as an install would."""
-    return BUILD / "ybootstrap" if compiler == "port" else COMPILER / "dist" / "yafl"
+    """The compiler as one executable: yaflc, the one that is installed, or
+    the Python compiler packaged by PyInstaller (local use only) — each finds
+    System on YAFL_PATH as an install would."""
+    return BUILD / "yaflc" if compiler == "port" else COMPILER / "dist" / "yafl"
 
 
 def stage_examples(run_dir: Path, run: Run) -> Result:

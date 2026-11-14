@@ -1,0 +1,68 @@
+# bootstrap/driver/format.yafl — `--format` and `--format-check` (#91): the
+# command line's way into the formatter (bootstrap/format/).
+#
+#   --format FILES|DIR        rewrite each file that is not already in the
+#                             language's one layout
+#   --format-check FILES|DIR  rewrite nothing; list the files that are not,
+#                             and exit 1 when there are any
+#
+# A directory means every `.yafl` file under it. A file that does not parse is
+# reported and left as it is; the command then exits 1.
+namespace Bootstrap::Driver
+
+import System
+import System::Containers
+import System::IO
+
+import Bootstrap::Format
+import Bootstrap::Parse
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
+
+fun cliFormat(s: CliScan): Int => match(formatPaths(s.csFiles))
+  (why: String)      => exitWithErr("error: " + why + "\n", 1)
+  (ps: List<String>) => formatReport(fold(ps, FormatTally(List(), List()), (t, p) => formatOne(t, p, s.csFormatCheck)),
+                                     s.csFormatCheck)
+
+
+# ── the files ────────────────────────────────────────────────────────────────
+
+# The files named, or every `.yafl` file under the one directory named.
+fun formatPaths(given: List<String>): List<String>|String
+  let paths = map(given, (p: String) => pathStr(p))
+  ret !isEmpty(paths) && !sizeAtLeast(paths, 2) && isDirectory(head(paths) ?? "")
+    ? yaflPaths(head(paths) ?? "", List())
+    : paths
+
+# What the run found: the files whose layout differed (rewritten, or listed
+# under --format-check), and the problems — a file that could not be read,
+# parsed or written.
+class [final] FormatTally(ftChanged: List<String>, ftProblems: List<String>)
+
+fun formatOne(t: FormatTally, path: String, checkOnly: Bool): FormatTally => match(readWholeFile(path))
+  (e: IOError) => with t(ftProblems = append(t.ftProblems, path + ": cannot be read"))
+  (src: String) => match(formatSource(src, path))
+    (f: PFail)        => with t(ftProblems = append(t.ftProblems, failureText(path, f)))
+    (out: String)     => out == src ? t : formatChanged(t, path, out, checkOnly)
+
+fun formatChanged(t: FormatTally, path: String, out: String, checkOnly: Bool): FormatTally
+  if checkOnly
+    ret with t(ftChanged = append(t.ftChanged, path))
+  ret match(writeParts(path, List(out)))
+    (why: String) => with t(ftProblems = append(t.ftProblems, why))
+    ()            => with t(ftChanged = append(t.ftChanged, path))
+
+fun failureText(path: String, f: PFail): String =>
+  path + "[" + String(f.line) + ":" + String(f.col) + "] - " + f.msg
+
+# --format-check lists what is not formatted, and fails when anything is;
+# --format succeeds unless a file could not be handled.
+fun [impure] formatReport(t: FormatTally, checkOnly: Bool): Int
+  let problems = join(map(t.ftProblems, (p) => p + "\n"), "")
+  if problems != ""
+    printErr(problems)
+  let listed = checkOnly ? join(map(t.ftChanged, (p) => p + "\n"), "") : ""
+  if listed != ""
+    printOut(listed)
+  ret problems != "" || (checkOnly && !isEmpty(t.ftChanged)) ? 1 : 0

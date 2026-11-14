@@ -363,14 +363,14 @@ fun attrString(name, lexeme, lr,
   let body = slice(lexeme, 1, length(lexeme) - 1)
   let u = unescape(body)
   ret u.uErr == ""
-    ? (PAttr(name, PeStr(u.uText, lr)), ps)
+    ? (PAttr(name, PeStr(u.uText, lr, lexeme)), ps)
     : (hardFail(u.uErr, ps), ps)
 
 fun attrNumber(name, lexeme, lr,
                ps: Ps): (v: PAttr|PFail, rest: Ps)
   let d = decodeInt(lexeme)
   ret d.ilErr == ""
-    ? (PAttr(name, PeInt(d.ilValue, d.ilPrecision, lr)), ps)
+    ? (PAttr(name, PeInt(d.ilValue, d.ilPrecision, lr, lexeme)), ps)
     : (hardFail(d.ilErr, ps), ps)
 
 # target = attributes (ident | "(" targets ")") [":" type] ["[" ident "]"] ["=" expr]
@@ -576,7 +576,7 @@ fun [tail] bindPipeLoop(lhs, lr, ps): (v: PExpr|PFail, rest: Ps)
     (rhs: PExpr) => op == "|>" && placeholderCount(rhs) > 1
       ? (failAt("at most one `_` placeholder per pipeline stage", exprLine(rhs)), r.rest)
       : bindPipeLoop(op == "|>"
-                       ? pipeStage(lhs, rhs)
+                       ? PePipe(lhs, rhs, exprLine(rhs))
                        : foldBinary("?>", lhs, rhs, lr),
                      lr, r.rest)
 
@@ -671,8 +671,8 @@ fun parseUnary(ps): (v: PExpr|PFail, rest: Ps)
 fun unaryBuild(op, sub, lr): PExpr
   if op == "-"
     ret match(sub)
-      (i: PeInt)   => PeInt(0 - i.value, i.precision, i.peiLine)
-      (f: PeFloat) => PeFloat("-" + f.floatText, f.fPrecision, f.pefLine)
+      (i: PeInt)   => PeInt(0 - i.value, i.precision, i.peiLine, "-" + i.peiSpelling)
+      (f: PeFloat) => PeFloat("-" + f.floatText, f.fPrecision, f.pefLine, "-" + f.pefSpelling)
       (other)      => callNamed("`-`", oneEntryTuple(sub, lr), lr)
   ret callNamed("`" + op + "`", oneEntryTuple(sub, lr), lr)
 
@@ -738,11 +738,11 @@ fun numberTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)
     let text = slice(lexeme, 0, prec == 0 ? length(lexeme) : length(lexeme) - 3)
     # Underscores only group digits: the text that reaches parseFloat has none.
     ret validFloat(text)
-      ? (PeFloat(join(split(text, "_"), ""), prec, lr), bump(ps))
+      ? (PeFloat(join(split(text, "_"), ""), prec, lr, lexeme), bump(ps))
       : (hardFail("invalid float literal", ps), bump(ps))
   let d = decodeInt(lexeme)
   ret d.ilErr == ""
-    ? (PeInt(d.ilValue, d.ilPrecision, lr), bump(ps))
+    ? (PeInt(d.ilValue, d.ilPrecision, lr, lexeme), bump(ps))
     : (hardFail(d.ilErr, ps), bump(ps))
 
 fun stringTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)
@@ -750,7 +750,7 @@ fun stringTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)
     ret (hardFail("string missing quote", ps), bump(ps))
   let u = unescape(slice(lexeme, 1, length(lexeme) - 1))
   ret u.uErr == ""
-    ? (PeStr(u.uText, lr), bump(ps))
+    ? (PeStr(u.uText, lr, lexeme), bump(ps))
     : (hardFail(u.uErr, ps), bump(ps))
 
 # A char literal is its codepoint as a 32-bit integer (exactly one scalar).
@@ -762,7 +762,7 @@ fun charTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)
     ret (hardFail(u.uErr, ps), bump(ps))
   ret match(decode(u.uText, 0))
     (d: (cp: Int32, next: Int)) => d.next == length(u.uText)
-      ? (PeInt(Int(d.cp), 32, lr), bump(ps))
+      ? (PeInt(Int(d.cp), 32, lr, lexeme), bump(ps))
       : (hardFail("char literal must be exactly one character", ps), bump(ps))
     ()                          => (hardFail("char literal must be exactly one character", ps), bump(ps))
 
@@ -1498,14 +1498,23 @@ fun [tail] variantsLoop(ps: Ps, acc: List<PStmt>,
 
 # Every failure in the file, or the program. A failure carries the rest in
 # `later` (failuresOf lists them all, in source order).
-fun parseProgram(src: String, filename: String): List<PStmt>|PFail
-  let toks = tokenize(src)
-  let r = parseStmts(Ps(toks, 0, -1, filename, 0, false), List())
+fun parseProgram(src: String, filename: String): List<PStmt>|PFail => match(parseSource(src, filename))
+  (f: PFail)         => f
+  (p: ParsedSource) => fixupProgram(p.srcStmts)
+
+# The file as the parser read it, before fixupProgram — namespaces and imports
+# still in place, pipelines not yet lowered, nothing generated — with its
+# comments beside it. What the formatter prints.
+class [final] ParsedSource(srcStmts: List<PStmt>, srcComments: List<Comment>)
+
+fun parseSource(src: String, filename: String): ParsedSource|PFail
+  let sc = tokenizeWithComments(src)
+  let r = parseStmts(Ps(sc.scToks, 0, -1, filename, 0, false), List())
   ret match(r.v)
     (f: PFail)           => f
     (stmts: List<PStmt>) => match(failureOf(memberSignatureViolations(stmts, List())))
       (f2: PFail) => f2
-      ()          => fixupProgram(stmts)
+      ()          => ParsedSource(stmts, sc.scComments)
 
 # A member is a vtable slot: its signature is the interface declaration with
 # the OWNER's type args substituted, so a member function declares no `where`
