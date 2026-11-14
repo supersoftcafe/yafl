@@ -38,9 +38,13 @@ fun funGlobalCodegen(f: PsFun, r0): CgFunction
                  inlineModeOf(f),
                  f.psfLine.plFile, f.psfLine.plLine, hasAttr(f.fAttrs, "future"))
 
+# A body with no result never finishes: a [tail] function whose every path
+# recurses is a loop with no exit (#97). Nothing returns.
 fun fgcBodyBundle(b, bodyR, fRet: Spec|None): GBundle
   let bodyBundle = genExprTo(b, bodyR, fRet)
-  ret bundleJoin(bodyBundle, bundleOp1(OpReturn(mustResult(bodyBundle), Dict())))
+  ret match(bodyBundle.gbResult)
+    (v: RParam) => bundleJoin(bodyBundle, bundleOp1(OpReturn(v, Dict())))
+    ()          => bodyBundle
 
 # Python: `for index, parameter in enumerate(self.parameters.targets):
 #   bundle += parameter.to_c_destructure(None).with_prefix(f"p{index}")`.

@@ -330,7 +330,6 @@ fun genIf(f2: PsIf, r, expected: Spec|None)
 fun genIfBranch(stmts: List<PStmt>, r, expected: Spec|None, prefix): GBundle
   ret genIfBranchLoop(stmts, localScope(stmts, r), expected, prefix, 0, emptyBundle())
 
-# State fields named to match another fold over the same types — workaround for #88.
 fun genIfBranchLoop(ss: List<PStmt>, r: Resolver, expected: Spec|None,
                     prefix: String, i: Int, acc: GBundle): GBundle
   ret fold(ss, (acc = acc, i = i),

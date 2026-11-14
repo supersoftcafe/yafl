@@ -291,16 +291,33 @@ def maybe_requires(left: Parser[T], right: Parser[Y], message: str) -> Parser[li
     return Parser(p)
 
 
-def block(parser: Parser[T]) -> Parser[T]:
+_OPENERS = frozenset(("(", "["))
+_CLOSERS = frozenset((")", "]"))
+
+
+def block(parser: Parser[T], ends_at_closer: bool = False) -> Parser[T]:
+    """`parser` over the tokens of one block: from the first token to the
+    first line indented no deeper than it. With `ends_at_closer`, the block
+    also ends at a closing bracket it did not open — that bracket belongs to
+    what encloses the block. A match arm is such a block, so the bracket
+    closing around a multi-line match ends its last arm (#77)."""
     def p(tokens: List[Token]) -> Result[T]:
         index = 0
         indent = tokens[0].indent
         line = tokens[0].line_ref.line
+        depth = 0
 
         while index < len(tokens) and not tokens[index].kind == TokenKind.EOF:
             tk = tokens[index]
             if not tk or (tk.line_ref.line > line and tk.indent <= indent):
                 break
+            if ends_at_closer and tk.kind == TokenKind.SYMBOLS:
+                if tk.value in _OPENERS:
+                    depth += 1
+                elif tk.value in _CLOSERS:
+                    if depth == 0:
+                        break
+                    depth -= 1
             index += 1
 
         result = parser(tokens[:index] + [Token(TokenKind.EOF, "", 0, tokens[index].line_ref)])

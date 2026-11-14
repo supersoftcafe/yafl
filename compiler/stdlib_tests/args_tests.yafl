@@ -389,3 +389,42 @@ fun [test("colour marks the headings and the option names of the help")] coloure
                   + e + "1;34moptions:" + e + "0m\n"
                   + "  " + e + "1;32m-q" + e + "0m      Say less\n"
                   + "  " + e + "1;36m--help" + e + "0m\n", "help")
+
+
+# ── text that is not ASCII ───────────────────────────────────────────────────
+# Widths are counted in characters, as argparse counts them, not in bytes; and
+# a word too long for its line is cut between characters, never inside one
+# (#120).
+
+fun accented() => Args("outil", "Écrit les données reçues, très lentement, à la sortie",
+  List<Arg<Bool>>(
+    Flag(List("-q"), "Réduit les messages à l'écran au minimum", (b: Bool) => true),
+    Value(List("-r"), "RÉPERTOIRE", "Répertoire de départ", (b: Bool, v: String) => b),
+    Positional("fichier", ExactlyOne(), "Le fichier à lire", (b: Bool, vs: List<String>) => b)))
+
+fun [test("widths count characters, not bytes")] accentedHelp(): None|TestFailure
+  ret assertEqStr(help(accented(), 40, false),
+                  "usage: outil [-q] [-r RÉPERTOIRE]\n"
+                  + "             fichier\n"
+                  + "\n"
+                  + "Écrit les données reçues, très\n"
+                  + "lentement, à la sortie\n"
+                  + "\n"
+                  + "positional arguments:\n"
+                  + "  fichier        Le fichier à lire\n"
+                  + "\n"
+                  + "options:\n"
+                  + "  -q             Réduit les messages à\n"
+                  + "                 l'écran au minimum\n"
+                  + "  -r RÉPERTOIRE  Répertoire de départ\n", "40 columns")
+
+fun longWord() => Args("outil", "", List<Arg<Bool>>(
+  Flag(List("-x"), "ééééééééééééééééééééééééééééééééé fin", (b: Bool) => true)))
+
+fun [test("a long word is cut between characters")] longAccentedWord(): None|TestFailure
+  ret assertEqStr(help(longWord(), 40, false),
+                  "usage: outil [-x]\n"
+                  + "\n"
+                  + "options:\n"
+                  + "  -x  éééééééééééééééééééééééééééééééé\n"
+                  + "      é fin\n", "40 columns")

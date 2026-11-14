@@ -630,3 +630,48 @@ fun main(): System::Int
         # All implementations of Adder::add are leaf functions (inferred sync)
         # so call_add should also be inferred sync
         self.assertNotIn("call_add$async", result)
+
+
+class TestParameterAttributes(TestCase):
+    """A parameter is a let, so it takes the attributes a let takes and no
+    others — on a function and on a class alike (#98). The port's agreement is
+    checked by tests/corpus_check/unknown_parameter_attribute.yafl."""
+
+    _PRELUDE = """namespace System
+typealias Int : __builtin_type__<bigint>
+typealias Int32 : __builtin_type__<int32>
+"""
+
+    def _errors(self, body: str) -> str:
+        _result, out = _compile_capturing_errors(self._PRELUDE + body)
+        return out
+
+    def test_unknown_attribute_on_a_class_parameter(self):
+        out = self._errors("""
+class [final] B(used: System::Int32, [capacty] cap: System::Int32)
+
+fun main(): System::Int
+    let b = System::B(1i32, 2i32)
+    ret b.used == 1i32 ? 0 : 1
+""")
+        self.assertIn("unknown attribute [capacty] on a parameter", out)
+
+    def test_unknown_attribute_on_a_function_parameter(self):
+        out = self._errors("""
+fun f([bogus] x: System::Int): System::Int
+    ret x
+
+fun main(): System::Int
+    ret System::f(0)
+""")
+        self.assertIn("unknown attribute [bogus] on a parameter", out)
+
+    def test_known_parameter_attributes_are_accepted(self):
+        out = self._errors("""
+fun f([terminal] x: System::Int): System::Int
+    ret x
+
+fun main(): System::Int
+    ret System::f(0)
+""")
+        self.assertNotIn("unknown attribute", out)

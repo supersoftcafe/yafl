@@ -990,8 +990,10 @@ __parse_maybe_arm_guard = p.maybe_requires(
 # subject count, and `('a' | 'b')` is "either literal, one subject".
 __parse_match_arm_literal = p.block(
     (p.discard_sym('(') & p.delimited_list(__parse_match_literal, "|") & p.discard_sym(')')
-     & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm_literal)
-__parse_match_arm_destructure = p.block((__parse_destructure_parts & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm)
+     & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm_literal,
+    ends_at_closer=True)
+__parse_match_arm_destructure = p.block((__parse_destructure_parts & __parse_maybe_arm_guard & p.discard_sym("=>") & __parse_expression) >> __to_match_arm,
+                                         ends_at_closer=True)
 __parse_match_arm = __parse_match_arm_literal | __parse_match_arm_destructure
 __parse_match_subject = p.requires(p.sym("("), p.delimited_list(__parse_expression, ",") & p.discard_sym(")"), "invalid match subject")
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression").build(__to_match_expression)
