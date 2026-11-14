@@ -58,7 +58,11 @@ fun _joinShown(a: _Shown, sep: String, b: _Shown): _Shown => _Shown(a.swPlain + 
                                                                a.swText + sep + b.swText)
 
 # An option string is long when it is more than a dash and a letter.
-fun _isLong(o: String): Bool => length(o) > 2
+fun _isLong(o: String): Bool => _width(o) > 2
+
+# How many columns text takes: its characters, as argparse counts them, not
+# its bytes (#120).
+fun _width(s: String): Int => codepointCount(s)
 
 # An option as the usage shows it, by its first name: `[-O LEVEL]`, `[--profile]`.
 fun _usageOption(t: _Theme, d: _Decl): _Shown
@@ -170,7 +174,7 @@ fun _usageSection(f: _Format, ds: List<_Decl>): String
   let poss = _usagePositionals(t, ds)
   let all = concat(opts, poss)
   let oneLine = join(prepend(f.fmProg, map(all, (p: _Shown) => p.swPlain)), " ")
-  let body = 7 + length(oneLine) > f.fmWidth
+  let body = 7 + _width(oneLine) > f.fmWidth
     ? join(_wrappedUsage(f.fmWidth, prog, opts, poss), "\n")
     : join(prepend(f.fmProg, map(all, (p: _Shown) => p.swText)), " ")
   ret t.thUsage + "usage: " + t.thReset + t.thProg + f.fmProg + t.thReset
@@ -180,7 +184,7 @@ fun _usageSection(f: _Format, ds: List<_Decl>): String
 # of their own beneath — or by the positionals, when there are no optionals;
 # a long one sits on a line by itself.
 fun _wrappedUsage(width: Int, prog: _Shown, opts: List<_Shown>, poss: List<_Shown>): List<String>
-  let progLen = length(prog.swPlain)
+  let progLen = _width(prog.swPlain)
   if 4 * (7 + progLen) <= 3 * width
     ret isEmpty(opts)
       ? _usageLines(width, prepend(prog, poss), 7 + progLen + 1, true)
@@ -205,10 +209,10 @@ fun _usageLoop(ps: List<_Shown>, width: Int, indent: Int, pad: String, lineLen: 
               line: List<String>, out: List<String>): List<String> =>
   fold(ps, (len = lineLen, line = line, out = out),
        (st, p) =>
-         st.len + 1 + length(p.swPlain) > width && !isEmpty(st.line)
-           ? (len = indent - 1 + length(p.swPlain) + 1, line = List(p.swText),
+         st.len + 1 + _width(p.swPlain) > width && !isEmpty(st.line)
+           ? (len = indent - 1 + _width(p.swPlain) + 1, line = List(p.swText),
               out = append(st.out, pad + join(st.line, " ")))
-           : (len = st.len + length(p.swPlain) + 1, line = append(st.line, p.swText), out = st.out))
+           : (len = st.len + _width(p.swPlain) + 1, line = append(st.line, p.swText), out = st.out))
     |> (st) => isEmpty(st.line) ? st.out : append(st.out, pad + join(st.line, " "))
 
 fun _mapFirst(l: List<String>, f: (:String): String): List<String> => match(head(l))
@@ -223,7 +227,7 @@ fun _helpText(prog: String, description: String, ds: List<_Decl>, width: Int, co
   let t = f.fmTheme
   let entries = concat(_helpPositionals(t, ds), _helpOptionals(t, ds))
   let maxLen = 2 + fold<_HelpEntry, Int>(entries, 0,
-    (m: Int, e: _HelpEntry) => _greater(m, length(e.heInvocation.swPlain)))
+    (m: Int, e: _HelpEntry) => _greater(m, _width(e.heInvocation.swPlain)))
   let raw = _usageSection(f, ds) + "\n\n"
     + join(_twWrap(_singleSpaced(description), _greater(f.fmWidth, 11)), "\n") + "\n\n"
     + _helpSection(f, maxLen, "positional arguments", _helpPositionals(t, ds))
@@ -244,9 +248,9 @@ fun _helpEntry(width: Int, maxLen: Int, e: _HelpEntry): String
   let helpPos = _lesser(maxLen + 2, _lesser(24, _greater(width - 20, 4)))
   let actionWidth = helpPos - 4
   let inv = e.heInvocation
-  let fits = length(inv.swPlain) <= actionWidth
+  let fits = _width(inv.swPlain) <= actionWidth
   let header = fits
-    ? "  " + inv.swText + _spaces(actionWidth - length(inv.swPlain)) + "  "
+    ? "  " + inv.swText + _spaces(actionWidth - _width(inv.swPlain)) + "  "
     : "  " + inv.swText + "\n"
   let lines = _twWrap(_singleSpaced(e.heHelp), _greater(width - helpPos, 11))
   ret header + _spaces(fits ? 0 : helpPos) + (head(lines) ?? "") + "\n"
@@ -385,24 +389,34 @@ fun _skipLeading(cs: List<String>, first: Bool): List<String> => match(head(cs))
 class [final] _Filled(flLine: List<String>, flLen: Int, flRest: List<String>)
 
 fun [tail] _twFill(cs: List<String>, width: Int, line: List<String>, len: Int): _Filled => match(head(cs))
-  (w: String) => len + length(w) <= width
-    ? _twFill(dropOne(cs), width, append(line, w), len + length(w))
+  (w: String) => len + _width(w) <= width
+    ? _twFill(dropOne(cs), width, append(line, w), len + _width(w))
     : _Filled(line, len, cs)
   ()          => _Filled(line, len, cs)
 
 fun _twLongWord(f: _Filled, width: Int): _Filled => match(head(f.flRest))
-  (w: String) => length(w) <= width ? f : _twBreak(f, w, dropOne(f.flRest), width)
+  (w: String) => _width(w) <= width ? f : _twBreak(f, w, dropOne(f.flRest), width)
   ()          => f
 
 fun _twBreak(f: _Filled, chunk: String, rest: List<String>, width: Int): _Filled
   let spaceLeft = width < 1 ? 1 : width - f.flLen
   if spaceLeft <= 0
-    ret isEmpty(f.flLine) ? _Filled(List(chunk), length(chunk), rest) : f
-  let hyphen = _lastHyphenBefore(chunk, spaceLeft)
-  let end = length(chunk) > spaceLeft && hyphen > 0 && _hasNonHyphen(chunk, hyphen)
-    ? hyphen + 1 : spaceLeft
-  ret _Filled(concat(f.flLine, List(slice(chunk, 0, end))), f.flLen + end,
+    ret isEmpty(f.flLine) ? _Filled(List(chunk), _width(chunk), rest) : f
+  # `spaceLeft` counts characters; the cut is the byte offset after that many.
+  let cut = _byteOffset(chunk, spaceLeft, 0)
+  let hyphen = _lastHyphenBefore(chunk, cut)
+  let end = _width(chunk) > spaceLeft && hyphen > 0 && _hasNonHyphen(chunk, hyphen)
+    ? hyphen + 1 : cut
+  ret _Filled(concat(f.flLine, List(slice(chunk, 0, end))), f.flLen + _width(slice(chunk, 0, end)),
              prepend(slice(chunk, end, length(chunk)), rest))
+
+# The byte offset `chars` characters on from `at`: a character starts at any
+# byte that is not a UTF-8 continuation byte (0x80 to 0xBF).
+fun [tail] _byteOffset(s: String, chars: Int, at: Int): Int
+  ret chars <= 0 || at >= length(s) ? at : _byteOffset(s, chars - 1, _continuationEnd(s, at + 1))
+
+fun [tail] _continuationEnd(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) >= 128i32 && byteAt(s, at) < 192i32 ? _continuationEnd(s, at + 1) : at
 
 fun [tail] _lastHyphenBefore(s: String, end: Int): Int
   ret end <= 0 ? 0 - 1 : byteAt(s, end - 1) == '-' ? end - 1 : _lastHyphenBefore(s, end - 1)
