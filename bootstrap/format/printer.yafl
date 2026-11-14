@@ -237,13 +237,16 @@ fun targetsOf(st: PStmt): List<PStmt> => match(st)
 
 fun paramsDoc(st: PStmt): Doc => paramsThen(st, nothing())
 
-# Parameters and the return type after them. The return type is inside the
-# parameters' group, so the parameters wrap before it does.
+# Parameters and the return type after them.
 fun paramsRetDoc(st: PStmt, r: Spec|None): Doc => paramsThen(st, retDoc(r))
 
+# Parameters flow from the `(`, filled, wrapping four in (USER RULING #91);
+# the `)` and what follows it ride on the last, so it moves down with them
+# when they do not fit beside it.
 fun paramsThen(st: PStmt, after: Doc): Doc =>
-  map(targetsOf(st), (t) => anchored(stmtLine(t), targetDoc(t))) |> (items) =>
-      bracketed("(", isEmpty(items), fill(items, ","), ")", after)
+  map(targetsOf(st), (t) => anchored(stmtLine(t), targetDoc(t))) |> (items) => match(head(takeLastOne(items)))
+    (last: Doc) => cat(text("("), nest(4, fill(append(dropLastOne(items), cat(last, text(")"), after)), ",")))
+    ()          => cat(text("()"), after)
 
 # One binding: `[attrs] name: Type[len] = default`, or a nested `(a, b): T`.
 fun targetDoc(st: PStmt): Doc => match(st)
@@ -583,15 +586,28 @@ fun binaryRun(b: ShBinary): (first: PExpr, links: List<Link>) => match(shapeOf(b
       |> (r) => (first = r.first, links = append(r.links, Link(b.bOp, b.bRight)))
   ()                                  => (first = b.bLeft, links = List(Link(b.bOp, b.bRight)))
 
-# A ternary chain: each condition and its result on one line, `:` leading
-# each line after the first. `ownNest`: the chain four in, its first link
-# included, so what that link wraps (a match's arms) is deeper than the `:`
-# lines; false when the chain already starts a line of its own (an `=>` body).
+# A ternary. A single `c ? a : b` flows (USER RULINGS #91): after the
+# condition, `? a : b` on its line when that fits; else `? a` there and `: b`
+# leading the next; else `?` and `:` each leading a line. That is two groups:
+# the outer holds the `:` break, the inner the `?` break, which decides for
+# itself once the outer has broken. A longer chain, or one whose first link
+# holds a match (what followed its last arm would be the arm's), has each
+# condition and its result on one line, `:` leading each line after the
+# first. `ownNest`: the `?` and `:` lines four in — for a chain, its first
+# link too, so a match's arms are deeper than them; false when the ternary
+# already starts a line of its own (an `=>` body).
 fun ternaryDoc(t: ShTernary, ownNest: Bool): Doc
   let lines = ternaryLines(t)
-  let chain = cat(ternaryArm(lines.first),
-                  cat(map(lines.rest, (l) => cat(anchorBreak(startLine(l)), line(), text(": "), ternaryArm(l)))))
-  ret group(ownNest ? nest(4, chain) : chain)
+  let cond = operandDoc(t.tCond, pOr(), true)
+  let result = operandDoc(t.tThen, pOr(), true)
+  let links = map(lines.rest, (l) => cat(anchorBreak(startLine(l)), line(), text(": "), ternaryArm(l)))
+  ret match(head(links))
+    (only: Doc) if isEmpty(dropOne(links)) && !hasHard(cond) && !hasHard(result) =>
+        cat(cond, group(nestIf(ownNest, cat(group(cat(anchorBreak(startLine(t.tThen)), line(), text("? "), result)),
+                                            only))))
+    () => group(nestIf(ownNest, cat(ternaryArm(lines.first), cat(links))))
+
+fun nestIf(yes: Bool, d: Doc): Doc => yes ? nest(4, d) : d
 
 # The chain's first `cond ? result`, then each later `: cond ? result` (or the
 # final `: value`), as expressions to print with ternaryArm.
