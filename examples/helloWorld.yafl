@@ -3,11 +3,10 @@ namespace Test
 import System
 
 fun createMessage(name: System::String): System::String
-    ret "Hi " + name + ", how're you\n"
+  ret "Hi " + name + ", how're you\n"
 
 let message: System::String = Test::createMessage("Jeff")
 
 fun main(): System::Int
-    System::print(message)
-    ret 0
-
+  System::print(message)
+  ret 0

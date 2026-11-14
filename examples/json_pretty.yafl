@@ -2,10 +2,9 @@ namespace Main
 
 import System
 import System::Args
-import System::IO
 import System::Containers
+import System::IO
 import System::Json
-
 
 # Pretty-print JSON read from stdin to stdout.
 #
@@ -41,39 +40,39 @@ fun gatherJson(path: String): List<String>
       # Sorted: the fold concatenates each subtree in turn, so the order the
       # names arrive in decides the order files are visited, and readdir order
       # is not stable from one run to the next.
-      (names: Set<String>) =>
-          fold<String, List<String> >(sort<String>(names), List<String>(),
-            (acc: List<String>, name: String) =>
+      (names: Set<String>) => fold<String, List<String>>(
+          sort<String>(names), List<String>(),
+          (acc: List<String>, name: String) =>
               skipEntry(name) ? acc : concat<String>(acc, gatherJson(path + "/" + name)))
       (e: IOError) => List<String>()
   ret match(stat(path))
-    (info: FileInfo) => info.isDir ? gatherDir()
-      : (endsWith(path, ".json") ? prepend<String>(path, List<String>()) : List<String>())
-    (e: IOError)     => List<String>()
+    (info: FileInfo) =>
+        info.isDir ? gatherDir() : endsWith(path, ".json") ? prepend<String>(path, List<String>()) : List<String>()
+    (e: IOError) => List<String>()
 
 # One file: both linear handles are opened, threaded and closed entirely
 # within this call, so a conversion is safe inside its own [future] worker.
 fun convertOne(path: String): Int
   fun emit(o: IO, text: String): Int
-    ret writeStream(o, prettyEmit(tokenize(once(text))))
-      |> (o2, v) => (o2.close(), v)
-      |> (c, v) => match(v)
-        (e: IOError)        => 1
-        (p: JsonParseError) => 1
-        (n: System::None)   => c !is None ? 1 : 0
+    ret writeStream(o, text |> once |> tokenize |> prettyEmit)
+        |> (o2, v) => (o2.close(), v)
+        |> (c, v) => match(v)
+          (e: IOError) => 1
+          (p: JsonParseError) => 1
+          (n: System::None) => c !is None ? 1 : 0
   fun pipe(i: IO, o: IO): Int
     ret readAll(i)
-      |> (i2, v) => (i2.close(), v)
-      |> (c, v) => match(v)
-        (text: String) => c !is None ? (o.close() |> (oc) => 1) : emit(o, text)
-        (e: IOError)   => o.close() |> (oc) => 1
+        |> (i2, v) => (i2.close(), v)
+        |> (c, v) => match(v)
+          (text: String) => c !is None ? (o.close() |> (oc) => 1) : emit(o, text)
+          (e: IOError) => o.close() |> (oc) => 1
   fun failCleanup(): Int
     ret remove(path + ".pretty") |> (r) => 1
   fun run(i: IO, o: IO): Int
     ret pipe(i, o) == 0 ? 0 : failCleanup()
   ret match(open_read(path))
     (i: IO) => match(open_write(path + ".pretty", true))
-      (o: IO)      => run(i, o)
+      (o: IO) => run(i, o)
       (e: IOError) => i.close() |> (c) => 1
     (e: IOError) => 1
 
@@ -87,7 +86,7 @@ fun convertAll(files: List<String>): Int
     ret a + b
   ret match(head<String>(files))
     (p: String) => isEmpty<String>(dropOne<String>(files)) ? convertOne(p) : splitAndGo()
-    (e: None)   => 0
+    (e: None) => 0
 
 fun runTree(dir: String): System::Int
   fun report(total: Int, failed: Int): Int
@@ -99,42 +98,43 @@ fun runTree(dir: String): System::Int
 
 fun runSingle(path: String): System::Int
   ret match(stat(path))
-    (info: FileInfo) => info.isDir
-      ? (print(path + " is a directory — pass -r to convert a tree\n") |> (u) => 2)
-      : convertOne(path)
+    (info: FileInfo) =>
+        info.isDir ? (print(path + " is a directory — pass -r to convert a tree\n") |> (u) => 2) : convertOne(path)
     (e: IOError) => print("cannot stat " + path + "\n") |> (u) => 2
 
 fun runStdio(): System::Int
   fun emit(text: String): System::Int
-    ret writeStream(stdout(), prettyEmit(tokenize(once(text))))
-      |> (o, v) => (o.close(), v)
-      |> (c, v) => match(v)
-        (e: IOError)        => 1
-        (p: JsonParseError) => 2
-        (n: System::None)   => c !is None ? 1 : 0
+    ret writeStream(stdout(), text |> once |> tokenize |> prettyEmit)
+        |> (o, v) => (o.close(), v)
+        |> (c, v) => match(v)
+          (e: IOError) => 1
+          (p: JsonParseError) => 2
+          (n: System::None) => c !is None ? 1 : 0
   ret readAll(stdin())
-    |> (i, v) => match(v)
-      (text: String) => emit(text)
-      (e: IOError)   => 1
+      |> (i, v) => match(v)
+        (text: String) => emit(text)
+        (e: IOError) => 1
 
 # What the command line asked for.
 class [final] Options(help: Bool, tree: String|None, file: String|None)
 
-fun commandLine() => Args("json_pretty", "Pretty-print JSON: stdin to stdout, one file, or a tree of files.",
-  List<Arg<Options>>(
-    Stop(List("-h", "--help"), "show this help message and exit",
-         (o: Options) => with o(help = true)),
-    Value(List("-r"), "DIR", "convert every .json file under DIR",
-          (o: Options, v: String) => with o(tree = v)),
-    Positional("file", AtMostOne(), "a file to convert (default: stdin to stdout)",
-               (o: Options, vs: List<String>) => with o(file = head(vs)))))
+fun commandLine()
+  ret Args(
+      "json_pretty", "Pretty-print JSON: stdin to stdout, one file, or a tree of files.",
+      List<Arg<Options>>(
+          Stop(List("-h", "--help"), "show this help message and exit", (o: Options) => with o(help = true)),
+          Value(List("-r"), "DIR", "convert every .json file under DIR", (o: Options, v: String) => with o(tree = v)),
+          Positional(
+              "file", AtMostOne(), "a file to convert (default: stdin to stdout)",
+              (o: Options, vs: List<String>) => with o(file = head(vs)))))
 
 fun main(): System::Int
-  fun run(o: Options): System::Int => match(o.tree)
-    (dir: String) => runTree(dir)
-    ()            => match(o.file)
-      (path: String) => runSingle(path)
-      ()             => runStdio()
+  fun run(o: Options): System::Int
+    ret match(o.tree)
+      (dir: String) => runTree(dir)
+      () => match(o.file)
+        (path: String) => runSingle(path)
+        () => runStdio()
   # To stderr: in stdin mode stdout carries the JSON.
   fun wrong(e: ArgError): System::Int
     let w = writeAll(stderr(), message(commandLine(), e, 80, false))
@@ -144,4 +144,4 @@ fun main(): System::Int
     ret 0
   ret match(parse(commandLine(), args(), Options(false, None, None)))
     (e: ArgError) => wrong(e)
-    (o: Options)  => o.help ? showHelp() : run(o)
+    (o: Options) => o.help ? showHelp() : run(o)

@@ -17,9 +17,8 @@
 #
 import System
 import System::Args
-import System::IO
 import System::Containers
-
+import System::IO
 
 # A path the walk or the search couldn't read. The errors travel in the result
 # list alongside the matches, so they keep their place in walk order and none
@@ -45,14 +44,14 @@ fun gatherFiles(path: String): List<String|FileError>
       # Sorted, so a search over a directory tree reports its hits in the same
       # order every run — readdir order is not stable and this fold is not
       # order-independent, since it concatenates each subtree's files in turn.
-      (names: Set<String>) =>
-          fold<String, List<String|FileError> >(sort<String>(names), List<String|FileError>(),
-            (acc: List<String|FileError>, name: String) =>
+      (names: Set<String>) => fold<String, List<String|FileError>>(
+          sort<String>(names), List<String|FileError>(),
+          (acc: List<String|FileError>, name: String) =>
               skipEntry(name) ? acc : concat<String|FileError>(acc, gatherFiles(path + "/" + name)))
       (e: IOError) => fileError(path, e)
   ret match(stat(path))
     (info: FileInfo) => info.isDir ? gatherDir() : prepend<String|FileError>(path, List<String|FileError>())
-    (e: IOError)     => fileError(path, e)
+    (e: IOError) => fileError(path, e)
 
 
 # ── search (in parallel over the file list) ───────────────────────────────────
@@ -62,42 +61,37 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
   # '\n'/'\r\n'), and the output adds its own.
   fun chomp(line: String): String
     let n = length(line)
-    ret n > 0 && byteAt(line, n - 1) == '\n'
-      ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2) : slice(line, 0, n - 1))
-      : line
+    ret n > 0 && byteAt(line, n - 1) == '\n' ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2)
+            : slice(line, 0, n - 1))
+        : line
 
   # Collect a matching line as `file:lineNo:line`; non-matches pass through.
-  fun step(found: List<String|FileError>, path: String, lineNo: Int,
-           line: String): List<String|FileError>
-    ret contains(line, needle)
-      ? append<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
-      : found
+  fun step(found: List<String|FileError>, path: String, lineNo: Int, line: String): List<String|FileError>
+    ret contains(line, needle) ? append<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
+        : found
 
   # End of file finishes a file cleanly; any other read error is collected
   # after the matches found before it.
-  fun readEnd(found: List<String|FileError>, path: String,
-              e: IOError): List<String|FileError>
+  fun readEnd(found: List<String|FileError>, path: String, e: IOError): List<String|FileError>
     ret match(e)
       (eof: EOFError) => found
-      ()              => append<String|FileError>(found, FileError(path, e))
+      () => append<String|FileError>(found, FileError(path, e))
 
   # Stream the file a line at a time, collecting matches in order. `[tail]` so
   # the per-line loop is a loop, not C-stack recursion; `readLine` suspends on
   # buffer refills. The whole file is never held in memory, only its matches.
-  fun [tail] scan(io: IO, path: String, lineNo: Int,
-                  found: List<String|FileError>):
-                  (io: IO, found: List<String|FileError>)
+  fun [tail] scan(
+      io: IO, path: String, lineNo: Int, found: List<String|FileError>): (io: IO, found: List<String|FileError>)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => scan(r.io, path, lineNo + 1, step(found, path, lineNo, line))
-      (e: IOError)   => (r.io, readEnd(found, path, e))
+      (e: IOError) => (r.io, readEnd(found, path, e))
 
   # The close's error, if any, is collected last: the matches before it stand.
-  fun closeInto(found: List<String|FileError>, path: String,
-                closed: IOError|None): List<String|FileError>
+  fun closeInto(found: List<String|FileError>, path: String, closed: IOError|None): List<String|FileError>
     ret match(closed)
       (e: IOError) => append<String|FileError>(found, FileError(path, e))
-      (n: None)    => found
+      (n: None) => found
 
   fun searchOpen(path: String, io: IO): List<String|FileError>
     let r = scan(io, path, 1, List<String|FileError>())
@@ -105,19 +99,18 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
 
   fun searchOneFile(path: String): List<String|FileError>
     ret match(open_read(path))
-      (io: IO)     => searchOpen(path, io)
+      (io: IO) => searchOpen(path, io)
       (e: IOError) => fileError(path, e)
 
   # One entry of the file list: a path to search, or an error from the walk,
   # which passes through untouched.
   fun searchEntry(entry: String|FileError): List<String|FileError>
     ret match(entry)
-      (path: String)   => searchOneFile(path)
+      (path: String) => searchOneFile(path)
       (err: FileError) => prepend<String|FileError>(err, List<String|FileError>())
 
   # Every entry on its own worker; their results join in walk order.
-  ret powerMap(files, searchEntry)
-    |> (results) => flatMap(results, (r: List<String|FileError>) => r)
+  ret powerMap(files, searchEntry) |> (results) => flatMap(results, (r: List<String|FileError>) => r)
 
 
 # ── output ────────────────────────────────────────────────────────────────────
@@ -128,22 +121,21 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
 # to it again. 1 if any path couldn't be read, or any write or close failed;
 # otherwise 0.
 fun writeResults(results: List<String|FileError>): System::Int where Show<IOError>
-  fun step(acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool),
-           r: String|FileError): (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
+  fun step(
+      acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool), r: String|FileError): (
+      out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
     ret match(r)
-      (line: String) =>
-          (out = acc.out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err = acc.err, failed = acc.failed)
-      (fe: FileError) =>
-          (out = acc.out,
-           err = acc.err ?> (io: IO, n: Int) =>
-                   writeAll(io, "findstr: " + fe.path + ": " + show(fe.error) + "\n"),
-           failed = true)
+      (line: String) => (
+          out = acc.out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err = acc.err, failed = acc.failed)
+      (fe: FileError) => (
+          out = acc.out,
+          err = acc.err ?> (io: IO, n: Int) => writeAll(io, "findstr: " + fe.path + ": " + show(fe.error) + "\n"),
+          failed = true)
   let r = fold<String|FileError, (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)>(
-    results, (out = (stdout(), 0), err = (stderr(), 0), failed = false), step)
+      results, (out = (stdout(), 0), err = (stderr(), 0), failed = false), step)
   let outClosed = r.out.io.close()
   let errClosed = r.err.io.close()
-  ret r.failed || r.out.v is IOError || r.err.v is IOError
-      || outClosed !is None || errClosed !is None ? 1 : 0
+  ret r.failed || r.out.v is IOError || r.err.v is IOError || outClosed !is None || errClosed !is None ? 1 : 0
 
 
 # ── command line ──────────────────────────────────────────────────────────────
@@ -151,14 +143,17 @@ fun writeResults(results: List<String|FileError>): System::Int where Show<IOErro
 # What the command line asked for.
 class [final] Options(help: Bool, needle: String, path: String)
 
-fun commandLine() => Args("findstr", "Print every line of every file under a path that holds a substring.",
-  List<Arg<Options>>(
-    Stop(List("-h", "--help"), "show this help message and exit",
-         (o: Options) => with o(help = true)),
-    Positional("substring", ExactlyOne(), "the text to look for",
-               (o: Options, vs: List<String>) => with o(needle = head(vs) ?? "")),
-    Positional("path", AtMostOne(), "the file or directory to search (default .)",
-               (o: Options, vs: List<String>) => with o(path = head(vs) ?? "."))))
+fun commandLine()
+  ret Args(
+      "findstr", "Print every line of every file under a path that holds a substring.",
+      List<Arg<Options>>(
+          Stop(List("-h", "--help"), "show this help message and exit", (o: Options) => with o(help = true)),
+          Positional(
+              "substring", ExactlyOne(), "the text to look for",
+              (o: Options, vs: List<String>) => with o(needle = head(vs) ?? "")),
+          Positional(
+              "path", AtMostOne(), "the file or directory to search (default .)",
+              (o: Options, vs: List<String>) => with o(path = head(vs) ?? "."))))
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -173,4 +168,4 @@ fun main(): System::Int
     ret 0
   ret match(parse(commandLine(), args(), Options(false, "", ".")))
     (e: ArgError) => wrong(e)
-    (o: Options)  => o.help ? showHelp() : writeResults(searchFiles(o.needle, gatherFiles(o.path)))
+    (o: Options) => o.help ? showHelp() : writeResults(searchFiles(o.needle, gatherFiles(o.path)))

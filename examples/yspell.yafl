@@ -19,9 +19,8 @@
 #
 import System
 import System::Args
-import System::IO
 import System::Containers
-
+import System::IO
 
 # A file that couldn't be opened, read or closed. It travels in the report list
 # alongside the misspellings, so it keeps its place in file order.
@@ -31,7 +30,7 @@ class FileError(path: String, error: IOError)
 # ── small string helpers ──────────────────────────────────────────────────────
 
 fun isLetter(b: Int32): Bool
-  ret (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+  ret b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 
 fun lowerByte(b: Int32): Int32
   ret b >= 'A' && b <= 'Z' ? b + ('a' - 'A') : b
@@ -50,9 +49,9 @@ fun capitalised(s: String): String
 # Strip the line terminator readLine leaves in place.
 fun chomp(line: String): String
   let n = length(line)
-  ret n > 0 && byteAt(line, n - 1) == '\n'
-    ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2) : slice(line, 0, n - 1))
-    : line
+  ret n > 0 && byteAt(line, n - 1) == '\n' ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2)
+          : slice(line, 0, n - 1))
+      : line
 
 
 # ── dictionary: a balanced immutable binary search tree ──────────────────────
@@ -82,7 +81,7 @@ fun sortWords(l: List<String>): List<String>
 # C stack.
 fun buildAt(n: Int, c: List<String>): (tree: WordTree, rest: List<String>)
   fun done(left: WordTree, mid: String, rt: (tree: WordTree, rest: List<String>)): (tree: WordTree, rest: List<String>)
-    ret (tree=Word(mid, left, rt.tree), rest=rt.rest)
+    ret (tree = Word(mid, left, rt.tree), rest = rt.rest)
   # After the left subtree, the next element is this node's root; the
   # remainder feeds the right subtree.
   fun root(lt: (tree: WordTree, rest: List<String>)): (tree: WordTree, rest: List<String>)
@@ -91,17 +90,15 @@ fun buildAt(n: Int, c: List<String>): (tree: WordTree, rest: List<String>)
       # Unreachable while n is honest (count and list come from the same
       # list); kept total so a broken count degrades to a short tree rather
       # than a crash.
-      (e: None)     => (tree=lt.tree, rest=lt.rest)
-  ret n <= 0 ? (tree=NoWord(), rest=c) : root(buildAt(n / 2, c))
+      (e: None) => (tree = lt.tree, rest = lt.rest)
+  ret n <= 0 ? (tree = NoWord(), rest = c) : root(buildAt(n / 2, c))
 
 fun buildTree(sorted: List<String>): WordTree
   ret buildAt(fold<String, Int>(sorted, 0, (k: Int, w: String) => k + 1), sorted).tree
 
 fun [tail] hasWord(t: WordTree, w: String): Bool
   ret match(t)
-    (n: Word) =>
-        compare(w, n.text) == 0 ? true
-          : compare(w, n.text) < 0 ? hasWord(n.left, w) : hasWord(n.right, w)
+    (n: Word) => compare(w, n.text) == 0 || (compare(w, n.text) < 0 ? hasWord(n.left, w) : hasWord(n.right, w))
     (e: NoWord) => false
 
 fun loadDictionary(path: String): WordTree|IOError
@@ -109,24 +106,24 @@ fun loadDictionary(path: String): WordTree|IOError
   fun loadEnd(words: List<String>, e: IOError): List<String>|IOError
     ret match(e)
       (eof: EOFError) => words
-      ()              => e
+      () => e
   fun [tail] load(io: IO, words: List<String>): (io: IO, words: List<String>|IOError)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => load(r.io, prepend<String>(chomp(line), words))
-      (e: IOError)   => (r.io, loadEnd(words, e))
+      (e: IOError) => (r.io, loadEnd(words, e))
   # A read error wins over a close error; either fails the load.
   fun loaded(words: List<String>|IOError, closed: IOError|None): WordTree|IOError
     ret match(words)
-      (e: IOError)      => e
+      (e: IOError) => e
       (l: List<String>) => match(closed)
         (e: IOError) => e
-        (n: None)    => buildTree(sortWords(l))
+        (n: None) => buildTree(sortWords(l))
   fun loadOpen(io: IO): WordTree|IOError
     let r = load(io, List<String>())
     ret loaded(r.words, r.io.close())
   ret match(open_read(path))
-    (io: IO)     => loadOpen(io)
+    (io: IO) => loadOpen(io)
     (e: IOError) => e
 
 # A word is known if the dictionary has it exactly, lowercased ("The" -> "the"),
@@ -156,33 +153,31 @@ fun suggest(dict: WordTree, word: String): List<String>
   let alphabet = "abcdefghijklmnopqrstuvwxyz"
 
   fun consider(acc: Sugg, cand: String): Sugg
-    ret hasWord(dict, cand)
-      ? (contains<String>(acc.sgSeen, cand)
-          ? acc
-          : Sugg(append<String>(acc.sgFound, cand),
-                 add<String>(acc.sgSeen, cand)))
-      : acc
+    ret hasWord(dict, cand) ? (contains<String>(acc.sgSeen, cand) ? acc
+            : Sugg(append<String>(acc.sgFound, cand), add<String>(acc.sgSeen, cand)))
+        : acc
 
   fun [tail] deletions(i: Int, acc: Sugg): Sugg
-    ret i >= n ? acc
-      : deletions(i + 1, consider(acc, slice(w, 0, i) + slice(w, i + 1, n)))
+    ret i >= n ? acc : deletions(i + 1, consider(acc, slice(w, 0, i) + slice(w, i + 1, n)))
 
   fun [tail] transposes(i: Int, acc: Sugg): Sugg
     ret i + 1 >= n ? acc
-      : transposes(i + 1, consider(acc,
-          slice(w, 0, i) + asciiToString(byteAt(w, i + 1)) + asciiToString(byteAt(w, i)) + slice(w, i + 2, n)))
+        : transposes(
+            i + 1,
+            consider(
+                acc,
+                slice(w, 0, i) + asciiToString(byteAt(w, i + 1)) + asciiToString(byteAt(w, i)) + slice(w, i + 2, n)))
 
   fun [tail] substitutions(i: Int, j: Int, acc: Sugg): Sugg
     ret i >= n ? acc
-      : j >= 26 ? substitutions(i + 1, 0, acc)
-      : substitutions(i, j + 1, consider(acc,
-          slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i + 1, n)))
+        : j >= 26 ? substitutions(i + 1, 0, acc)
+        : substitutions(
+            i, j + 1, consider(acc, slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i + 1, n)))
 
   fun [tail] insertions(i: Int, j: Int, acc: Sugg): Sugg
     ret i > n ? acc
-      : j >= 26 ? insertions(i + 1, 0, acc)
-      : insertions(i, j + 1, consider(acc,
-          slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i, n)))
+        : j >= 26 ? insertions(i + 1, 0, acc)
+        : insertions(i, j + 1, consider(acc, slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i, n)))
 
   let start = Sugg(List<String>(), Set<String>())
   let result = insertions(0, 0, substitutions(0, 0, transposes(0, deletions(0, start))))
@@ -196,49 +191,42 @@ fun suggest(dict: WordTree, word: String): List<String>
 # those bytes; one-letter words are ignored.
 
 fun isWordByte(b: Int32): Bool
-  ret isLetter(b) || b == '\''    # apostrophe, for words like don't
+  ret isLetter(b) || b == '\'' # apostrophe, for words like don't
 
 # A word must contain at least one letter (an apostrophe run alone is noise).
 fun [tail] anyLetter(word: String, i: Int): Bool
-  ret i >= length(word) ? false
-    : isLetter(byteAt(word, i)) ? true
-    : anyLetter(word, i + 1)
+  ret i >= length(word) ? false : isLetter(byteAt(word, i)) || anyLetter(word, i + 1)
 
 # Per-file report state. rpReports is ORDERED — the reports print in the order
 # the words were met — so it is appended to; rpReported is pure membership.
-class [final] Rep(rpReports: List<String|FileError>,
-                          rpReported: Set<String>, rpCount: Int)
+class [final] Rep(rpReports: List<String|FileError>, rpReported: Set<String>, rpCount: Int)
 
 fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, misspelt: Int)
   # All helpers sit at this level so closures only ever capture one enclosing
   # scope (dict/path); per-line state travels as explicit parameters.
 
   fun reportLine(lineNo: Int, word: String, suggestions: List<String>): String
-    ret isEmpty<String>(suggestions)
-      ? path + ":" + String(lineNo) + ": '" + word + "' (no suggestions)"
-      : path + ":" + String(lineNo) + ": '" + word + "' -> " + join(suggestions, ", ")
+    ret isEmpty<String>(suggestions) ? path + ":" + String(lineNo) + ": '" + word + "' (no suggestions)"
+        : path + ":" + String(lineNo) + ": '" + word + "' -> " + join(suggestions, ", ")
 
   fun report(lineNo: Int, word: String, a: Rep): Rep
-    ret Rep(append<String|FileError>(a.rpReports,
-                                   reportLine(lineNo, word, suggest(dict, word))),
-            add<String>(a.rpReported, word), a.rpCount + 1)
+    ret Rep(
+        append<String|FileError>(a.rpReports, reportLine(lineNo, word, suggest(dict, word))),
+        add<String>(a.rpReported, word), a.rpCount + 1)
 
   fun checkWord(lineNo: Int, word: String, a: Rep): Rep
-    ret length(word) < 2 || contains<String>(a.rpReported, word) || isKnown(dict, word)
-      ? a
-      : report(lineNo, word, a)
+    ret length(word) < 2 || contains<String>(a.rpReported, word) || isKnown(dict, word) ? a : report(lineNo, word, a)
 
   fun [tail] wordEnd(line: String, j: Int): Int
     ret j < length(line) && isWordByte(byteAt(line, j)) ? wordEnd(line, j + 1) : j
 
-  fun [tail] scanLine(lineNo: Int, line: String, i: Int,
-                      a: Rep): Rep
+  fun [tail] scanLine(lineNo: Int, line: String, i: Int, a: Rep): Rep
     ret i >= length(line) ? a
-      : isWordByte(byteAt(line, i))
-        ? scanLine(lineNo, line, wordEnd(line, i + 1),
-               anyLetter(slice(line, i, wordEnd(line, i + 1)), 0)
-                 ? checkWord(lineNo, slice(line, i, wordEnd(line, i + 1)), a)
-                 : a)
+        : isWordByte(byteAt(line, i)) ? scanLine(
+            lineNo, line, wordEnd(line, i + 1),
+            anyLetter(slice(line, i, wordEnd(line, i + 1)), 0) ? checkWord(
+                    lineNo, slice(line, i, wordEnd(line, i + 1)), a)
+                : a)
         : scanLine(lineNo, line, i + 1, a)
 
   # Record an IO error after the reports made so far.
@@ -249,18 +237,18 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
   fun readEnd(a: Rep, e: IOError): Rep
     ret match(e)
       (eof: EOFError) => a
-      ()              => failed(a, e)
+      () => failed(a, e)
 
   fun closeInto(a: Rep, closed: IOError|None): Rep
     ret match(closed)
       (e: IOError) => failed(a, e)
-      (n: None)    => a
+      (n: None) => a
 
   fun [tail] perLine(io: IO, lineNo: Int, acc: Rep): (io: IO, acc: Rep)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => perLine(r.io, lineNo + 1, scanLine(lineNo, chomp(line), 0, acc))
-      (e: IOError)   => (r.io, readEnd(acc, e))
+      (e: IOError) => (r.io, readEnd(acc, e))
 
   fun checkOpen(io: IO): (reports: List<String|FileError>, misspelt: Int)
     let r = perLine(io, 1, Rep(List<String|FileError>(), Set<String>(), 0))
@@ -268,7 +256,7 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
     ret (done.rpReports, done.rpCount)
 
   ret match(open_read(path))
-    (io: IO)     => checkOpen(io)
+    (io: IO) => checkOpen(io)
     (e: IOError) => (prepend<String|FileError>(FileError(path, e), List<String|FileError>()), 0)
 
 
@@ -276,12 +264,10 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
 
 # Each file is checked on its own worker; the reports join in file order.
 fun checkFiles(dict: WordTree, files: List<String>): (reports: List<String|FileError>, misspelt: Int)
-  fun joinResults(results: List<(reports: List<String|FileError>, misspelt: Int)>)
-      : (reports: List<String|FileError>, misspelt: Int)
+  fun joinResults(
+      results: List<(reports: List<String|FileError>, misspelt: Int)>): (reports: List<String|FileError>, misspelt: Int)
     ret (flatMap(results, (r) => r.reports), fold(results, 0, (n, r) => n + r.misspelt))
-
-  ret powerMap(files, (f: String) => checkFile(dict, f))
-    |> joinResults
+  ret powerMap(files, (f: String) => checkFile(dict, f)) |> joinResults
 
 
 # ── output ────────────────────────────────────────────────────────────────────
@@ -302,18 +288,18 @@ fun complain(line: String): Int
 # writing to it again. 2 if any file had an IO error or any write or close
 # failed, else 1 if there were misspellings, else 0.
 fun writeReports(reports: List<String|FileError>, misspelt: Int): Int where Show<IOError>
-  fun step(acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool),
-           r: String|FileError): (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
+  fun step(
+      acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool), r: String|FileError): (
+      out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
     ret match(r)
-      (line: String) =>
-          (out = acc.out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err = acc.err, failed = acc.failed)
-      (fe: FileError) =>
-          (out = acc.out,
-           err = acc.err ?> (io: IO, n: Int) =>
-                   writeAll(io, "yspell: " + fe.path + ": " + show(fe.error) + "\n"),
-           failed = true)
+      (line: String) => (
+          out = acc.out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err = acc.err, failed = acc.failed)
+      (fe: FileError) => (
+          out = acc.out,
+          err = acc.err ?> (io: IO, n: Int) => writeAll(io, "yspell: " + fe.path + ": " + show(fe.error) + "\n"),
+          failed = true)
   let r = fold<String|FileError, (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)>(
-    reports, (out = (stdout(), 0), err = (stderr(), 0), failed = false), step)
+      reports, (out = (stdout(), 0), err = (stderr(), 0), failed = false), step)
   let status = r.failed ? 2 : misspelt > 0 ? 1 : 0
   let outStatus = ioStatus(status, r.out.v, r.out.io.close())
   ret ioStatus(outStatus, r.err.v, r.err.io.close())
@@ -327,15 +313,16 @@ fun dictError(path: String, e: IOError): Int where Show<IOError>
 # What the command line asked for.
 class [final] Options(help: Bool, dictionary: String, files: List<String>)
 
-fun commandLine() => Args("yspell", "Report the words in each file that the dictionary does not hold.",
-  List<Arg<Options>>(
-    Stop(List("-h", "--help"), "show this help message and exit",
-         (o: Options) => with o(help = true)),
-    Value(List("-d", "--dictionary"), "FILE",
-          "the word list to check against (default /usr/share/dict/words)",
-          (o: Options, v: String) => with o(dictionary = v)),
-    Positional("file", AtLeastOne(), "a text file to check",
-               (o: Options, vs: List<String>) => with o(files = vs))))
+fun commandLine()
+  ret Args(
+      "yspell", "Report the words in each file that the dictionary does not hold.",
+      List<Arg<Options>>(
+          Stop(List("-h", "--help"), "show this help message and exit", (o: Options) => with o(help = true)),
+          Value(
+              List("-d", "--dictionary"), "FILE", "the word list to check against (default /usr/share/dict/words)",
+              (o: Options, v: String) => with o(dictionary = v)),
+          Positional(
+              "file", AtLeastOne(), "a text file to check", (o: Options, vs: List<String>) => with o(files = vs))))
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -347,7 +334,7 @@ fun main(): System::Int
       ret writeReports(result.reports, result.misspelt)
     ret match(loadDictionary(o.dictionary))
       (dict: WordTree) => check(dict)
-      (e: IOError)     => dictError(o.dictionary, e)
+      (e: IOError) => dictError(o.dictionary, e)
 
   fun showHelp(): System::Int
     print(help(commandLine(), 80, false))
@@ -355,4 +342,4 @@ fun main(): System::Int
 
   ret match(parse(commandLine(), args(), Options(false, "/usr/share/dict/words", List())))
     (e: ArgError) => complain(trimEnd(message(commandLine(), e, 80, false)))
-    (o: Options)  => o.help ? showHelp() : run(o)
+    (o: Options) => o.help ? showHelp() : run(o)
