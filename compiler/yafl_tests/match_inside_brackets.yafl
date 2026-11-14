@@ -1,0 +1,63 @@
+# A match whose arms run over several lines can sit inside brackets: as a
+# call's argument, a tuple's entry, or a lambda's body passed to a call. The
+# bracket that closes around it sits at the end of its last arm (#77).
+#
+# A block — a statement, a match arm — ends at a closing bracket it did not
+# open, so that bracket belongs to whatever encloses the block.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::MatchInsideBrackets::AsACallArgument
+
+import System
+import System::Containers
+import System::Test
+
+fun bump(d: Dict<Int, Int>, k: Int): Dict<Int, Int>
+  ret put(d, k, match(get(d, k))
+    (n: Int) => n + 1
+    ()       => 1)
+
+fun program(): System::Int
+  ret (get(bump(bump(Dict<Int, Int>(), 3), 3), 3) ?? 0) - 2
+
+fun [test("a match as a call's last argument")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::MatchInsideBrackets::AsATupleEntry
+
+import System
+import System::Test
+
+fun describe(x: Int|None): (known: Bool, value: Int)
+  ret (known = x !is None, value = match(x)
+    (n: Int) => n
+    ()       => 0)
+
+fun program(): System::Int
+  let a = describe(7)
+  let b = describe(None)
+  ret a.known && !b.known && a.value == 7 && b.value == 0 ? 0 : 1
+
+fun [test("a match as a tuple's last entry")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::MatchInsideBrackets::AsALambdaBodyPassedToACall
+
+import System
+import System::Containers
+import System::Test
+
+fun total(xs: List<Int|None>): Int
+  ret fold(xs, 0, (acc: Int, x: Int|None) => acc + match(x)
+    (n: Int) => n
+    ()       => 100)
+
+fun program(): System::Int
+  ret total(List<Int|None>(1, None, 2)) - 103
+
+fun [test("a match in a lambda's body, the call closing after it")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

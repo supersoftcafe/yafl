@@ -34,10 +34,14 @@ import Bootstrap::StdlibCandidates
 
 # ══ Parse state ══════════════════════════════════════════════════════════════
 # `ts` is the remaining tokens; (fline, findent) is the enclosing block fence:
-# a token on a later line with indent <= findent reads as end-of-input.
+# a token on a later line with indent <= findent reads as end-of-input. With
+# `endsAtCloser`, so does a closing bracket the block did not open — `depth`
+# counts the brackets opened since the fence was set (parselib.block's
+# `ends_at_closer`). A match arm is such a block, so the bracket closing
+# around a multi-line match ends its last arm (#77).
 
 class [final] Ps(ts: List<Token>, fline: System::Int, findent: System::Int,
-                 srcFile: System::String)
+                 srcFile: System::String, depth: System::Int, endsAtCloser: System::Bool)
 
 # A parse failure, and — when a statement list RECOVERED past it — the
 # failures found after it (`later`, in source order). See parseStmts.
@@ -100,7 +104,14 @@ fun [inline] hardened<TIn>(stage: (v: TIn|PFail, rest: Ps),
   (x: TIn)   => stage
   (e: PFail) => (harden(e, msg), stage.rest)
 
-fun crossesFence(t: Token, ps: Ps) => t.line > ps.fline && t.indent <= ps.findent
+fun crossesFence(t: Token, ps: Ps) => (t.line > ps.fline && t.indent <= ps.findent)
+  || (ps.endsAtCloser && ps.depth == 0 && isCloser(t))
+
+fun isOpener(t: Token) => isSymTok(t, "(") || isSymTok(t, "[")
+
+fun isCloser(t: Token) => isSymTok(t, ")") || isSymTok(t, "]")
+
+fun depthAfter(t: Token, depth: System::Int) => isOpener(t) ? depth + 1 : isCloser(t) ? depth - 1 : depth
 
 fun peek(ps: Ps) => match(head(ps.ts))
   (t: Token) => crossesFence(t, ps)
@@ -109,7 +120,8 @@ fun peek(ps: Ps) => match(head(ps.ts))
   ()         => Token(KEof(), "", 0, ps.fline, 1)
 
 fun bump(ps) => match(head(ps.ts))
-  (t: Token) => crossesFence(t, ps) ? ps : Ps(dropOne(ps.ts), ps.fline, ps.findent, ps.srcFile)
+  (t: Token) => crossesFence(t, ps) ? ps
+    : Ps(dropOne(ps.ts), ps.fline, ps.findent, ps.srcFile, depthAfter(t, ps.depth), ps.endsAtCloser)
   ()         => ps
 
 fun isEof(t: Token) => match(t.kind)
@@ -143,7 +155,7 @@ fun closeAngle(ps): (ok: System::Bool, rest: Ps)
     ret (true, bump(ps))
   let remainder = Token(KSymbol(), System::slice(t.text, 1, System::length(t.text)),
                         t.indent, t.line, t.col + 1)
-  ret (true, Ps(prepend(remainder, bump(ps).ts), ps.fline, ps.findent, ps.srcFile))
+  ret (true, Ps(prepend(remainder, bump(ps).ts), ps.fline, ps.findent, ps.srcFile, ps.depth, ps.endsAtCloser))
 
 fun lineAt(ps: Ps)
   let t = peek(ps)
@@ -965,7 +977,7 @@ fun [tail] parseArms(subj: PExpr, extra: List<PExpr>, lr: PLine, ps: Ps,
   let t = peek(ps)
   if !isSymTok(t, "(")
     ret (PeMatch(subj, acc, lr, extra), ps)
-  let armPs = Ps(ps.ts, t.line, t.indent, ps.srcFile)
+  let armPs = Ps(ps.ts, t.line, t.indent, ps.srcFile, 0, true)
   let a = parseArm(armPs)
   ret match(a.v)
     (f: PFail) => (f, a.rest)
@@ -1105,7 +1117,8 @@ fun armBodyNoGuard(name, ty, lits, lr,
 # Nothing), mirroring __to_function / __to_function_oneliner.
 
 # Re-fence back to the enclosing block after a nested one.
-fun blockExit(inner: Ps, outer: Ps) => Ps(inner.ts, outer.fline, outer.findent, outer.srcFile)
+fun blockExit(inner: Ps, outer: Ps) => Ps(inner.ts, outer.fline, outer.findent, outer.srcFile,
+                                          outer.depth, outer.endsAtCloser)
 
 # ERROR RECOVERY. A statement that fails — or parses but leaves tokens in its
 # block — is recorded and SKIPPED: parsing resumes at the next statement, the
@@ -1124,7 +1137,7 @@ fun [tail] stmtsLoop(ps: Ps, acc: List<PStmt>, errs: List<PFail>): (v: List<PStm
     ret match(failureOf(errs))
       (f: PFail) => (f, ps)
       ()         => (acc, ps)
-  let inner = Ps(ps.ts, t.line, t.indent, ps.srcFile)
+  let inner = Ps(ps.ts, t.line, t.indent, ps.srcFile, 0, false)
   let s = parseStmt(inner)
   ret match(s.v)
     (f: PFail)  => stmtsLoop(blockExit(skipBlock(inner), ps), acc, concat(errs, failuresOf(f)))
@@ -1472,7 +1485,7 @@ fun [tail] variantsLoop(ps: Ps, acc: List<PStmt>,
     ret match(failureOf(errs))
       (f: PFail) => (f, ps)
       ()         => (acc, ps)
-  let inner = Ps(ps.ts, t.line, t.indent, ps.srcFile)
+  let inner = Ps(ps.ts, t.line, t.indent, ps.srcFile, 0, false)
   let v = parseEnum(lineAt(bump(inner)), bump(inner))
   ret match(v.v)
     (f: PFail)  => variantsLoop(blockExit(skipBlock(inner), ps), acc, concat(errs, failuresOf(f)))
@@ -1487,7 +1500,7 @@ fun [tail] variantsLoop(ps: Ps, acc: List<PStmt>,
 # `later` (failuresOf lists them all, in source order).
 fun parseProgram(src: String, filename: String): List<PStmt>|PFail
   let toks = tokenize(src)
-  let r = parseStmts(Ps(toks, 0, -1, filename), List())
+  let r = parseStmts(Ps(toks, 0, -1, filename, 0, false), List())
   ret match(r.v)
     (f: PFail)           => f
     (stmts: List<PStmt>) => match(failureOf(memberSignatureViolations(stmts, List())))

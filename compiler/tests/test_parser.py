@@ -452,3 +452,28 @@ class Test(TestCase):
 
         # And it should emit no errors — the failed generic attempt must not leak errors
         self.assertEqual(0, len(result.errors))
+
+
+class TestMatchInsideBrackets(TestCase):
+    """A block ends at a closing bracket it did not open (#77): the bracket
+    closing around a multi-line match belongs to what encloses it."""
+
+    def _errors(self, src: str) -> list[str]:
+        return [str(err) for err in p.parse(tokenize(src, "file")).errors]
+
+    def test_match_as_a_call_argument(self):
+        self.assertEqual([], self._errors(
+            "fun f(d: D, k: K): D\n"
+            "  ret put(d, k, match(get(d, k))\n"
+            "    (n: Int) => n + 1\n"
+            "    ()       => 1)\n"))
+
+    def test_match_as_a_tuple_entry(self):
+        self.assertEqual([], self._errors(
+            "fun f(x: Int|None): (a: Int, b: Int)\n"
+            "  ret (a = 1, b = match(x)\n"
+            "    (n: Int) => n\n"
+            "    ()       => 0)\n"))
+
+    def test_an_unopened_bracket_is_still_an_error(self):
+        self.assertTrue(self._errors("fun f(): Int\n  ret 1)\n"))
