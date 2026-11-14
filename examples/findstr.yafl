@@ -61,8 +61,8 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
   # '\n'/'\r\n'), and the output adds its own.
   fun chomp(line: String): String
     let n = length(line)
-    ret n > 0 && byteAt(line, n - 1) == '\n' ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2)
-            : slice(line, 0, n - 1))
+    ret n > 0 && byteAt(line, n - 1) == '\n'
+        ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2) : slice(line, 0, n - 1))
         : line
 
   # Collect a matching line as `file:lineNo:line`; non-matches pass through.
@@ -80,8 +80,8 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
   # Stream the file a line at a time, collecting matches in order. `[tail]` so
   # the per-line loop is a loop, not C-stack recursion; `readLine` suspends on
   # buffer refills. The whole file is never held in memory, only its matches.
-  fun [tail] scan(
-      io: IO, path: String, lineNo: Int, found: List<String|FileError>): (io: IO, found: List<String|FileError>)
+  fun [tail] scan(io: IO, path: String, lineNo: Int,
+      found: List<String|FileError>): (io: IO, found: List<String|FileError>)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => scan(r.io, path, lineNo + 1, step(found, path, lineNo, line))
@@ -121,9 +121,8 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
 # to it again. 1 if any path couldn't be read, or any write or close failed;
 # otherwise 0.
 fun writeResults(results: List<String|FileError>): System::Int where Show<IOError>
-  fun step(
-      acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool), r: String|FileError): (
-      out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
+  fun step(acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool),
+      r: String|FileError): (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
     ret match(r)
       (line: String) => (
           out = acc.out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err = acc.err, failed = acc.failed)

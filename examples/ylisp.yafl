@@ -75,8 +75,8 @@ fun readList(s: System::String, pos: System::Int): (pos: System::Int, v: Value|E
 
 # Elements accumulate through a continuation so the list builds in order
 # without a reverse pass — each parsed head wraps the builder.
-fun [tail] _readListLoop(
-    s: System::String, pos: System::Int, build: (:Value): Value): (pos: System::Int, v: Value|EvalError)
+fun [tail] _readListLoop(s: System::String, pos: System::Int,
+    build: (:Value): Value): (pos: System::Int, v: Value|EvalError)
   if pos >= System::length(s)
     ret (pos, EvalError("unterminated list"))
   if System::byteAt(s, pos) == ')'
@@ -180,8 +180,8 @@ fun _evalArgs(io: IO, genv: Env, env: Env, fv: Value, args: Value, acc: Value): 
     (p: VPair) => _evalArgsStep(io, genv, env, fv, p.head, p.tail, acc)
     (other) => apply(io, genv, fv, acc)
 
-fun _evalArgsStep(
-    io: IO, genv: Env, env: Env, fv: Value, arg: Value, rest: Value, acc: Value): (io: IO, v: Value|EvalError)
+fun _evalArgsStep(io: IO, genv: Env, env: Env, fv: Value, arg: Value, rest: Value,
+    acc: Value): (io: IO, v: Value|EvalError)
   let r = eval(io, genv, env, arg)
   ret match(r.v)
     (e: EvalError) => (r.io, e)

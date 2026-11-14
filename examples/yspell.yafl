@@ -49,8 +49,8 @@ fun capitalised(s: String): String
 # Strip the line terminator readLine leaves in place.
 fun chomp(line: String): String
   let n = length(line)
-  ret n > 0 && byteAt(line, n - 1) == '\n' ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2)
-          : slice(line, 0, n - 1))
+  ret n > 0 && byteAt(line, n - 1) == '\n'
+      ? (n > 1 && byteAt(line, n - 2) == '\r' ? slice(line, 0, n - 2) : slice(line, 0, n - 1))
       : line
 
 
@@ -153,7 +153,8 @@ fun suggest(dict: WordTree, word: String): List<String>
   let alphabet = "abcdefghijklmnopqrstuvwxyz"
 
   fun consider(acc: Sugg, cand: String): Sugg
-    ret hasWord(dict, cand) ? (contains<String>(acc.sgSeen, cand) ? acc
+    ret hasWord(dict, cand)
+        ? (contains<String>(acc.sgSeen, cand) ? acc
             : Sugg(append<String>(acc.sgFound, cand), add<String>(acc.sgSeen, cand)))
         : acc
 
@@ -224,8 +225,8 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
     ret i >= length(line) ? a
         : isWordByte(byteAt(line, i)) ? scanLine(
             lineNo, line, wordEnd(line, i + 1),
-            anyLetter(slice(line, i, wordEnd(line, i + 1)), 0) ? checkWord(
-                    lineNo, slice(line, i, wordEnd(line, i + 1)), a)
+            anyLetter(slice(line, i, wordEnd(line, i + 1)), 0)
+                ? checkWord(lineNo, slice(line, i, wordEnd(line, i + 1)), a)
                 : a)
         : scanLine(lineNo, line, i + 1, a)
 
@@ -264,8 +265,8 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
 
 # Each file is checked on its own worker; the reports join in file order.
 fun checkFiles(dict: WordTree, files: List<String>): (reports: List<String|FileError>, misspelt: Int)
-  fun joinResults(
-      results: List<(reports: List<String|FileError>, misspelt: Int)>): (reports: List<String|FileError>, misspelt: Int)
+  fun joinResults(results: List<(reports: List<String|FileError>, misspelt: Int)>): (
+          reports: List<String|FileError>, misspelt: Int)
     ret (flatMap(results, (r) => r.reports), fold(results, 0, (n, r) => n + r.misspelt))
   ret powerMap(files, (f: String) => checkFile(dict, f)) |> joinResults
 
@@ -288,9 +289,8 @@ fun complain(line: String): Int
 # writing to it again. 2 if any file had an IO error or any write or close
 # failed, else 1 if there were misspellings, else 0.
 fun writeReports(reports: List<String|FileError>, misspelt: Int): Int where Show<IOError>
-  fun step(
-      acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool), r: String|FileError): (
-      out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
+  fun step(acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool),
+      r: String|FileError): (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
     ret match(r)
       (line: String) => (
           out = acc.out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err = acc.err, failed = acc.failed)
