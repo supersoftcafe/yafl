@@ -1,0 +1,206 @@
+# bootstrap/format/comments.yafl — the source's comments and blank lines, put
+# back into the printed document at the position markers the printer left.
+#
+# Comments are not in the tree (USER RULING #91, the gofmt way): the tokenizer
+# hands them over beside it, each with its position. The printer leaves an
+# anchor just before the break ahead of every statement, member, list item,
+# pipeline stage, ternary link and match arm; this pass walks the document in
+# order and, at each anchor, writes every comment that came before that
+# position in the source:
+#
+#   trailing   a comment that followed code on its line stays at the end of
+#              the line it is written on, and that line must end there: what
+#              follows starts a new line, which wraps the list around it.
+#   own line   a comment on a line of its own gets a line of its own, at the
+#              indent of what follows it.
+#
+# Comment text is re-indented, never rewrapped.
+#
+# Blank lines are decided here too, at the same anchors (AnchorKind): exact
+# counts at top level (one between declarations, two above a banner and one
+# below it), the source's own (one at most) between statements and between
+# comments, none inside an expression.
+namespace Bootstrap::Format
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
+
+# `d` with `comments` placed and blank lines decided. `blanks` holds the
+# numbers of the source's blank lines.
+fun placeComments(d: Doc, comments: List<Comment>, blanks: Set<Int>): Doc
+  let w = walkDoc(d, Place(comments, false, blanks))
+  ret cat(w.d, tailComments(w.p))
+
+# The numbers of the lines that hold nothing but whitespace.
+fun blankLinesOf(src: String): Set<Int> =>
+  fold(splitLines(src), (set = Set<Int>(), n = 1), (acc, ln) =>
+      (set = trim(ln) == "" ? add(acc.set, acc.n) : acc.set, n = acc.n + 1)).set
+
+fun anchorTop(lr: PLine, blanks: Int): Doc => DAnchor(lr.plLine, lr.plCol, AkTop(blanks))
+
+fun anchorStmt(lr: PLine): Doc => DAnchor(lr.plLine, lr.plCol, AkStmt())
+
+fun anchorMember(lr: PLine, blank: Bool): Doc => DAnchor(lr.plLine, lr.plCol, AkMember(blank))
+
+# An anchor before a break inside an expression.
+fun anchorBreak(lr: PLine): Doc => DAnchor(lr.plLine, lr.plCol, AkExpr())
+
+# `d`, a list item, with an anchor in front of it.
+fun anchored(lr: PLine, d: Doc): Doc => cat(DAnchor(lr.plLine, lr.plCol, AkItem()), d)
+
+
+# ── the walk ─────────────────────────────────────────────────────────────────
+
+# The walk's state: the comments still to place, whether any text has been
+# written yet, and the source's blank lines.
+class [final] Place(plComments: List<Comment>, plStarted: Bool, plBlanks: Set<Int>)
+
+fun walkDoc(d: Doc, p: Place): (d: Doc, p: Place) => match(d)
+  (t: DText)   => (d = d, p = t.dText == "" ? p : with p(plStarted = true))
+  (n: DNest)   => walkDoc(n.dBody, p) |> (w) => (d = DNest(n.dIndent, w.d), p = w.p)
+  (g: DGroup)  => walkDoc(g.dGroupBody, p) |> (w) => (d = DGroup(w.d), p = w.p)
+  (k: DCat)    => walkDocs(k.dParts, p) |> (w) => (d = DCat(w.ds), p = w.p)
+  (f: DFill)   => walkFill(f, p)
+  (a: DAnchor) => atAnchor(a, p)
+  (o: Doc)     => (d = d, p = p)
+
+fun walkDocs(ds: List<Doc>, p: Place): (ds: List<Doc>, p: Place) =>
+  fold(ds, (ds = List<Doc>(), p = p), (acc, d) =>
+      walkDoc(d, acc.p) |> (w) => (ds = append(acc.ds, w.d), p = w.p))
+
+# A list's items. A comment ahead of any item but the first ends the fill
+# there: the separator, the comments, and a new fill from that item on —
+# so a trailing comment stays after its comma (or before the `|` that leads
+# the next line), and the item after it starts a line.
+fun walkFill(f: DFill, p: Place): (d: Doc, p: Place) =>
+  fold(f.dItems, (done = List<Doc>(), run = List<Doc>(), p = p), (acc, item) => fillStep(f, acc, item))
+    |> (acc) => (d = cat(append(acc.done, refill(f, acc.run))), p = acc.p)
+
+fun fillStep(f: DFill, acc: (done: List<Doc>, run: List<Doc>, p: Place),
+             item: Doc): (done: List<Doc>, run: List<Doc>, p: Place)
+  let due = isEmpty(acc.run) ? List<Comment>() : dueBefore(leadingAnchor(item), acc.p.plComments)
+  if isEmpty(due)
+    ret walkDoc(item, acc.p) |> (w) => (done = acc.done, run = append(acc.run, w.d), p = w.p)
+  let p2 = with acc.p(plComments = drop(acc.p.plComments, itemCount(due)))
+  let cut = cat(refill(f, acc.run), sepBeforeBreak(f), commentsDoc(due, p2), hardLine(), sepAfterBreak(f))
+  ret walkDoc(item, p2) |> (w) => (done = append(acc.done, cut), run = List(w.d), p = w.p)
+
+# The position of the anchor an item starts with, if it starts with one.
+fun leadingAnchor(d: Doc): DAnchor|None => match(d)
+  (a: DAnchor) => a
+  (k: DCat)    => match(head(k.dParts))
+    (first: Doc) => leadingAnchor(first)
+    ()           => None
+  ()           => None
+
+# The comments that came before an anchor's position.
+fun dueBefore(a: DAnchor|None, cs: List<Comment>): List<Comment> => match(a)
+  (an: DAnchor) => takeWhileBefore(cs, an.aLine, an.aCol, List())
+  ()            => List()
+
+fun [tail] takeWhileBefore(cs: List<Comment>, line: Int, col: Int, acc: List<Comment>): List<Comment> =>
+  match(head(cs))
+    (c: Comment) if c.cmLine < line || (c.cmLine == line && c.cmCol < col) =>
+        takeWhileBefore(dropOne(cs), line, col, append(acc, c))
+    () => acc
+
+# An anchor: the blank lines it calls for, the comments due there (each with
+# the blank line the source had above it), then nothing — the break the
+# printer put after the anchor carries on to what it marks.
+fun atAnchor(a: DAnchor, p: Place): (d: Doc, p: Place)
+  let due = takeWhileBefore(p.plComments, a.aLine, a.aCol, List())
+  # Trailing comments end the line above, so they come before any blank line.
+  # At a list item's start there is no line above to end: they take lines of
+  # their own like the rest.
+  let trailing = p.plStarted && !isItem(a.aKind) ? takeTrailing(due, List()) : List<Comment>()
+  let own = drop(due, itemCount(trailing))
+  let firstLine = match(head(own))
+    (c: Comment) => c.cmLine
+    ()           => a.aLine
+  let p2 = with p(plComments = drop(p.plComments, itemCount(due)))
+  let lead = p.plStarted ? blankLines(leadBlanks(a.aKind, own, firstLine, p)) : List<Doc>()
+  let between = isEmpty(own) ? List<Doc>()
+    : isItem(a.aKind) ? List(itemCommentsDoc(own, p2))
+    : List(commentsDoc(own, p2), afterComments(a, own, p2))
+  ret (d = cat(concat(prepend(commentsDoc(trailing, p2), lead), between)),
+       p = with p2(plStarted = p.plStarted || !isEmpty(due)))
+
+# The trailing comments at the front of a run.
+fun [tail] takeTrailing(cs: List<Comment>, acc: List<Comment>): List<Comment> => match(head(cs))
+  (c: Comment) if c.cmTrailing => takeTrailing(dropOne(cs), append(acc, c))
+  ()                           => acc
+
+# How many blank lines go before whatever comes first at an anchor.
+fun leadBlanks(k: AnchorKind, due: List<Comment>, firstLine: Int, p: Place): Int => match(k)
+  (t: AkTop)    => match(head(due))
+    (c: Comment) => isBanner(c) && !c.cmTrailing ? 2 : t.akBlanks
+    ()           => t.akBlanks
+  (s: AkStmt)   => sourceBlank(firstLine, p) ? 1 : 0
+  (m: AkMember) => m.akBlank ? 1 : 0
+  (e: AkExpr)   => 0
+  (i: AkItem)   => 0
+
+fun blankLines(n: Int): List<Doc> => n <= 0 ? List() : prepend(hardLine(), blankLines(n - 1))
+
+# Between the last comment and what it stands before: one blank line under a
+# top-level banner; elsewhere the one the source had, if it had one.
+fun afterComments(a: DAnchor, due: List<Comment>, p: Place): Doc => match(head(takeLastOne(due)))
+  (c: Comment) => (isTop(a.aKind) && isBanner(c)) || (!isExpr(a.aKind) && sourceBlank(a.aLine, p))
+      ? hardLine()
+      : nothing()
+  ()           => nothing()
+
+# The comments, each on the line it belongs to, with the blank line the
+# source had between two of them.
+fun commentsDoc(cs: List<Comment>, p: Place): Doc =>
+  cat(fold(cs, (parts = List<Doc>(), first = true), (acc, c) =>
+      (parts = concat(acc.parts, commentDoc(c, p, acc.first)), first = false)).parts)
+
+# Once text has been written, a comment either ends the current line
+# (trailing) or starts one of its own; at the very top of the file each is a
+# line of its own, ended.
+fun commentDoc(c: Comment, p: Place, first: Bool): List<Doc>
+  let body = text(trimEnd(c.cmText))
+  if c.cmTrailing && p.plStarted
+    ret List(text(" "), body, DBroken())
+  let gap = !first && sourceBlank(c.cmLine, p) ? List(hardLine()) : List<Doc>()
+  ret p.plStarted ? concat(gap, List(hardLine(), body)) : concat(gap, List(body, hardLine()))
+
+# Comments at the start of a list item: each a line of its own, ended, so
+# the item starts the line after them.
+fun itemCommentsDoc(cs: List<Comment>, p: Place): Doc =>
+  cat(flatMap(cs, (c) => List(text(trimEnd(c.cmText)), hardLine())))
+
+# Comments after the last anchor: the end of the file.
+fun tailComments(p: Place): Doc => isEmpty(p.plComments)
+  ? nothing()
+  : commentsDoc(p.plComments, p)
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+fun isBanner(c: Comment): Bool => startsWith(c.cmText, "# ──") || startsWith(c.cmText, "# ══")
+
+fun isTop(k: AnchorKind): Bool => match(k)
+  (t: AkTop) => true
+  ()         => false
+
+fun isItem(k: AnchorKind): Bool => match(k)
+  (i: AkItem) => true
+  ()          => false
+
+fun isExpr(k: AnchorKind): Bool => match(k)
+  (e: AkExpr) => true
+  (i: AkItem) => true
+  ()          => false
+
+# Whether the source line just above `line` was blank.
+fun sourceBlank(line: Int, p: Place): Bool => contains(p.plBlanks, line - 1)
+
+fun itemCount<T>(xs: List<T>): Int => fold(xs, 0, (n, x) => n + 1)

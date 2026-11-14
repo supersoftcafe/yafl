@@ -54,6 +54,7 @@ _WEIGHTS = {
     "test_profile": 97,
     "test_linear": 78,
     "test_test_runner": 69,
+    "test_bootstrap_format": 61,   # measured 2026-11-14, alone
     "test_inline_attribute": 58,
     "test_param_body_inference": 51,
     "test_sync_calls": 47,

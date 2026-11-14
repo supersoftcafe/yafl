@@ -1,0 +1,241 @@
+# bootstrap/format/layout.yafl — the formatter's layout engine: a document of
+# text and possible line breaks, rendered to the narrowest layout that fits.
+#
+# The printer (printer.yafl) describes WHAT may break; this decides WHERE. It
+# is Wadler's "prettier printer" with Lindig's strict renderer, plus a fill.
+#
+#   group    every break inside it is taken, or none is: a group is laid out
+#            on one line when all of it (and what follows it up to the next
+#            possible break) fits in the width, else every one of its own
+#            breaks becomes a newline. Groups nest; each decides for itself.
+#   fill     a list whose separating breaks are decided ONE AT A TIME: each
+#            item goes on the current line when it fits, else on the next.
+#            The separator ends the line (`,`) or, leading, starts the next
+#            (`|` between a match arm's literals).
+#   hard     a newline that is always taken. A group holding one can never be
+#            flat — which is how a comment forces the list around it to wrap.
+#   nest     the indent every newline inside it returns to.
+#   broken   nothing, but the group holding it can never be flat: what
+#            follows a trailing comment must start a new line.
+#   anchor   a source position the comment pass (comments.yafl) consumes;
+#            nothing by the time the document is rendered.
+#
+# A newline writes no indent itself: the indent is written with the next
+# text, so a blank line never carries trailing spaces.
+namespace Bootstrap::Format
+
+import System
+import System::Containers
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
+
+enum Doc
+  enum DText(dText: String)
+  # A possible break: `dFlat` when its group is laid out flat, else a newline.
+  enum DLine(dFlat: String)
+  enum DHard()
+  enum DNest(dIndent: Int, dBody: Doc)
+  enum DGroup(dGroupBody: Doc)
+  enum DCat(dParts: List<Doc>)
+  # Items separated by `dSep` and a break placed per item: the separator
+  # before the break, or after it when `dLead`. `dStarted` is the renderer's
+  # own: false until the first item is out.
+  enum DFill(dItems: List<Doc>, dSep: String, dLead: Bool, dStarted: Bool)
+  enum DBroken()
+  enum DAnchor(aLine: Int, aCol: Int, aKind: AnchorKind)
+
+# What a position marker stands in front of, which decides the blank lines
+# kept there.
+enum AnchorKind
+  # A top-level declaration: exactly `akBlanks` blank lines before it (two
+  # before a banner comment).
+  enum AkTop(akBlanks: Int)
+  # A statement in a block: one blank line when the source had one.
+  enum AkStmt()
+  # A class or enum member: one blank line exactly when `akBlank`.
+  enum AkMember(akBlank: Bool)
+  # Before the break ahead of a pipeline stage, ternary link, match arm or
+  # `=>` body: none.
+  enum AkExpr()
+  # At the start of a list item, with no break after it: none, and each
+  # comment placed there is a line of its own, ended.
+  enum AkItem()
+
+fun text(s: String): Doc => DText(s)
+
+# A break that is a space when flat.
+fun line(): Doc => DLine(" ")
+
+# A break that is nothing when flat.
+fun softLine(): Doc => DLine("")
+
+fun hardLine(): Doc => DHard()
+
+fun nest(indent: Int, d: Doc): Doc => DNest(indent, d)
+
+fun group(d: Doc): Doc => DGroup(d)
+
+fun cat(ds: List<Doc>): Doc => DCat(ds)
+
+# Two to seven documents, one after another.
+fun cat(a: Doc, b: Doc): Doc => DCat(List(a, b))
+fun cat(a: Doc, b: Doc, c: Doc): Doc => DCat(List(a, b, c))
+fun cat(a: Doc, b: Doc, c: Doc, d: Doc): Doc => DCat(append(List(a, b, c), d))
+fun cat(a: Doc, b: Doc, c: Doc, d: Doc, e: Doc): Doc => DCat(append(append(List(a, b, c), d), e))
+fun cat(a: Doc, b: Doc, c: Doc, d: Doc, e: Doc, f: Doc): Doc => DCat(concat(List(a, b, c), List(d, e, f)))
+fun cat(a: Doc, b: Doc, c: Doc, d: Doc, e: Doc, f: Doc, g: Doc): Doc =>
+  DCat(append(concat(List(a, b, c), List(d, e, f)), g))
+
+fun fill(items: List<Doc>, sep: String): Doc => DFill(items, sep, false, false)
+
+# A fill whose separator starts the line an item wraps to.
+fun leadingFill(items: List<Doc>, sep: String): Doc => DFill(items, sep, true, false)
+
+# A fill like `f` with `items` instead.
+fun refill(f: DFill, items: List<Doc>): Doc => DFill(items, f.dSep, f.dLead, false)
+
+# What a fill writes between two items: on one line, or around a newline —
+# the separator before it (`,`) or after it (`| `).
+fun joinedItem(f: DFill, item: Doc): Doc => f.dLead ? cat(text(" " + f.dSep + " "), item) : cat(text(f.dSep + " "), item)
+
+fun sepBeforeBreak(f: DFill): Doc => f.dLead ? nothing() : text(f.dSep)
+
+fun sepAfterBreak(f: DFill): Doc => f.dLead ? text(f.dSep + " ") : nothing()
+
+fun nothing(): Doc => DCat(List())
+
+# Whether `d` holds a newline that is always taken: it can never print on one
+# line.
+fun hasHard(d: Doc): Bool => match(d)
+  (h: DHard)  => true
+  (n: DNest)  => hasHard(n.dBody)
+  (g: DGroup) => hasHard(g.dGroupBody)
+  (k: DCat)   => any(k.dParts, hasHard)
+  (f: DFill)  => any(f.dItems, hasHard)
+  ()          => false
+
+# The document laid out in `width` columns.
+fun render(d: Doc, width: Int): String =>
+  join(renderLoop(width, Render(Cursor(0, true), List(Cmd(0, false, d)), List())), "")
+
+
+# ── rendering ────────────────────────────────────────────────────────────────
+
+# One unit of pending work: a document, the indent its newlines return to,
+# and whether its group was laid out flat.
+class [final] Cmd(cIndent: Int, cFlat: Bool, cDoc: Doc)
+
+# Where the output stands: its column, and whether nothing has been written on
+# this line yet (the indent is still owed).
+class [final] Cursor(curCol: Int, curFresh: Bool)
+
+# The renderer between steps: the cursor, the work still to do (next first),
+# and the text written so far.
+class [final] Render(rCur: Cursor, rCmds: List<Cmd>, rOut: List<String>)
+
+fun [tail] renderLoop(width: Int, r: Render): List<String> => match(head(r.rCmds))
+  (c: Cmd) => renderLoop(width, renderStep(width, r.rCur, c, dropOne(r.rCmds), r.rOut))
+  ()       => r.rOut
+
+# One piece of work done.
+fun renderStep(width: Int, cur: Cursor, c: Cmd, rest: List<Cmd>, out: List<String>): Render => match(c.cDoc)
+  (t: DText)   => emitText(cur, t.dText, rest, out)
+  (l: DLine)   => c.cFlat ? emitText(cur, l.dFlat, rest, out) : Render(Cursor(c.cIndent, true), rest, append(out, "\n"))
+  (h: DHard)   => Render(Cursor(c.cIndent, true), rest, append(out, "\n"))
+  (n: DNest)   => Render(cur, prepend(Cmd(c.cIndent + n.dIndent, c.cFlat, n.dBody), rest), out)
+  (k: DCat)    => Render(cur, pushAll(k.dParts, c.cIndent, c.cFlat, rest), out)
+  (g: DGroup)  => Render(cur, prepend(Cmd(c.cIndent, c.cFlat || fitsFlat(width, cur, g.dGroupBody, c.cIndent, rest),
+                                          g.dGroupBody), rest), out)
+  (f: DFill)   => renderFill(width, cur, c, f, rest, out)
+  (b: DBroken) => Render(cur, rest, out)
+  (a: DAnchor) => Render(cur, rest, out)
+
+# Text, preceded by the indent when it is the first on its line. Empty text
+# writes nothing, indent included.
+fun emitText(cur: Cursor, s: String, rest: List<Cmd>, out: List<String>): Render
+  if s == ""
+    ret Render(cur, rest, out)
+  let lead = cur.curFresh ? spaces(cur.curCol) : ""
+  ret Render(Cursor(cur.curCol + length(s), false), rest, append(out, lead + s))
+
+# A fill's first item goes where the cursor is; each later one goes on the
+# same line when its separator and it fit there, else on the next line.
+fun renderFill(width: Int, cur: Cursor, c: Cmd, f: DFill, rest: List<Cmd>, out: List<String>): Render =>
+  match(head(f.dItems))
+    (item: Doc) => renderFillItem(width, cur, c, f, item, rest, out)
+    ()          => Render(cur, rest, out)
+
+fun renderFillItem(width: Int, cur: Cursor, c: Cmd, f: DFill, item: Doc, rest: List<Cmd>,
+                   out: List<String>): Render
+  let later = prepend(Cmd(c.cIndent, c.cFlat, DFill(dropOne(f.dItems), f.dSep, f.dLead, true)), rest)
+  if !f.dStarted
+    ret Render(cur, prepend(Cmd(c.cIndent, c.cFlat, DGroup(item)), later), out)
+  let sameLine = joinedItem(f, item)
+  # What must share the line with it: the next separator when that ends the
+  # line, or, after the last item, whatever follows the list up to its next
+  # break.
+  let after = isEmpty(dropOne(f.dItems)) ? rest : List(Cmd(c.cIndent, false, sepBeforeBreak(f)))
+  ret c.cFlat || fitsFlat(width, cur, sameLine, c.cIndent, after)
+    ? Render(cur, prepend(Cmd(c.cIndent, true, sameLine), later), out)
+    : Render(cur, pushAll(append(List(sepBeforeBreak(f), hardLine(), sepAfterBreak(f)), DGroup(item)), c.cIndent,
+                          false, later), out)
+
+fun pushAll(ds: List<Doc>, indent: Int, flat: Bool, rest: List<Cmd>): List<Cmd> =>
+  concat(map(ds, (d) => Cmd(indent, flat, d)), rest)
+
+
+# ── fitting ──────────────────────────────────────────────────────────────────
+
+# Whether `d`, laid out flat, and then what follows it up to its first
+# possible break, fits in what is left of the line. What follows is measured
+# broken (Prettier's rule): a later group decides for itself, so its first
+# break may end the line.
+fun fitsFlat(width: Int, cur: Cursor, d: Doc, indent: Int, rest: List<Cmd>): Bool =>
+  fitsLoop(Fit(width - cur.curCol, prepend(Cmd(indent, true, d), rest)))
+
+# The measurement between steps: the room left, and the work still to measure.
+class [final] Fit(fRoom: Int, fCmds: List<Cmd>)
+
+fun [tail] fitsLoop(f: Fit): Bool
+  if f.fRoom < 0
+    ret false
+  ret match(head(f.fCmds))
+    (c: Cmd) => match(fitStep(f.fRoom, c, dropOne(f.fCmds)))
+      (next: Fit)    => fitsLoop(next)
+      (verdict: Bool) => verdict
+    ()       => true
+
+# One piece measured: what is left to measure, or the answer.
+fun fitStep(room: Int, c: Cmd, rest: List<Cmd>): Fit|Bool => match(c.cDoc)
+  (t: DText)   => Fit(room - length(t.dText), rest)
+  # A break the layout takes ends the line: what came before it fitted.
+  (l: DLine)   => c.cFlat ? Fit(room - length(l.dFlat), rest) : true
+  (h: DHard)   => !c.cFlat
+  (n: DNest)   => Fit(room, prepend(Cmd(c.cIndent + n.dIndent, c.cFlat, n.dBody), rest))
+  (k: DCat)    => Fit(room, pushAll(k.dParts, c.cIndent, c.cFlat, rest))
+  (g: DGroup)  => Fit(room, prepend(Cmd(c.cIndent, c.cFlat, g.dGroupBody), rest))
+  # Broken, a fill may end the line after its first item — or, once started,
+  # straight after the item before (and its separator, when that ends lines).
+  (f: DFill)   => c.cFlat
+      ? Fit(room, prepend(Cmd(c.cIndent, true, flatFill(f)), rest))
+      : f.dStarted
+      ? (isEmpty(f.dItems) ? Fit(room, rest) : Fit(room - (f.dLead ? 0 : length(f.dSep)), List()))
+      : Fit(room, match(head(f.dItems))
+          (item: Doc) => List(Cmd(c.cIndent, false, item), Cmd(c.cIndent, false, hardLine()))
+          ()          => rest)
+  (b: DBroken) => c.cFlat ? false : Fit(room, rest)
+  (a: DAnchor) => Fit(room, rest)
+
+# A fill laid out on one line.
+fun flatFill(f: DFill): Doc
+  let first = !f.dStarted
+  ret cat(fold(f.dItems, (parts = List<Doc>(), joined = !first), (acc, item) =>
+      (parts = append(acc.parts, acc.joined ? joinedItem(f, item) : item), joined = true)).parts)
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+fun spaces(n: Int): String => n <= 0 ? "" : spacesLoop(n, "")
+
+fun [tail] spacesLoop(n: Int, acc: String): String => n <= 0 ? acc : spacesLoop(n - 1, acc + " ")

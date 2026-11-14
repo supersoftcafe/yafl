@@ -56,12 +56,13 @@ fun icIsLiteral(x) => match(x)
   (b: PeBool)  => true
   (o: PExpr)   => false
 
-# The literal, re-stamped with the reference's line.
+# The literal, re-stamped with the reference's line — everything else kept,
+# as Python's dataclasses.replace(line_ref=…) keeps it.
 fun icRestamp(v, line) => match(v)
-  (i: PeInt)   => PeInt(i.value, i.precision, line)
-  (f: PeFloat) => PeFloat(f.floatText, f.fPrecision, line)
-  (s2: PeStr)  => PeStr(s2.strValue, line)
-  (b: PeBool)  => PeBool(b.boolValue, line)
+  (i: PeInt)   => with i(peiLine = line)
+  (f: PeFloat) => with f(pefLine = line)
+  (s2: PeStr)  => with s2(pesLine = line)
+  (b: PeBool)  => with b(pebLine = line)
   (o: PExpr)   => v
 
 # Top level: const declarations are DROPPED — they live only as inlined uses.

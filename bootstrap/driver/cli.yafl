@@ -44,7 +44,7 @@ fun cliMain(argv: List<String>): Int
       ? exitWithOut(help(line, terminalWidth(), wantColour(false)), 0)
       : match(resolveEnabledWarnings(s.csWarns))
         (werr: WrErr) => usageError(line, Invalid(werr.wrMessage))
-        (ok: WrOk)    => cliCompile(s, ok.wrEnabled)
+        (ok: WrOk)    => s.csFormat || s.csFormatCheck ? cliFormat(s) : cliCompile(s, ok.wrEnabled)
 
 fun [impure] usageError(line: Args<CliScan>, e: ArgError): Int
   ret exitWithErr(message(line, e, terminalWidth(), wantColour(true)), 2)
@@ -58,16 +58,16 @@ fun progName() => baseName(argv0())
 class [final] CliScan(csHelp: Bool, csOpt: Int, csAsm: String|None, csC: String|None,
                       csOut: String|None, csLibs: List<String>,
                       csProfile: Bool, csWarns: List<String>, csTest: Bool,
-                      csThreshold: Int, csFiles: List<String>)
+                      csThreshold: Int, csFiles: List<String>, csFormat: Bool, csFormatCheck: Bool)
 
 fun freshScan() => CliScan(false, 0, None, None, None, List(), false, List(), false,
-                           Bootstrap::Lower::Ir::inlCutoffComplexity(), List())
+                           Bootstrap::Lower::Ir::inlCutoffComplexity(), List(), false, false)
 
 # The arguments, in the order main.py declares them (argparse adds -h first).
 # In short lists joined together, not one pipeline of appends: a pipeline this
 # long costs either compiler exponentially more per stage (#119).
 fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like tool",
-  concat(concat(outputArguments(), buildArguments()), inputArguments()))
+  concat(concat(concat(outputArguments(), buildArguments()), formatArguments()), inputArguments()))
 
 fun outputArguments(): List<Arg<CliScan>> => concat(
   List<Arg<CliScan>>(
@@ -97,6 +97,14 @@ fun buildArguments(): List<Arg<CliScan>> => concat(
     Value(List("--inline-threshold"), "OPS",
           "Inline functions of fewer than OPS ops at -O2 and above (default 5)",
           setThreshold)))
+
+# The formatter (#91, driver/format.yafl): instead of compiling, put the
+# files in the language's one layout, or report the ones that are not.
+fun formatArguments(): List<Arg<CliScan>> => List<Arg<CliScan>>(
+  Flag(List("--format"), "Rewrite the files in the language's one layout instead of compiling",
+       (s: CliScan) => with s(csFormat = true)),
+  Flag(List("--format-check"), "List the files not in that layout, and fail if there are any",
+       (s: CliScan) => with s(csFormatCheck = true)))
 
 fun inputArguments(): List<Arg<CliScan>> => List<Arg<CliScan>>(
   Positional("files", AtLeastOne(), "Input .yafl file(s), or a project directory",
@@ -275,14 +283,18 @@ fun fileInput(acc: List<LibSource>|String, p: String): List<LibSource>|String =>
 
 # ── output ───────────────────────────────────────────────────────────────────
 
-# Print, then finish with `code` — every exit path of the command line.
+# Write `text` to stdout, then finish with `code` — every exit path of the
+# command line. Through the IO handle, never `print`: print is a tracing aid
+# that steps outside the effect rules, not program output.
 fun [impure] exitWithOut(text: String, code: Int): Int
-  print(text)
+  printOut(text)
   ret code
 
 fun [impure] exitWithErr(text: String, code: Int): Int
   printErr(text)
   ret code
+
+fun [impure] printOut(text: String): None => closeQuietly(writeAll(stdout(), text).io)
 
 fun [impure] printErr(text: String): None => closeQuietly(writeAll(stderr(), text).io)
 

@@ -4,9 +4,11 @@ import dataclasses
 import re
 from functools import reduce
 
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 import pyast.expression as e
+import pyast.resolver as g
+import pyast.rewrite as rw
 import pyast.match as m
 import pyast.statement as s
 import pyast.typespec as t
@@ -48,7 +50,7 @@ def __integer() -> p.Parser[e.Expression]:
                 value, size, err = _decode_int(head.value)
                 if err is not None:
                     return p.Result.error(err, tail, head.line_ref)
-                return p.Result.ok(e.IntegerExpression(head.line_ref, value, size), tail, head.line_ref)
+                return p.Result.ok(e.IntegerExpression(head.line_ref, value, size, head.value), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
@@ -83,7 +85,8 @@ def __float() -> p.Parser[e.Expression]:
                 if not _FLOAT_LEXEME.fullmatch(num_str):
                     return p.Result.error("invalid float literal", tail, head.line_ref)
                 return p.Result.ok(
-                    e.FloatExpression(head.line_ref, float(num_str.replace("_", "")), precision),
+                    e.FloatExpression(head.line_ref, float(num_str.replace("_", "")), precision,
+                                      head.value),
                     tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
@@ -170,7 +173,7 @@ def __string() -> p.Parser[e.Expression]:
                 decoded, err = _unescape_string(value[1:len(value)-1])
                 if err is not None:
                     return p.Result.error(err, tail, head.line_ref)
-                return p.Result.ok(e.StringExpression(head.line_ref, decoded), tail, head.line_ref)
+                return p.Result.ok(e.StringExpression(head.line_ref, decoded, head.value), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
@@ -196,7 +199,7 @@ def __char() -> p.Parser[e.Expression]:
                 # direction): a char literal IS an Int32 literal — 'a' is
                 # 97i32, exactly. No literal converts to anything: 37 is Int,
                 # 37i32 is Int32, 12.5 is Float64. Type what you mean.
-                return p.Result.ok(e.IntegerExpression(head.line_ref, ord(decoded), 32),
+                return p.Result.ok(e.IntegerExpression(head.line_ref, ord(decoded), 32, head.value),
                                    tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
@@ -329,22 +332,34 @@ def __placeholder_entries(function: e.Expression) -> list[int]:
 
 
 # The name of a pipeline's intermediate: `$pipe@<position hash>`. A name no
-# source can spell, so nothing in the piped value can resolve to it; the
-# statement-start rule below recognises a pipeline's block by it.
+# source can spell, so nothing in the piped value can resolve to it.
 _PIPE_TEMP_PREFIX = "$pipe@"
 
 
 def __pipe_stage(last_result: e.Expression, function: e.Expression,
              pipeline_errors: list[p.Error]) -> e.Expression:
+    # The parser keeps the pipeline as written; parse() lowers it (lower_pipe).
+    # A stage has ONE hole for the piped value to fill.
+    if len(__placeholder_entries(function)) > 1:
+        pipeline_errors.append(p.Error(function.line_ref,
+            "at most one `_` placeholder per pipeline stage"))
+        return last_result
+    return e.PipeExpression(function.line_ref, last_result, function)
+
+
+def __pipe_binds_subject(function: e.Expression) -> bool:
+    """Whether a stage lowers to blocks that bind the piped value (a lambda,
+    or a call with one `_` placeholder) rather than to a call of the stage."""
+    return isinstance(function, e.LambdaExpression) or len(__placeholder_entries(function)) == 1
+
+
+def lower_pipe(last_result: e.Expression, function: e.Expression) -> e.Expression:
+    """`last_result |> function`, lowered."""
     # `l |> f(a, _)`: the `_` placeholder receives the piped value — a
     # point-free stage. Same capture-avoiding shape as the lambda case
     # below: bind `l` to a fresh path-derived name OUTSIDE the call, then
     # substitute that name for the placeholder.
     holes = __placeholder_entries(function)
-    if len(holes) > 1:
-        pipeline_errors.append(p.Error(function.line_ref,
-            "at most one `_` placeholder per pipeline stage"))
-        return last_result
     if len(holes) == 1:
         lr = function.line_ref
         tmp = f"{_PIPE_TEMP_PREFIX}{lr.hash6()}"
@@ -388,7 +403,7 @@ def __pipe_stage(last_result: e.Expression, function: e.Expression,
 
 def __invert_operand(expr: e.Expression) -> e.Expression | None:
     """If `expr` is a unary `~x`, return `x`, else None. Used to fold
-    `a & ~b` into the single-pass `andNot(a, b)` at parse time."""
+    `a & ~b` into the single-pass `` `&~`(a, b) `` at parse time."""
     if (isinstance(expr, e.CallExpression)
             and isinstance(expr.function, e.NamedExpression)
             and expr.function.name == "`~`"
@@ -402,24 +417,24 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
     def accumulate(left: e.Expression, entry: tuple[str, e.Expression]):
         op, right = entry
         line = tokens[0].line_ref
-        # `a & ~b` is andNot — recognise it here so it lowers to the runtime's
+        # `a & ~b` is `&~` — recognise it here so it lowers to the runtime's
         # single-pass andnot rather than a separate complement then and. AND is
-        # commutative, so `~a & b` is andNot(b, a) too; only fold when exactly
+        # commutative, so `~a & b` is `&~`(b, a) too; only fold when exactly
         # one side is `~` (both-inverted is NOR, handled by the right side).
         if op == "&":
             def _andnot(x: e.Expression, y: e.Expression) -> e.Expression:
                 return e.CallExpression(line,
-                    e.NamedExpression(line, "andNot"),
+                    e.NamedExpression(line, "`&~`"),
                     e.TupleExpression(line, [
                             e.TupleEntryExpression(None, x),
                             e.TupleEntryExpression(None, y)
                         ]))
             inner_right = __invert_operand(right)
             if inner_right is not None:
-                return _andnot(left, inner_right)          # a & ~b -> andNot(a, b)
+                return _andnot(left, inner_right)          # a & ~b -> `&~`(a, b)
             inner_left = __invert_operand(left)
             if inner_left is not None:
-                return _andnot(right, inner_left)          # ~a & b -> andNot(b, a)
+                return _andnot(right, inner_left)          # ~a & b -> `&~`(b, a)
         return e.CallExpression(line,
             e.NamedExpression(line, f"`{op}`"),
             e.TupleExpression(line, [
@@ -456,7 +471,7 @@ def __to_bind_or_pipeline(result: p.Result[tuple[e.Expression, list[tuple[str, e
 def __to_negate(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
     expr = result.value
     if isinstance(expr, (e.IntegerExpression, e.FloatExpression)):
-        folded = dataclasses.replace(expr, value=-expr.value)
+        folded = dataclasses.replace(expr, value=-expr.value, spelling="-" + expr.spelling)
         return p.Result(folded, result.tokens, result.line_ref, result.errors)
     line = result.line_ref
     negated = e.CallExpression(line,
@@ -587,8 +602,9 @@ def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]]
 
 def __expression_start(x: e.Expression) -> p.LineRef:
     """Where an expression starts, read from its shape: a call at its callee, a
-    dot at its base, a ternary at its condition, a pipeline's block at the piped
-    value, a match at its subject; anything else at its own position. The port
+    dot at its base, a ternary at its condition, a match at its subject, a
+    pipeline where its lowering starts — at the piped value when the stage binds
+    it, else at the stage it calls; anything else at its own position. The port
     has the same rule (startLine, bootstrap/parse/builders.yafl)."""
     while True:
         match x:
@@ -600,11 +616,8 @@ def __expression_start(x: e.Expression) -> p.LineRef:
                 x = x.condition
             case m.MatchExpression():
                 x = x.subject
-            case e.BlockExpression() if (x.statements
-                                         and isinstance(x.statements[0], s.LetStatement)
-                                         and x.statements[0].name.startswith(_PIPE_TEMP_PREFIX)
-                                         and x.statements[0].default_value is not None):
-                x = x.statements[0].default_value
+            case e.PipeExpression():
+                x = x.subject if __pipe_binds_subject(x.stage) else x.stage
             case _:
                 return x.line_ref
 
@@ -1312,7 +1325,17 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
             case _: # Discard and report an error
                 errors.append(p.Error(statement.line_ref, f"unexpected statement {type(statement)}"))
 
-    return p.Result(new_statements, result.tokens, result.line_ref, errors)
+    return p.Result(__lower_pipes(new_statements), result.tokens, result.line_ref, errors)
+
+
+def __lower_pipes(statements: list[s.Statement]) -> list[s.Statement]:
+    """Every PipeExpression lowered (lower_pipe), innermost first — the order
+    the parser itself once lowered them in."""
+    def replace(_resolver: g.Resolver, x: Any) -> Any:
+        return lower_pipe(x.subject, x.stage) if isinstance(x, e.PipeExpression) else rw.UNCHANGED
+    root = g.ResolverRoot([])
+    return [lowered if (lowered := st.search_and_replace(root, replace)) is not rw.UNCHANGED else st
+            for st in statements]
 
 
 

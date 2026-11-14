@@ -43,15 +43,15 @@ fun [inline] `!`(value: System::Bool): System::Bool
 
 
 # Bitwise operations, implemented only by the integer types (not Float/String).
-# `~` is unary complement; `&`/`|`/`^` are the binary operators. `andNot(a, b)`
-# is `a & ~b` — the parser folds that spelling onto this single-pass method, so
-# it needs no operator symbol of its own.
+# `~` is unary complement; `&`/`|`/`^` are the binary operators. `` `&~` `` is
+# `a & ~b` — the parser folds that spelling onto this single-pass method, which
+# is named like every other operator though no single token spells it.
 interface Bitwise<TVal>
   fun `~`(value: TVal): TVal
   fun `&`(left: TVal, right: TVal): TVal
   fun `|`(left: TVal, right: TVal): TVal
   fun `^`(left: TVal, right: TVal): TVal
-  fun andNot(left: TVal, right: TVal): TVal
+  fun `&~`(left: TVal, right: TVal): TVal
 
 # Bit shifts, implemented only by the integer types. `<<` is multiply-by-2^n;
 # `>>` is an arithmetic (sign-preserving, floor) shift. The shift count is the

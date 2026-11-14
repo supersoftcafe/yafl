@@ -1,10 +1,10 @@
-# Bitwise operators `~`, `&`, `|`, `^` and the `andNot` method.
+# Bitwise operators `~`, `&`, `|`, `^` and the `` `&~` `` operator method.
 #
 # Provided by the `Bitwise<T>` interface (stdlib/traits.yafl) with an instance
 # per integer type (stdlib/integer.yafl); `&`/`^`/`|` parse at a precedence
 # between arithmetic and comparison (so `a & b == c` is `(a & b) == c`), and `~`
-# is unary complement. `andNot(a, b)` is `a & ~b` — the parser folds that
-# spelling onto the single-pass method. Float and String have no Bitwise instance.
+# is unary complement. `` `&~`(a, b) `` is `a & ~b` — the parser folds that
+# spelling onto the single-pass method, named like every other operator. Float and String have no Bitwise instance.
 #
 # One namespace per test: each program as written, its `main` renamed
 # `program`, checked by the [test] beside it.
@@ -21,7 +21,7 @@ fun program(): System::Int
   ret ((a & b) == 8 ? 1 : 0)
     + ((a | b) == 14 ? 2 : 0)
     + ((a ^ b) == 6 ? 4 : 0)
-    + (andNot(a, b) == 4 ? 8 : 0)
+    + (`&~`(a, b) == 4 ? 8 : 0)
     + ((neg & 5) == 5 ? 16 : 0)
     + ((neg ^ 5) == -6 ? 32 : 0)
 
@@ -39,7 +39,7 @@ fun program(): System::Int
   ret ((big & big) == big ? 1 : 0)
     + ((big | 0) == big ? 2 : 0)
     + ((big ^ big) == 0 ? 4 : 0)
-    + (andNot(big, big) == 0 ? 8 : 0)
+    + (`&~`(big, big) == 0 ? 8 : 0)
 
 fun [test("bigint heap value")] check(): None|TestFailure
     ret assertEqInt(program(), 15, "program()")
@@ -56,7 +56,7 @@ fun program(): System::Int
   ret ((x & y) == 0x00F0i32 ? 1 : 0)
     + ((x | y) == 0xFFF0i32 ? 2 : 0)
     + ((x ^ y) == 0xFF00i32 ? 4 : 0)
-    + (andNot(x, y) == 0xF000i32 ? 8 : 0)
+    + (`&~`(x, y) == 0xF000i32 ? 8 : 0)
 
 fun [test("int32")] check(): None|TestFailure
     ret assertEqInt(program(), 15, "program()")
@@ -73,7 +73,7 @@ fun program(): System::Int
   let neg: System::Int = -1
   ret (~a == -13 ? 1 : 0)
     + (~neg == 0 ? 2 : 0)
-    + ((a & ~b) == andNot(a, b) ? 4 : 0)
+    + ((a & ~b) == `&~`(a, b) ? 4 : 0)
     + ((a & ~b) == 4 ? 8 : 0)
     + ((~a & b) == 2 ? 16 : 0)
 

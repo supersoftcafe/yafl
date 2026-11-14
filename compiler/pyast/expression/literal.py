@@ -29,6 +29,9 @@ _FLOAT_WIDTHS = {"float32": 32, "float64": 64}
 @dataclass
 class StringExpression(Expression):
     value: str
+    # The literal as written, quotes and escapes included, for the formatter.
+    # Never part of identity: "\x41" and "A" are the same literal.
+    spelling: str = field(default="", compare=False)
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return t.BuiltinSpec(self.line_ref, "str")
@@ -56,6 +59,9 @@ class _NumericLiteral(Expression):
     non-zero precision and is authoritative — never re-narrowed."""
     value: int | float
     precision: int = 0
+    # The literal as written (radix, underscores, suffix, a char's quotes),
+    # for the formatter. Never part of identity: 'A' is 65i32 (RULED 07-04).
+    spelling: str = field(default="", compare=False)
 
     # Subclass contract.
     _KIND: ClassVar[str]               # builtin family: "int" / "float"

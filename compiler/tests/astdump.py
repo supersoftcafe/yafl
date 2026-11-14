@@ -77,11 +77,11 @@ def dump(statements) -> str:
             line(depth, "None", None, "")
             return
         if isinstance(x, e.IntegerExpression):
-            line(depth, "Int", x, f"{x.value}:{x.precision}")
+            line(depth, "Int", x, f"{x.value}:{x.precision}:{x.spelling!r}")
         elif isinstance(x, e.FloatExpression):
-            line(depth, "Float", x, f"{x.value}:{x.precision}")
+            line(depth, "Float", x, f"{x.value}:{x.precision}:{x.spelling!r}")
         elif isinstance(x, e.StringExpression):
-            line(depth, "Str", x, repr(x.value))
+            line(depth, "Str", x, f"{x.value!r}:{x.spelling!r}")
         elif isinstance(x, e.RegexExpression):
             line(depth, "Regex", x, repr(x.pattern))
         elif isinstance(x, e.NamedExpression):

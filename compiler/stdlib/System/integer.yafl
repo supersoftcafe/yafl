@@ -369,7 +369,7 @@ instance [ambient] Show<System::Int64>
 
 
 # Bitwise instances — one per integer type. `&`/`|`/`^` are operators;
-# `andNot(a, b)` is `a & ~b`. Float and String implement no Bitwise instance.
+# `` `&~` `` is `a & ~b`. Float and String implement no Bitwise instance.
 
 instance [ambient] Bitwise<System::Int>
   fun `~`(value: System::Int): System::Int
@@ -380,7 +380,7 @@ instance [ambient] Bitwise<System::Int>
     ret __builtin_op__<bigint>("integer_or", left, right)
   fun `^`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_xor", left, right)
-  fun andNot(left: System::Int, right: System::Int): System::Int
+  fun `&~`(left: System::Int, right: System::Int): System::Int
     ret __builtin_op__<bigint>("integer_andnot", left, right)
 
 instance [ambient] Bitwise<System::Int8>
@@ -392,7 +392,7 @@ instance [ambient] Bitwise<System::Int8>
     ret __builtin_op__<int8>("int8_or", left, right)
   fun `^`(left: System::Int8, right: System::Int8): System::Int8
     ret __builtin_op__<int8>("int8_xor", left, right)
-  fun andNot(left: System::Int8, right: System::Int8): System::Int8
+  fun `&~`(left: System::Int8, right: System::Int8): System::Int8
     ret __builtin_op__<int8>("int8_andnot", left, right)
 
 instance [ambient] Bitwise<System::Int16>
@@ -404,7 +404,7 @@ instance [ambient] Bitwise<System::Int16>
     ret __builtin_op__<int16>("int16_or", left, right)
   fun `^`(left: System::Int16, right: System::Int16): System::Int16
     ret __builtin_op__<int16>("int16_xor", left, right)
-  fun andNot(left: System::Int16, right: System::Int16): System::Int16
+  fun `&~`(left: System::Int16, right: System::Int16): System::Int16
     ret __builtin_op__<int16>("int16_andnot", left, right)
 
 instance [ambient] Bitwise<System::Int32>
@@ -416,7 +416,7 @@ instance [ambient] Bitwise<System::Int32>
     ret __builtin_op__<int32>("int32_or", left, right)
   fun `^`(left: System::Int32, right: System::Int32): System::Int32
     ret __builtin_op__<int32>("int32_xor", left, right)
-  fun andNot(left: System::Int32, right: System::Int32): System::Int32
+  fun `&~`(left: System::Int32, right: System::Int32): System::Int32
     ret __builtin_op__<int32>("int32_andnot", left, right)
 
 instance [ambient] Bitwise<System::Int64>
@@ -428,7 +428,7 @@ instance [ambient] Bitwise<System::Int64>
     ret __builtin_op__<int64>("int64_or", left, right)
   fun `^`(left: System::Int64, right: System::Int64): System::Int64
     ret __builtin_op__<int64>("int64_xor", left, right)
-  fun andNot(left: System::Int64, right: System::Int64): System::Int64
+  fun `&~`(left: System::Int64, right: System::Int64): System::Int64
     ret __builtin_op__<int64>("int64_andnot", left, right)
 
 

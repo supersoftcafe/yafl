@@ -54,10 +54,10 @@ enum PExpr
   # Grouping is representation-neutral: only leaves carry data and tags, so
   # the emitted C is unchanged.
   enum PeLiteral
-    enum PeInt(value: Int, precision: Int, peiLine: PLine)
-    enum PeFloat(floatText: String, fPrecision: Int, pefLine: PLine)
+    enum PeInt(value: Int, precision: Int, peiLine: PLine, peiSpelling: String = "")
+    enum PeFloat(floatText: String, fPrecision: Int, pefLine: PLine, pefSpelling: String = "")
     enum PeBool(boolValue: Bool, pebLine: PLine)
-    enum PeStr(strValue: String, pesLine: PLine)
+    enum PeStr(strValue: String, pesLine: PLine, pesSpelling: String = "")
     enum PeRegex(pattern: String, perLine: PLine)
     enum PeNothing(pengLine: PLine)
   enum PeName(refName: String, refTypeParams: List<Spec>, penLine: PLine,
@@ -112,6 +112,11 @@ enum PExpr
   # so the obvious sugar yields `T|None` where `T` is wanted. Codegen has no
   # case for it — a survivor there is a compile bug, not a shape to emit.
   enum PeCoalesce(qqSubject: PExpr, qqFallback: PExpr, peqqLine: PLine)
+  # `pipeSubject |> pipeStage`, as the parser read it. Exists only between the
+  # parser and fixupProgram, which lowers every one (builders.lowerPipe), so
+  # nothing after parseProgram sees it; the formatter reads it before then.
+  # pepiLine is the stage's position, the one every lowering of it carries.
+  enum PePipe(pipeSubject: PExpr, pipeStage: PExpr, pepiLine: PLine)
   # ── PeLowered: introduced BY a lowering pass, absent from parsed trees ─────
   # Grouped for the same reason as PeLiteral: the passes that run before these
   # exist, or that have no business in them, pass them through untouched, and

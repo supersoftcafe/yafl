@@ -1,0 +1,704 @@
+# bootstrap/format/printer.yafl — the parse, printed back as source in the one
+# layout the language has (issue #91).
+#
+# It prints the tree the parser built, before fixupProgram (parseSource), and
+# picks the SHORTEST spelling of every node — so what the parser desugared
+# comes back as the sugar:
+#
+#   a ? b : false            a && b          a ? true : b      a || b
+#   match(x) (_: T) => true; () => false     x is T  (and x !is T)
+#   `[]`(a, i)               a[i]            `&~`(a, b)        a & ~b
+#   `+`(a, b) …              a + b …         `-`(a) `!`(a)     -a  !a
+#   a block of only `ret e`  => e            f(g(h(x)))        x |> h |> g |> f
+#
+# Parentheses appear only where precedence needs them. Literals print as they
+# were spelled. Names lose the `@hash` the parser gave each declaration.
+#
+# The printer leaves a position marker (`anchor`) just before the break ahead
+# of each statement, list item and pipeline stage; comments.yafl puts the
+# source's comments and blank lines back at those markers, and layout.yafl
+# lays the result out.
+namespace Bootstrap::Format
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
+
+# How wide the language's lines are.
+fun lineWidth(): Int => 120
+
+# The source, formatted; or why it could not be read.
+fun formatSource(src: String, filename: String): String|PFail => match(parseSource(src, filename))
+  (f: PFail)        => f
+  (p: ParsedSource) => printFile(p.srcStmts)
+      |> (d) => placeComments(d, p.srcComments, blankLinesOf(src))
+      |> (d) => render(d, lineWidth()) + "\n"
+
+
+# ── the file ─────────────────────────────────────────────────────────────────
+# Top level: a declaration is separated from the last by one blank line,
+# except that declarations printed on one line pack together, as members do;
+# a run of imports by none, and the `System` imports from the rest by one. The
+# imports of a run are sorted, `System` first, and duplicates dropped.
+
+fun printFile(ss: List<PStmt>): Doc =>
+  cat(fold(topRuns(ss), (parts = List<Doc>(), first = true, packs = false), (acc, run) =>
+      printRun(run, acc.first, acc.packs) |> (r) => (parts = concat(acc.parts, r.parts), first = false, packs = r.packs))
+    .parts)
+
+# The top level cut into runs: each import run, and each other statement alone.
+fun topRuns(ss: List<PStmt>): List<List<PStmt>> => fold(ss, List<List<PStmt>>(), addToRun)
+
+fun addToRun(runs: List<List<PStmt>>, st: PStmt): List<List<PStmt>>
+  let lastRun = head(takeLastOne(runs)) ?? List<PStmt>()
+  ret isImport(st) && all(lastRun, isImport) && !isEmpty(lastRun)
+    ? append(dropLastOne(runs), append(lastRun, st))
+    : append(runs, List(st))
+
+fun isImport(st: PStmt): Bool => match(st)
+  (i: PsImport) => true
+  ()            => false
+
+# A run's documents, and whether it is a declaration that packs against a
+# one-line declaration after it.
+fun printRun(run: List<PStmt>, first: Bool, prevPacks: Bool): (parts: List<Doc>, packs: Bool) => match(head(run))
+  (i: PsImport) => (parts = printImports(run, first), packs = false)
+  (st: PStmt)   => printTop(st, first, prevPacks)
+  ()            => (parts = List(), packs = false)
+
+fun printTop(st: PStmt, first: Bool, prevPacks: Bool): (parts: List<Doc>, packs: Bool)
+  let d = printStmt(st)
+  let packs = !isNamespace(st) && !hasHard(d)
+  let blanks = first || (prevPacks && packs) ? 0 : 1
+  ret (parts = List(anchorTop(stmtLine(st), blanks), first ? nothing() : hardLine(), d), packs = packs)
+
+fun isNamespace(st: PStmt): Bool => match(st)
+  (n: PsNamespace) => true
+  ()               => false
+
+fun printImports(run: List<PStmt>, first: Bool): List<Doc>
+  let paths = sort(dedupe(map(run, importPath)))
+  let sys = filter(paths, isSystemPath)
+  let rest = filter(paths, (p) => !isSystemPath(p))
+  let firstLine = stmtLine(head(run) ?? PsImport("", PLine("", 0, 0)))
+  ret concat(importGroup(sys, firstLine, first, first ? 0 : 1),
+             importGroup(rest, firstLine, first && isEmpty(sys), first && isEmpty(sys) ? 0 : 1))
+
+fun importGroup(paths: List<String>, lr: PLine, first: Bool, blanks: Int): List<Doc> =>
+  fold(paths, (parts = List<Doc>(), lead = first, blanks = blanks), (acc, p) =>
+      (parts = concat(acc.parts, List(anchorTop(lr, acc.blanks), acc.lead ? nothing() : hardLine(),
+                                      text("import " + p))),
+       lead = false, blanks = 0)).parts
+
+fun importPath(st: PStmt): String => match(st)
+  (i: PsImport) => i.importPath
+  ()            => ""
+
+fun isSystemPath(p: String): Bool => p == "System" || startsWith(p, "System::")
+
+fun dedupe(ps: List<String>): List<String> => fold(ps, List<String>(), (acc, p) => contains(acc, p) ? acc : append(acc, p))
+
+
+# ── statements ───────────────────────────────────────────────────────────────
+
+fun printStmt(st: PStmt): Doc => match(st)
+  (f: PsFun)            => printFun(f)
+  (l: PsLet)            => printLet(l)
+  (d: PsDestructure)    => printDestructureLet(d)
+  (c: PsClass)          => printClass(c)
+  (e: PsEnum)           => printEnum(e, "enum")
+  (ta: PsTypealias)     => cat(text("typealias "), attrsDoc(ta.taAttrs), text(bareOf(ta.taName)),
+                                    gensDoc(ta.taGens), text(": "), specDoc(ta.taType))
+  (ti: PsTraitInstance) => printInstance(ti)
+  (i: PsImport)         => text("import " + i.importPath)
+  (n: PsNamespace)      => text("namespace " + n.nsPath)
+  (r: PsRet)            => cat(text("ret "), exprDoc(r.retValue))
+  (a: PsAction)         => exprDoc(a.action)
+  (fa: PsFieldAssign)   => cat(exprDoc(fa.faTarget), text(" := "), exprDoc(fa.faValue))
+  (i2: PsIf)            => cat(text("if "), exprDoc(i2.ifCond), blockDoc(i2.ifTrue))
+  (ei: PsElseIf)        => cat(text("else if "), exprDoc(ei.eiCond), blockDoc(ei.eiStmts))
+  (el: PsElse)          => cat(text("else"), blockDoc(el.elStmts))
+
+# An indented block of statements under the line that owns it. A statement
+# keeps one blank line before it when the source had one there.
+fun blockDoc(ss: List<PStmt>): Doc =>
+  nest(2, cat(flatMap(ss, (st) => List(anchorStmt(stmtLine(st)), hardLine(), printStmt(st)))))
+
+# `fun [attrs] name<gens>(params): Ret where W` and its body: `=> e` when the
+# body is one value, else an indented block ending in `ret`.
+fun printFun(f: PsFun): Doc
+  let sig = cat(text("fun "), attrsDoc(f.fAttrs), text(bareOf(f.fName)), gensDoc(f.fGens),
+                paramsRetDoc(f.fParams, f.fRet))
+  let signature = whereDoc(sig, f.fWheres)
+  ret match(f.fBody)
+    (bk: PeBlock) => cat(signature, bodyDoc(bk))
+    (other)       => signature
+
+fun retDoc(r: Spec|None): Doc => match(r)
+  (sp: Spec) => cat(text(": "), specDoc(sp))
+  ()         => nothing()
+
+# A wrapped signature puts its `where` on a line of its own.
+fun whereDoc(sig: Doc, ws: List<Spec>): Doc => isEmpty(ws)
+  ? group(sig)
+  : group(cat(sig, nest(4, cat(line(), text("where "), specDoc(unionOf(ws))))))
+
+fun unionOf(ws: List<Spec>): Spec => match(head(ws))
+  (only: Spec) => isEmpty(dropOne(ws)) ? only : SCombination(ws, PLine("", 0, 0))
+  ()           => SCombination(ws, PLine("", 0, 0))
+
+fun bodyDoc(bk: PeBlock): Doc => isEmpty(bk.blockStmts)
+  ? arrowDoc(bk.blockValue)
+  : blockDoc(withRet(bk))
+
+# The block's statements and, unless it ends in nothing, its value as `ret`.
+fun withRet(bk: PeBlock): List<PStmt> => match(bk.blockValue)
+  (n: PeNothing) => bk.blockStmts
+  (v: PExpr)     => append(bk.blockStmts, PsRet(v, startLine(v)))
+
+fun printLet(l: PsLet): Doc =>
+  whereDoc(cat(text("let "), targetDoc(PsLet(l.lName, l.lAttrs, l.lGens, l.lType, None, l.lArrayLen,
+                                                     List(), l.pslLine)),
+                    defaultDoc(l.lDefault)),
+           l.lWheres)
+
+fun printDestructureLet(d: PsDestructure): Doc =>
+  group(cat(text("let "), targetDoc(PsDestructure(d.dName, d.dAttrs, d.dType, d.dTargets, None, d.psdLine)),
+                 defaultDoc(d.dDefault)))
+
+fun defaultDoc(x: PExpr|None): Doc => match(x)
+  (v: PExpr) => cat(text(" = "), exprDoc(v))
+  ()         => nothing()
+
+# `class [attrs] Name<gens>(params): Parents where W` and its members;
+# `interface` has no params.
+fun printClass(c: PsClass): Doc
+  let kw = c.cIsInterface ? "interface " : "class "
+  let params = c.cIsInterface || isEmpty(targetsOf(c.cParams)) ? nothing() : paramsDoc(c.cParams)
+  let parents = isEmpty(c.cImplements)
+    ? nothing()
+    : cat(text(": "), specDoc(unionOf(c.cImplements)))
+  let sig = cat(text(kw), attrsDoc(c.cAttrs), text(bareOf(c.cName)), gensDoc(c.cGens), params, parents)
+  ret cat(whereDoc(sig, c.cWheres), membersDoc(c.cMembers))
+
+fun printEnum(e: PsEnum, kw: String): Doc
+  let params = e.eHasParams ? paramsDoc(e.eParams) : nothing()
+  let sig = group(cat(text(kw + " "), attrsDoc(e.eAttrs), text(bareOf(e.eName)), gensDoc(e.eGens), params))
+  ret cat(sig, membersDoc(e.eVariants))
+
+fun printInstance(ti: PsTraitInstance): Doc
+  let sig = cat(text("instance "), attrsDoc(ti.tiAttrs), gensDoc(ti.tiGens),
+                      isEmpty(ti.tiGens) ? nothing() : text(" "), specDoc(ti.tiPattern))
+  ret cat(whereDoc(sig, ti.tiWheres), membersDoc(ti.tiMembers))
+
+# Members: one-line members pack together; a member printed on more than one
+# line (a block body, match arms, members of its own) has a blank line on each
+# side.
+fun membersDoc(ms: List<PStmt>): Doc =>
+  nest(2, cat(fold(ms, (parts = List<Doc>(), prevBlock = false, first = true), (acc, m) =>
+      memberDoc(m) |> (d) =>
+          (parts = concat(acc.parts, List(anchorMember(stmtLine(m), !acc.first && (acc.prevBlock || hasHard(d))),
+                                          hardLine(), d)),
+           prevBlock = hasHard(d), first = false)).parts))
+
+fun memberDoc(m: PStmt): Doc => match(m)
+  (e: PsEnum) => printEnum(e, "enum")
+  (l: PsLet)  => targetDoc(l)
+  (o: PStmt)  => printStmt(o)
+
+
+# ── targets, parameters, attributes, generics ────────────────────────────────
+
+fun targetsOf(st: PStmt): List<PStmt> => match(st)
+  (d: PsDestructure) => d.dTargets
+  ()                 => List()
+
+fun paramsDoc(st: PStmt): Doc => paramsThen(st, nothing())
+
+# Parameters and the return type after them. The return type is inside the
+# parameters' group, so the parameters wrap before it does.
+fun paramsRetDoc(st: PStmt, r: Spec|None): Doc => paramsThen(st, retDoc(r))
+
+fun paramsThen(st: PStmt, after: Doc): Doc =>
+  map(targetsOf(st), (t) => anchored(stmtLine(t), targetDoc(t))) |> (items) =>
+      bracketed("(", isEmpty(items), fill(items, ","), ")", after)
+
+# One binding: `[attrs] name: Type[len] = default`, or a nested `(a, b): T`.
+fun targetDoc(st: PStmt): Doc => match(st)
+  (l: PsLet) => cat(attrsDoc(l.lAttrs), text(bareOf(l.lName)), gensDoc(l.lGens), letTypeDoc(l),
+                         defaultDoc(l.lDefault))
+  (d: PsDestructure) => cat(attrsDoc(d.dAttrs), paramsDoc(d), retDoc(d.dType), defaultDoc(d.dDefault))
+  (o: PStmt) => printStmt(o)
+
+fun letTypeDoc(l: PsLet): Doc => match(l.lType)
+  (af: SArrayField) => cat(text(": "), specDoc(af.safElem), text("[" + af.safLenField + "]"))
+  (sp: Spec)        => cat(text(": "), specDoc(sp))
+  ()                => nothing()
+
+fun attrsDoc(as2: List<PAttr>): Doc => isEmpty(as2)
+  ? nothing()
+  : cat(text("["), joinDocs(map(as2, attrDoc), ", "), text("] "))
+
+fun attrDoc(a: PAttr): Doc => match(a.attrValue)
+  (t2: PeTuple) => cat(text(a.attrName), argsDoc(t2))
+  (v: PExpr)    => cat(text(a.attrName + " = "), exprDoc(v))
+  ()            => text(a.attrName)
+
+fun gensDoc(gs: List<PGen>): Doc => isEmpty(gs)
+  ? nothing()
+  : cat(text("<"), joinDocs(map(gs, (g) => cat(attrsDoc(g.genAttrs), text(bareOf(g.genName)))), ", "),
+             text(">"))
+
+
+# ── types ────────────────────────────────────────────────────────────────────
+
+fun specDoc(sp: Spec): Doc => match(sp)
+  (b: SBuiltin)      => text("__builtin_type__<" + b.sbName + ">")
+  (n: SNamed)        => cat(text(n.snName), typeArgsDoc(n.snParams))
+  (c: SClass)        => cat(text(bareOf(c.scName)), typeArgsDoc(c.scParams))
+  (g: SGeneric)      => text(bareOf(g.sgName))
+  (cm: SCombination) => unionDoc(cm.scTypes)
+  (t2: STuple)       => tupleTypeDoc(t2)
+  (cl: SCallable)    => cat(specDoc(cl.scParams2), retDoc(cl.scResult))
+  (af: SArrayField)  => specDoc(af.safElem)
+  (e: SEnum)         => text(bareOf(e.seRoot))
+  (ls: SLazyStub)    => text("")
+
+fun typeArgsDoc(ps: List<Spec>): Doc => isEmpty(ps)
+  ? nothing()
+  : cat(text("<"), joinDocs(map(ps, specDoc), ", "), text(">"))
+
+# A callable member before the last would take the rest of the union as its
+# result, so it is grouped.
+fun unionDoc(ts: List<Spec>): Doc =>
+  joinDocs(zipMap(ts, indices(ts), (t, i) => i < itemCount(ts) - 1 && isCallable(t)
+      ? cat(text("("), specDoc(t), text(")"))
+      : specDoc(t)), "|")
+
+fun isCallable(sp: Spec): Bool => match(sp)
+  (cl: SCallable) => true
+  ()              => false
+
+fun tupleTypeDoc(t2: STuple): Doc => listDoc("(", map(t2.stEntries, entryTypeDoc), ")")
+
+fun entryTypeDoc(e: SEntry): Doc
+  let ty = match(e.seType)
+    (sp: Spec) => cat(text(e.seName == "" ? ":" : ": "), specDoc(sp))
+    ()         => nothing()
+  ret cat(text(bareOf(e.seName)), ty, defaultDoc(e.seDefault))
+
+
+# ── expressions ──────────────────────────────────────────────────────────────
+# Precedence, loosest first; an operand looser than its slot is bracketed.
+
+fun pTernary(): Int => 0
+fun pOr(): Int => 1
+fun pAnd(): Int => 2
+fun pCoalesce(): Int => 3
+fun pBind(): Int => 4
+fun pIs(): Int => 5
+fun pCompare(): Int => 6
+fun pBitOr(): Int => 7
+fun pBitXor(): Int => 8
+fun pBitAnd(): Int => 9
+fun pShift(): Int => 10
+fun pAdd(): Int => 11
+fun pMul(): Int => 12
+fun pUnary(): Int => 13
+fun pPostfix(): Int => 14
+
+fun exprDoc(x: PExpr): Doc => shapeDoc(shapeOf(x))
+
+# An operand: bracketed when looser than `min`, or when it ends in a lambda
+# whose body would swallow what follows it.
+fun operandDoc(x: PExpr, min: Int, followed: Bool): Doc
+  let s = shapeOf(x)
+  ret shapePrec(s) < min || (followed && endsOpen(s))
+    ? cat(text("("), shapeDoc(s), text(")"))
+    : shapeDoc(s)
+
+# What a node prints as, once its sugar is recovered.
+enum Shape
+  enum ShBinary(bOp: String, bLeft: PExpr, bRight: PExpr, bPrec: Int)
+  enum ShUnary(uOp: String, uOperand: PExpr)
+  enum ShIndex(iBase: PExpr, iIndex: PExpr)
+  enum ShTernary(tCond: PExpr, tThen: PExpr, tElse: PExpr)
+  enum ShIs(isSubject: PExpr, isType: Spec, isNeg: Bool)
+  enum ShChain(chHead: PExpr, chStages: List<Stage>)
+  enum ShOther(oExpr: PExpr)
+
+# One pipeline stage: its operator (`|>` or `?>`) and what it applies.
+class [final] Stage(stOp: String, stFn: PExpr)
+
+fun shapeOf(x: PExpr): Shape => match(x)
+  (t3: PeTernary) => ternaryShape(t3)
+  (c: PeCall)     => callShape(c)
+  (m: PeMatch)    => isShape(m) ?? ShOther(x)
+  (pp: PePipe)    => chainShape(x)
+  (qq: PeCoalesce) => ShBinary("??", qq.qqSubject, qq.qqFallback, pCoalesce())
+  (other)         => ShOther(x)
+
+fun ternaryShape(t3: PeTernary): Shape => isBoolLit(t3.trueResult, true)
+  ? ShBinary("||", t3.condition, t3.falseResult, pOr())
+  : isBoolLit(t3.falseResult, false)
+  ? ShBinary("&&", t3.condition, t3.trueResult, pAnd())
+  : ShTernary(t3.condition, t3.trueResult, t3.falseResult)
+
+# Whether `x` is the literal `v`: the parser's own (from `&&`, `||`, `is`), or
+# the name as the source wrote it.
+fun isBoolLit(x: PExpr, v: Bool): Bool => match(x)
+  (b: PeBool) => b.boolValue == v
+  (n: PeName) => isEmpty(n.refTypeParams) && n.refName == (v ? "true" : "false")
+  ()          => false
+
+# `x is T` is the two-arm match the parser built: the typed arm, then the else.
+fun isShape(m: PeMatch): Shape|None
+  if !isEmpty(m.matchExtra) || itemCount(m.arms) != 2
+    ret None
+  ret match(head(m.arms), head(dropOne(m.arms)))
+    (a: PArm, b: PArm) => match(a.armType)
+      (ty: Spec) if a.armName == "" && b.armName == "" && b.armType is None
+          && isEmpty(a.armLiterals) && isEmpty(b.armLiterals) && a.armGuard is None && b.armGuard is None
+          && isEmpty(a.armExtra) && isEmpty(b.armExtra) && oppositeBools(a.armBody, b.armBody)
+        => ShIs(m.subject, ty, isBoolLit(a.armBody, false))
+      () => None
+    () => None
+
+fun oppositeBools(x: PExpr, y: PExpr): Bool =>
+  (isBoolLit(x, true) && isBoolLit(y, false)) || (isBoolLit(x, false) && isBoolLit(y, true))
+
+fun callShape(c: PeCall): Shape
+  let args = positionalArgs(c.parameter)
+  ret match(c.function)
+    (n: PeName) if isEmpty(n.refTypeParams) => operatorShape(n.refName, args) ?? chainOrCall(c)
+    ()          => chainOrCall(c)
+
+# An operator-named call with its operator's arity, as the operator.
+fun operatorShape(name: String, args: List<PExpr>): Shape|None
+  let op = operatorOf(name)
+  if op == ""
+    ret None
+  let first = head(args) ?? PeNothing(PLine("", 0, 0))
+  if itemCount(args) == 1
+    ret isUnaryOp(op) ? ShUnary(op, first) : None
+  ret itemCount(args) == 2 ? twoArgShape(op, first, head(dropOne(args)) ?? first) : None
+
+fun twoArgShape(op: String, a: PExpr, b: PExpr): Shape|None
+  if op == "[]"
+    ret ShIndex(a, b)
+  if op == "&~"
+    ret ShBinary("&", a, PeCall(PeName("`~`", List(), exprLine(b)), oneEntryTuple(b, exprLine(b)), exprLine(b)),
+                 pBitAnd())
+  if op == "?>"
+    ret None
+  let p = binaryPrec(op)
+  ret p < 0 ? None : ShBinary(op, a, b, p)
+
+# A backticked operator name's operator, or "".
+fun operatorOf(name: String): String
+  if length(name) < 3 || !startsWith(name, "`") || !endsWith(name, "`")
+    ret ""
+  let op = slice(name, 1, length(name) - 1)
+  ret binaryPrec(op) >= 0 || isUnaryOp(op) || op == "[]" || op == "&~" || op == "?>" ? op : ""
+
+fun isUnaryOp(op: String): Bool => op == "-" || op == "!" || op == "~"
+
+fun binaryPrec(op: String): Int => match(op)
+  ("*" | "/" | "%")                          => pMul()
+  ("+" | "-")                                => pAdd()
+  ("<<" | ">>")                              => pShift()
+  ("&")                                      => pBitAnd()
+  ("^")                                      => pBitXor()
+  ("|")                                      => pBitOr()
+  ("<" | "==" | ">" | "!=" | "<=" | ">=")    => pCompare()
+  ()                                         => -1
+
+# The positional entries of an argument tuple, or nothing when any entry is
+# named or spread (those print as a call).
+fun positionalArgs(x: PExpr): List<PExpr> => match(x)
+  (t2: PeTuple) => all(t2.exprs, (e) => e.tupName == "" && !e.tupSpread) ? map(t2.exprs, (e) => e.tupValue) : List()
+  ()            => List()
+
+
+# ── pipelines ────────────────────────────────────────────────────────────────
+# A written pipeline prints as one; so does a chain of three or more nested
+# single-argument calls (USER RULING #91), from the innermost argument out:
+# f(g(h(x))) is x |> h |> g |> f.
+
+fun chainShape(x: PExpr): Shape
+  let c = chainOf(x)
+  ret ShChain(c.first, c.stages)
+
+# The chain a node starts: its head, and the stages applied to it in order.
+fun chainOf(x: PExpr): (first: PExpr, stages: List<Stage>) => match(x)
+  (pp: PePipe) => chainOf(pp.pipeSubject)
+      |> (c) => (first = c.first, stages = append(c.stages, Stage("|>", pp.pipeStage)))
+  (c2: PeCall) => match(bindCall(c2))
+      (b: (l: PExpr, r: PExpr)) => chainOf(b.l)
+          |> (c) => (first = c.first, stages = append(c.stages, Stage("?>", b.r)))
+      () => callDepth(x) >= 3 ? nestedChain(x) : (first = x, stages = List())
+  ()           => (first = x, stages = List())
+
+fun bindCall(c: PeCall): (l: PExpr, r: PExpr)|None => match(c.function)
+  (n: PeName) if n.refName == "`?>`" => match(positionalArgs(c.parameter))
+    (l2: List<PExpr>) if itemCount(l2) == 2 => (l = head(l2) ?? c, r = head(dropOne(l2)) ?? c)
+    () => None
+  () => None
+
+# How many single-argument plain calls nest from here, innermost argument out.
+fun callDepth(x: PExpr): Int => match(singleArgCall(x))
+  (c: (fn: PExpr, arg: PExpr)) => 1 + callDepth(c.arg)
+  ()                           => 0
+
+# `f(arg)`, when f is a plain function (not an operator) and arg is one
+# positional value that is not itself a tuple — a piped tuple spreads into
+# the arguments, so `(a, b) |> h` is not `h((a, b))`.
+fun singleArgCall(x: PExpr): (fn: PExpr, arg: PExpr)|None => match(x)
+  (c: PeCall) => match(c.function, positionalArgs(c.parameter))
+    (n: PeName, args: List<PExpr>) if operatorOf(n.refName) == "" && itemCount(args) == 1 && !isTupleExpr(head(args)) =>
+        (fn = c.function, arg = head(args) ?? x)
+    (d: PeDot, args: List<PExpr>) if itemCount(args) == 1 && !isTupleExpr(head(args)) =>
+        (fn = c.function, arg = head(args) ?? x)
+    () => None
+  ()          => None
+
+fun isTupleExpr(x: PExpr|None): Bool => match(x)
+  (t2: PeTuple) => true
+  ()            => false
+
+fun nestedChain(x: PExpr): (first: PExpr, stages: List<Stage>) => match(singleArgCall(x))
+  (c: (fn: PExpr, arg: PExpr)) => nestedChain(c.arg)
+      |> (inner) => (first = inner.first, stages = append(inner.stages, Stage("|>", c.fn)))
+  ()                           => (first = x, stages = List())
+
+fun chainOrCall(c: PeCall): Shape
+  let ch = chainOf(c)
+  ret isEmpty(ch.stages) ? ShOther(c) : ShChain(ch.first, ch.stages)
+
+# Once a chain wraps, every stage is on its own line, four in.
+fun chainDoc(h: PExpr, stages: List<Stage>): Doc => group(cat(operandDoc(h, pBind(), true), nest(4, cat(stageDocs(stages)))))
+
+fun stageDocs(stages: List<Stage>): List<Doc> => match(head(stages))
+  (s: Stage) => isEmpty(dropOne(stages))
+      ? lastStageDocs(s)
+      : prepend(stageDoc(s, operandDoc(s.stFn, pIs(), true)), stageDocs(dropOne(stages)))
+  ()         => List()
+
+# The last stage. A lambda whose body is itself a chain carries that chain on
+# at the same depth: `x |> (y) => f(y) |> g` is one pipeline as written,
+# though the parser nests the second stage inside the lambda.
+fun lastStageDocs(s: Stage): List<Doc> => match(s.stFn)
+  (lm: PeLambda) => match(shapeOf(lm.lamBody))
+    (c: ShChain) => prepend(stageDoc(s, cat(paramsRetDoc(lm.lamParams, lm.lamRet), text(" => "),
+                                            operandDoc(c.chHead, pBind(), true))), stageDocs(c.chStages))
+    ()           => List(stageDoc(s, operandDoc(s.stFn, pIs(), false)))
+  ()             => List(stageDoc(s, operandDoc(s.stFn, pIs(), false)))
+
+fun stageDoc(s: Stage, fn: Doc): Doc => cat(anchorBreak(startLine(s.stFn)), line(), text(s.stOp + " "), fn)
+
+
+# ── shapes to documents ──────────────────────────────────────────────────────
+
+fun shapePrec(s: Shape): Int => match(s)
+  (b: ShBinary)  => b.bPrec
+  (u: ShUnary)   => pUnary()
+  (i: ShIndex)   => pPostfix()
+  (t: ShTernary) => pTernary()
+  (i2: ShIs)     => pIs()
+  (c: ShChain)   => pBind()
+  (o: ShOther)   => otherPrec(o.oExpr)
+
+fun otherPrec(x: PExpr): Int => match(x)
+  # A lambda starts like a term; only its end is open (endsOpen).
+  (lm: PeLambda)  => pPostfix()
+  (qq: PeCoalesce) => pCoalesce()
+  (w: PeWith)     => pUnary()
+  (i: PeInt)      => i.value < 0 ? pUnary() : pPostfix()
+  (f: PeFloat)    => startsWith(f.floatText, "-") ? pUnary() : pPostfix()
+  ()              => pPostfix()
+
+# Whether the printed node ends in a lambda, whose body would run on into
+# anything printed after it.
+fun endsOpen(s: Shape): Bool => match(s)
+  (b: ShBinary)  => endsOpen(shapeOf(b.bRight))
+  (u: ShUnary)   => endsOpen(shapeOf(u.uOperand))
+  (t: ShTernary) => endsOpen(shapeOf(t.tElse))
+  (c: ShChain)   => match(head(takeLastOne(c.chStages)))
+    (st: Stage) => endsOpen(shapeOf(st.stFn))
+    ()          => false
+  (o: ShOther)   => match(o.oExpr)
+    (lm: PeLambda)   => true
+    (qq: PeCoalesce) => endsOpen(shapeOf(qq.qqFallback))
+    ()               => false
+  ()             => false
+
+fun shapeDoc(s: Shape): Doc => match(s)
+  (b: ShBinary)  => binaryDoc(b, true)
+  (u: ShUnary)   => cat(text(u.uOp), operandDoc(u.uOperand, pPostfix(), false))
+  (i: ShIndex)   => cat(operandDoc(i.iBase, pPostfix(), true), text("["), exprDoc(i.iIndex), text("]"))
+  (t: ShTernary) => ternaryDoc(t, true)
+  (i2: ShIs)     => cat(operandDoc(i2.isSubject, pCompare(), true), text(i2.isNeg ? " !is " : " is "),
+                             specDoc(i2.isType))
+  (c: ShChain)   => chainDoc(c.chHead, c.chStages)
+  (o: ShOther)   => otherDoc(o.oExpr)
+
+# A run of operators of one precedence, left to right: once it wraps, each
+# operator leads a line of its own. `ownNest`: as for ternaryDoc.
+fun binaryDoc(b: ShBinary, ownNest: Bool): Doc
+  let run = binaryRun(b)
+  let n = itemCount(run.links)
+  let rest = cat(zipMap(run.links, indices(run.links), (lk, i) =>
+      cat(anchorBreak(startLine(lk.lkOperand)), line(), text(lk.lkOp + " "),
+          operandDoc(lk.lkOperand, b.bPrec + 1, i < n - 1))))
+  ret group(cat(operandDoc(run.first, b.bPrec, true), ownNest ? nest(4, rest) : rest))
+
+# One operator and the operand to its right.
+class [final] Link(lkOp: String, lkOperand: PExpr)
+
+# The leftmost operand of a run, and each operator after it with its operand.
+fun binaryRun(b: ShBinary): (first: PExpr, links: List<Link>) => match(shapeOf(b.bLeft))
+  (l: ShBinary) if l.bPrec == b.bPrec => binaryRun(l)
+      |> (r) => (first = r.first, links = append(r.links, Link(b.bOp, b.bRight)))
+  ()                                  => (first = b.bLeft, links = List(Link(b.bOp, b.bRight)))
+
+# A ternary chain: each condition and its result on one line, `:` leading
+# each line after the first. `ownNest`: indent the `:` lines four; false when
+# the chain already starts a line of its own (an `=>` body).
+fun ternaryDoc(t: ShTernary, ownNest: Bool): Doc
+  let lines = ternaryLines(t)
+  let rest = cat(map(lines.rest, (l) => cat(anchorBreak(startLine(l)), line(), text(": "), ternaryArm(l))))
+  ret group(cat(ternaryArm(lines.first), ownNest ? nest(4, rest) : rest))
+
+# The chain's first `cond ? result`, then each later `: cond ? result` (or the
+# final `: value`), as expressions to print with ternaryArm.
+fun ternaryLines(t: ShTernary): (first: PExpr, rest: List<PExpr>)
+  let first = PeTernary(t.tCond, t.tThen, PeNothing(PLine("", 0, 0)), PLine("", 0, 0))
+  ret (first = first, rest = elseLinks(t.tElse))
+
+fun elseLinks(x: PExpr): List<PExpr> => match(shapeOf(x))
+  (t: ShTernary) => prepend(PeTernary(t.tCond, t.tThen, PeNothing(PLine("", 0, 0)), PLine("", 0, 0)), elseLinks(t.tElse))
+  ()             => List(x)
+
+# `cond ? result` for a link (a ternary whose else is the placeholder), or
+# the final value.
+fun ternaryArm(x: PExpr): Doc => match(x)
+  (t3: PeTernary) => match(t3.falseResult)
+    # A ternary in the `?` branch is bracketed though the grammar does not need
+    # it: `a ? (b ? c : d) : e` reads, `a ? b ? c : d : e` does not.
+    (n: PeNothing) => cat(operandDoc(t3.condition, pOr(), true), text(" ? "),
+                          operandDoc(t3.trueResult, pOr(), true))
+    ()             => exprDoc(x)
+  ()              => operandDoc(x, pTernary(), false)
+
+fun otherDoc(x: PExpr): Doc => match(x)
+  (i: PeInt)        => text(i.peiSpelling == "" ? String(i.value) + intSuffix(i.precision) : i.peiSpelling)
+  (f: PeFloat)      => text(f.pefSpelling == "" ? f.floatText : f.pefSpelling)
+  (b: PeBool)       => text(b.boolValue ? "true" : "false")
+  (s2: PeStr)       => text(s2.pesSpelling == "" ? quoted(s2.strValue) : s2.pesSpelling)
+  (r: PeRegex)      => text("re\"" + r.pattern + "\"")
+  (ng: PeNothing)   => nothing()
+  (n: PeName)       => cat(text(n.refName), typeArgsDoc(n.refTypeParams))
+  (d: PeDot)        => cat(operandDoc(d.base, pPostfix(), true), text("." + d.member))
+  (c: PeCall)       => cat(operandDoc(c.function, pPostfix(), true), argsDoc(c.parameter))
+  (tu: PeTuple)     => argsDoc(x)
+  (lm: PeLambda)    => cat(paramsRetDoc(lm.lamParams, lm.lamRet), arrowDoc(lm.lamBody))
+  (bk: PeBlock)     => bodyDoc(bk)
+  (m: PeMatch)      => matchDoc(m)
+  (bo: PeBuiltinOp) => cat(text("__builtin_op__<" + builtinTypeText(bo.opType) + ">"),
+                              argsDoc(prependArg(bo.opName, bo.opParams)))
+  (ps: PePinSet)    => cat(text("__builtin_pin_set__"), listDoc("(", List(exprDoc(ps.psSubject),
+                              exprDoc(ps.psTarget), exprDoc(ps.psValue)), ")"))
+  (w: PeWith)       => cat(text("with "), operandDoc(w.withSubject, pPostfix(), true), argsDoc(w.withRepls))
+  (qq: PeCoalesce)  => group(cat(operandDoc(qq.qqSubject, pCoalesce(), true), text(" ??"), line(),
+                                     operandDoc(qq.qqFallback, pBind(), false)))
+  (pp: PePipe)      => chainDoc(pp.pipeSubject, List(Stage("|>", pp.pipeStage)))
+  (t3: PeTernary)   => shapeDoc(shapeOf(x))
+  (ne: PeNewEnum)   => text(ne.leafName)
+  (nw: PeNew)       => argsDoc(nw.newParam)
+  (ar: PeArrayRead) => cat(exprDoc(ar.arrObj), text("["), exprDoc(ar.arrIndex), text("]"))
+  (cv: PeConvert)   => exprDoc(cv.convInner)
+  (lp: PeLoop)      => exprDoc(lp.loopBody)
+  (rc: PeRecur)     => nothing()
+  (lz: PeLazy)      => nothing()
+
+fun intSuffix(precision: Int): String => precision == 0 ? "" : "i" + String(precision)
+
+fun builtinTypeText(sp: Spec): String => match(sp)
+  (b: SBuiltin) => b.sbName
+  ()            => render(specDoc(sp), lineWidth())
+
+fun prependArg(name: PExpr, args: PExpr): PExpr => match(args)
+  (t2: PeTuple) => PeTuple(prepend(PTupEnt("", false, name), t2.exprs), t2.petLine)
+  ()            => PeTuple(List(PTupEnt("", false, name), PTupEnt("", false, args)), exprLine(args))
+
+# `=> body`. A ternary chain starts a line of its own four in; anything else
+# stays on the arrow's line and wraps inside itself, or moves down when it
+# cannot (a plain operator expression).
+# A comment above the body moves the body to a line of its own.
+fun arrowDoc(body: PExpr): Doc => match(shapeOf(body))
+  (t: ShTernary) => group(cat(text(" =>"), nest(4, cat(anchorBreak(startLine(body)), line(), ternaryDoc(t, false)))))
+  (b: ShBinary)  => group(cat(text(" =>"), nest(4, cat(anchorBreak(startLine(body)), line(), binaryDoc(b, false)))))
+  ()             => cat(group(cat(text(" =>"), nest(4, cat(anchorBreak(startLine(body)), line())))), exprDoc(body))
+
+# `match(subjects)` and its arms, each on a line of its own.
+fun matchDoc(m: PeMatch): Doc =>
+  cat(text("match"), listDoc("(", map(prepend(m.subject, m.matchExtra), exprDoc), ")"),
+           nest(2, cat(flatMap(m.arms, (a) => List(anchorBreak(a.parmLine), hardLine(), armDoc(a))))))
+
+fun armDoc(a: PArm): Doc
+  let guard = match(a.armGuard)
+    (g: PExpr) => cat(text(" if "), exprDoc(g))
+    ()         => nothing()
+  ret cat(armHeadDoc(a), guard, arrowDoc(a.armBody))
+
+fun armHeadDoc(a: PArm): Doc => !isEmpty(a.armLiterals)
+  ? bracketed("(", false, leadingFill(map(a.armLiterals, litDoc), "|"), ")", nothing())
+  : listDoc("(", prepend(binderDoc(a.armName, a.armType), map(a.armExtra, (p) => binderDoc(p.posName, p.posType))), ")")
+
+fun binderDoc(name: String, ty: Spec|None): Doc => match(ty)
+  (sp: Spec) => cat(text(name == "" ? "_" : name), text(": "), specDoc(sp))
+  ()         => text(name == "" ? "" : name)
+
+fun litDoc(l: PLit): Doc => match(l)
+  (e: PlExpr)  => exprDoc(e.litExpr)
+  (r: PlRange) => cat(exprDoc(r.rangeLo), text(" .. "), exprDoc(r.rangeHi))
+
+# A call's or tuple's entries: `name = v`, `*spread`, or a plain value.
+fun argsDoc(x: PExpr): Doc => match(x)
+  (t2: PeTuple) => listDoc("(", map(t2.exprs, entryDoc), ")")
+  ()            => cat(text("("), exprDoc(x), text(")"))
+
+fun entryDoc(e: PTupEnt): Doc
+  let v = exprDoc(e.tupValue)
+  let body = e.tupSpread ? cat(text("*"), v) : e.tupName == "" ? v : cat(text(e.tupName + " = "), v)
+  ret anchored(startLine(e.tupValue), body)
+
+# `open items close`: flat when it fits, else broken after `open` with the
+# items filled four in (USER RULING #91: hanging +4, filled).
+fun listDoc(open: String, items: List<Doc>, close: String): Doc =>
+  bracketed(open, isEmpty(items), fill(items, ","), close, nothing())
+
+# `open body close`, then `after` in the same group: it decides with the list
+# whether the list wraps.
+fun bracketed(open: String, empty: Bool, body: Doc, close: String, after: Doc): Doc => empty
+  ? cat(text(open + close), after)
+  : group(cat(text(open), nest(4, cat(softLine(), body)), text(close), after))
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+fun joinDocs(ds: List<Doc>, sep: String): Doc =>
+  cat(fold(ds, (parts = List<Doc>(), first = true), (acc, d) =>
+      (parts = concat(acc.parts, acc.first ? List(d) : List(text(sep), d)), first = false)).parts)
+
+fun indices<T>(xs: List<T>): List<Int> => fold(xs, List<Int>(), (acc, x) => append(acc, itemCount(acc)))
+
+fun count<T>(xs: List<T>): Int => fold(xs, 0, (n, x) => n + 1)
+
+# A string literal for a value with no recorded spelling.
+fun quoted(s: String): String => "\"" + join(split(join(split(s, "\\"), "\\\\"), "\""), "\\\"") + "\""
