@@ -162,6 +162,62 @@ fun pick(xs: List<Int>): String
   ret kind
 """),
 
+    # A single `c ? a : b` flows: `: b` stays on the line when it fits there, wrapped
+    # condition or not; it leads the next line, four in, when it does not.
+    "ternary_flow": ("""\
+namespace Fmt
+
+import System
+
+fun check(alpha: Bool, beta: Bool, gamma: Bool, delta: Bool): Int
+  ret alphaCondition(alpha, beta) && betaCondition(beta, gamma) && gammaCondition(gamma, delta) && deltaCondition(delta, alpha) ? 0 : 1
+
+fun pick(alpha: Bool): String
+  ret alpha ? "the first of two rather long strings, which takes up most of the line" : "and the second one, just as long"
+""",
+"""\
+namespace Fmt
+
+import System
+
+fun check(alpha: Bool, beta: Bool, gamma: Bool, delta: Bool): Int
+  ret alphaCondition(alpha, beta)
+      && betaCondition(beta, gamma)
+      && gammaCondition(gamma, delta)
+      && deltaCondition(delta, alpha) ? 0 : 1
+
+fun pick(alpha: Bool): String
+  ret alpha ? "the first of two rather long strings, which takes up most of the line"
+      : "and the second one, just as long"
+"""),
+
+    # Parameters flow: they start after `(` and wrap four in, filled; the return type goes
+    # with the last parameter, measured whole.
+    "params_flow": ("""\
+namespace Fmt
+
+import System
+
+fun [tail] scan(io: IO, path: String, lineNo: Int, found: List<String|FileError>): (io: IO, found: List<String|FileError>)
+  let r = readLine(io)
+  ret r
+
+class [final] Tally(units: Int, foreign: Int, nonUnit: Int, duplicate: Bool, seen: Set<String>, firstName: String, lastName: String)
+""",
+"""\
+namespace Fmt
+
+import System
+
+fun [tail] scan(io: IO, path: String, lineNo: Int,
+    found: List<String|FileError>): (io: IO, found: List<String|FileError>)
+  let r = readLine(io)
+  ret r
+
+class [final] Tally(units: Int, foreign: Int, nonUnit: Int, duplicate: Bool, seen: Set<String>, firstName: String,
+    lastName: String)
+"""),
+
     # Pipelines: once wrapped, every `|>` on its own line, four in. A lambda stage whose
     # body is a pipeline carries it on at the same depth.
     "pipeline": ("""\
@@ -339,8 +395,8 @@ fun f(): System::Int
   ret 0
 """),
 
-    # A wrapped signature: parameters four in, filled; the return type after `)`; `where` on
-    # its own line.
+    # A wrapped signature: parameters flow, four in, filled; the return type with the last;
+    # `where` on its own line.
     "signature": ("""\
 namespace Fmt
 
@@ -353,8 +409,8 @@ namespace Fmt
 
 import System
 
-fun streamSomethingAlongTheWay<S, T, E>(
-    source: S, initialValue: T, errorFallback: E, howManyTimes: Int): (stream: S, value: T)
+fun streamSomethingAlongTheWay<S, T, E>(source: S, initialValue: T, errorFallback: E,
+    howManyTimes: Int): (stream: S, value: T)
     where Stream<S, T, E>
   ret (stream = source, value = initialValue)
 """),

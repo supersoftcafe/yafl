@@ -126,6 +126,22 @@ fun sepAfterBreak(f: DFill): Doc => f.dLead ? text(f.dSep + " ") : nothing()
 
 fun nothing(): Doc => DCat(List())
 
+# Whether `d` holds a newline that is always taken: it can never print on one
+# line.
+fun hasHard(d: Doc): Bool => match(d)
+  (h: DHard)    => true
+  (n: DNest)    => hasHard(n.dBody)
+  (g: DGroup)   => hasHard(g.dGroupBody)
+  (k: DCat)     => any(k.dParts, hasHard)
+  (f: DFill)    => any(f.dItems, hasHard)
+  (ch: DChoice) => hasHard(ch.dFirst) && hasHard(ch.dAlt)
+  (ds: DDecls)  => any(ds.dDecls, (x) => hasHard(x.declLead) || hasHard(x.declBody))
+  (t: DText)    => false
+  (l: DLine)    => false
+  (b: DBroken)  => false
+  (a: DAnchor)  => false
+  (s: DStop)    => false
+
 # `first` when it takes at most `maxLines` lines where it starts, else `alt`.
 fun choice(first: Doc, alt: Doc, maxLines: Int): Doc => DChoice(first, alt, maxLines)
 
