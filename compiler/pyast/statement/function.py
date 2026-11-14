@@ -357,7 +357,10 @@ class FunctionStatement(DataStatement):
             bundle = bundle + parameter.to_c_destructure(None).with_prefix(f"p{index}")
         if self.body is not None:
             body_bundle = self.body.generate_to(resolver, self.return_type)
-            ret_bundle = g.OperationBundle((), (cg_o.Return(body_bundle.result_var),))
+            # A body with no result never finishes: a [tail] function whose
+            # every path recurses is a loop with no exit (#97). Nothing returns.
+            ret_bundle = (g.OperationBundle() if body_bundle.result_var is None
+                          else g.OperationBundle((), (cg_o.Return(body_bundle.result_var),)))
             bundle = bundle + (body_bundle + ret_bundle).with_prefix("body")
 
         params: list[tuple[str, cg_t.Type]] = [("this", cg_t.DataPointer())]

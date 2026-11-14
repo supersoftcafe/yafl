@@ -170,3 +170,19 @@ fun program(): System::Int
 
 fun [test("tail self call in pipeline lambda runs constant stack", stdout = "1000000\n1000000\n")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TailLoop::EndlessTailLoop
+
+import System
+import System::Test
+
+# Every path recurses, so the loop never exits and the body has no result: it
+# compiles to a loop with no return (#97), and is never entered here.
+fun [tail] spin(i: Int): Int
+  ret spin(i + 1)
+fun program(): System::Int
+  ret 1 > 2 ? spin(0) : 0
+
+fun [test("a [tail] function whose every path recurses compiles")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
