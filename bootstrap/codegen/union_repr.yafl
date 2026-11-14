@@ -1767,7 +1767,6 @@ fun emitFlatLeaf(param, variantSlots2: List<CgSlotEntry>, slotFields: List<CgFie
 
 fun emitFlatStruct(param, fields: List<CgField>, variantSlots2: List<CgSlotEntry>, slotFields: List<CgField>,
                    offset, slots)
-  # Fold state named (offset, acc) to match reconstructFields — workaround for #88.
   let out = fold(fields, (offset = offset, acc = slots),
                  (st, f) => emitFlatStructStep(st, f, param, variantSlots2, slotFields))
   ret EmitFlatOut(out.acc, out.offset)

@@ -111,7 +111,6 @@ fun dTargetEntry(st) => match(st)
 fun toCDestructureTargets(d: PsDestructure, root, r)
   ret tcdLoop(d.dTargets, root, r, 0, emptyBundle())
 
-# State fields named to match another fold over the same types — workaround for #88.
 fun tcdLoop(ts: List<PStmt>, root, r, i, acc: GBundle)
   ret fold(ts, (acc = acc, i = i),
            (st, t) =>

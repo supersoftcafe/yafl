@@ -158,3 +158,23 @@ fun program(): System::Int
 
 fun [test("unbound call against a union expected type")] check(): None|TestFailure
     ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::GenericInstanceIdentity::TupleArgumentsDifferingOnlyInFieldNames
+
+import System
+import System::Containers
+import System::Test
+
+# The two folds' states differ only in their field names. Names are erased
+# before monomorphisation, so both are one instance, and each caller still
+# reads its own fields (#88).
+fun sumA(xs: List<Int>) => fold(xs, (acc = 0, i = 0), (st, x) => (acc = st.acc + x, i = st.i + 1)).acc
+
+fun sumB(xs: List<Int>) => fold(xs, (b = 0, i = 0), (st, x) => (b = st.b + x * 2, i = st.i + 1)).b
+
+fun program(): System::Int
+  ret sumA(List(1, 2, 3)) + sumB(List(1, 2, 3)) - 18
+
+fun [test("tuple type arguments that differ only in field names")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

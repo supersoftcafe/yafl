@@ -238,7 +238,6 @@ fun [tail] siPropagateFrom(deps: Dict<String, List<String>>, pinned: Set<String>
 
 fun siPushDsts(pinned: Set<String>, work: List<String>, fallen: Set<String>,
                dsts: List<String>): (work: List<String>, fallen: Set<String>) =>
-  # Fold state named (out, seen) to match the dedupe folds — workaround for #88.
   fold(dsts, (out = work, seen = fallen),
        (st, d) =>
          contains(st.seen, d) || contains(pinned, d)
