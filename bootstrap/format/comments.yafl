@@ -17,9 +17,10 @@
 # Comment text is re-indented, never rewrapped.
 #
 # Blank lines are decided here too, at the same anchors (AnchorKind): exact
-# counts at top level (one between declarations, two above a banner and one
-# below it), the source's own (one at most) between statements and between
-# comments, none inside an expression.
+# counts at top level (two above a banner and one below it), the source's own
+# (one at most) between statements and between comments, none inside an
+# expression. Between two declarations of a run the blank line is the run's
+# gap, which the layout decides (layout.yafl `decls`).
 namespace Bootstrap::Format
 
 import System
@@ -44,9 +45,11 @@ fun blankLinesOf(src: String): Set<Int> =>
 
 fun anchorTop(lr: PLine, blanks: Int): Doc => DAnchor(lr.plLine, lr.plCol, AkTop(blanks))
 
-fun anchorStmt(lr: PLine): Doc => DAnchor(lr.plLine, lr.plCol, AkStmt())
+fun anchorStmt(lr: PLine, first: Bool): Doc => DAnchor(lr.plLine, lr.plCol, AkStmt(first))
 
-fun anchorMember(lr: PLine, blank: Bool): Doc => DAnchor(lr.plLine, lr.plCol, AkMember(blank))
+fun anchorTopDecl(lr: PLine): Doc => DAnchor(lr.plLine, lr.plCol, AkTopDecl())
+
+fun anchorMember(lr: PLine, gap: Bool): Doc => DAnchor(lr.plLine, lr.plCol, AkMember(gap))
 
 # An anchor before a break inside an expression.
 fun anchorBreak(lr: PLine): Doc => DAnchor(lr.plLine, lr.plCol, AkExpr())
@@ -62,17 +65,33 @@ fun anchored(lr: PLine, d: Doc): Doc => cat(DAnchor(lr.plLine, lr.plCol, AkItem(
 class [final] Place(plComments: List<Comment>, plStarted: Bool, plBlanks: Set<Int>)
 
 fun walkDoc(d: Doc, p: Place): (d: Doc, p: Place) => match(d)
-  (t: DText)   => (d = d, p = t.dText == "" ? p : with p(plStarted = true))
-  (n: DNest)   => walkDoc(n.dBody, p) |> (w) => (d = DNest(n.dIndent, w.d), p = w.p)
-  (g: DGroup)  => walkDoc(g.dGroupBody, p) |> (w) => (d = DGroup(w.d), p = w.p)
-  (k: DCat)    => walkDocs(k.dParts, p) |> (w) => (d = DCat(w.ds), p = w.p)
-  (f: DFill)   => walkFill(f, p)
-  (a: DAnchor) => atAnchor(a, p)
-  (o: Doc)     => (d = d, p = p)
+  (t: DText)    => (d = d, p = t.dText == "" ? p : with p(plStarted = true))
+  (n: DNest)    => walkDoc(n.dBody, p) |> (w) => (d = DNest(n.dIndent, w.d), p = w.p)
+  (g: DGroup)   => walkDoc(g.dGroupBody, p) |> (w) => (d = DGroup(w.d), p = w.p)
+  (k: DCat)     => walkDocs(k.dParts, p) |> (w) => (d = DCat(w.ds), p = w.p)
+  (f: DFill)    => walkFill(f, p)
+  (a: DAnchor)  => atAnchor(a, p)
+  (ch: DChoice) => walkChoice(ch, p)
+  (ds: DDecls)  => walkDecls(ds, p)
+  (l: DLine)    => (d = d, p = p)
+  (h: DHard)    => (d = d, p = p)
+  (b: DBroken)  => (d = d, p = p)
+  (s: DStop)    => (d = d, p = p)
 
 fun walkDocs(ds: List<Doc>, p: Place): (ds: List<Doc>, p: Place) =>
   fold(ds, (ds = List<Doc>(), p = p), (acc, d) =>
       walkDoc(d, acc.p) |> (w) => (ds = append(acc.ds, w.d), p = w.p))
+
+# Both layouts hold the same anchors, so each gets the same comments; only one
+# is printed.
+fun walkChoice(ch: DChoice, p: Place): (d: Doc, p: Place) =>
+  walkDoc(ch.dFirst, p) |> (first) => walkDoc(ch.dAlt, p) |> (alt) => (d = DChoice(first.d, alt.d, ch.dMaxLines), p = alt.p)
+
+fun walkDecls(ds: DDecls, p: Place): (d: Doc, p: Place) =>
+  fold(ds.dDecls, (ds = List<Decl>(), p = p), (acc, d) =>
+      walkDoc(d.declLead, acc.p) |> (lead) => walkDoc(d.declBody, lead.p) |> (body) =>
+          (ds = append(acc.ds, Decl(lead.d, body.d)), p = body.p))
+    |> (acc) => (d = DDecls(acc.ds, ds.dPrevOneLine), p = acc.p)
 
 # A list's items. A comment ahead of any item but the first ends the fill
 # there: the separator, the comments, and a new fill from that item on —
@@ -124,7 +143,7 @@ fun atAnchor(a: DAnchor, p: Place): (d: Doc, p: Place)
     (c: Comment) => c.cmLine
     ()           => a.aLine
   let p2 = with p(plComments = drop(p.plComments, itemCount(due)))
-  let lead = p.plStarted ? blankLines(leadBlanks(a.aKind, own, firstLine, p)) : List<Doc>()
+  let lead = p.plStarted ? leadDocs(a.aKind, own, firstLine, p) : List<Doc>()
   let between = isEmpty(own) ? List<Doc>()
     : isItem(a.aKind) ? List(itemCommentsDoc(own, p2))
     : List(commentsDoc(own, p2), afterComments(a, own, p2))
@@ -136,15 +155,18 @@ fun [tail] takeTrailing(cs: List<Comment>, acc: List<Comment>): List<Comment> =>
   (c: Comment) if c.cmTrailing => takeTrailing(dropOne(cs), append(acc, c))
   ()                           => acc
 
-# How many blank lines go before whatever comes first at an anchor.
-fun leadBlanks(k: AnchorKind, due: List<Comment>, firstLine: Int, p: Place): Int => match(k)
-  (t: AkTop)    => match(head(due))
-    (c: Comment) => isBanner(c) && !c.cmTrailing ? 2 : t.akBlanks
-    ()           => t.akBlanks
-  (s: AkStmt)   => sourceBlank(firstLine, p) ? 1 : 0
-  (m: AkMember) => m.akBlank ? 1 : 0
-  (e: AkExpr)   => 0
-  (i: AkItem)   => 0
+# The blank lines before whatever comes first at an anchor.
+fun leadDocs(k: AnchorKind, due: List<Comment>, firstLine: Int, p: Place): List<Doc> => match(k)
+  (t: AkTop)     => blankLines(bannerFirst(due) ? 2 : t.akBlanks)
+  (d: AkTopDecl) => bannerFirst(due) ? blankLines(2) : List(gap())
+  (s: AkStmt)    => blankLines(!s.akFirst && sourceBlank(firstLine, p) ? 1 : 0)
+  (m: AkMember)  => m.akGap ? List(gap()) : List()
+  (e: AkExpr)    => List()
+  (i: AkItem)    => List()
+
+fun bannerFirst(due: List<Comment>): Bool => match(head(due))
+  (c: Comment) => isBanner(c) && !c.cmTrailing
+  ()           => false
 
 fun blankLines(n: Int): List<Doc> => n <= 0 ? List() : prepend(hardLine(), blankLines(n - 1))
 
@@ -188,8 +210,9 @@ fun tailComments(p: Place): Doc => isEmpty(p.plComments)
 fun isBanner(c: Comment): Bool => startsWith(c.cmText, "# ──") || startsWith(c.cmText, "# ══")
 
 fun isTop(k: AnchorKind): Bool => match(k)
-  (t: AkTop) => true
-  ()         => false
+  (t: AkTop)     => true
+  (d: AkTopDecl) => true
+  ()             => false
 
 fun isItem(k: AnchorKind): Bool => match(k)
   (i: AkItem) => true

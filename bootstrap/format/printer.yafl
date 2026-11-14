@@ -9,7 +9,11 @@
 #   match(x) (_: T) => true; () => false     x is T  (and x !is T)
 #   `[]`(a, i)               a[i]            `&~`(a, b)        a & ~b
 #   `+`(a, b) …              a + b …         `-`(a) `!`(a)     -a  !a
-#   a block of only `ret e`  => e            f(g(h(x)))        x |> h |> g |> f
+#   f(g(h(x)))               x |> h |> g |> f
+#
+# A function body that is one value is `=> e` when the function declares no
+# return type and that takes at most two lines; otherwise it is a block
+# ending in `ret e` — whichever way the source spelled it.
 #
 # Parentheses appear only where precedence needs them. Literals print as they
 # were spelled. Names lose the `@hash` the parser gave each declaration.
@@ -41,45 +45,49 @@ fun formatSource(src: String, filename: String): String|PFail => match(parseSour
 
 
 # ── the file ─────────────────────────────────────────────────────────────────
-# Top level: a declaration is separated from the last by one blank line,
-# except that declarations printed on one line pack together, as members do;
-# a run of imports by none, and the `System` imports from the rest by one. The
-# imports of a run are sorted, `System` first, and duplicates dropped.
+# Top level: the namespace, the imports and the declarations, each separated
+# from what came before by one blank line; within a run of declarations, ones
+# laid out on one line pack together, as members do. A run of imports has no
+# blank lines but one between the `System` imports and the rest. The imports
+# of a run are sorted, `System` first, and duplicates dropped.
 
 fun printFile(ss: List<PStmt>): Doc =>
-  cat(fold(topRuns(ss), (parts = List<Doc>(), first = true, packs = false), (acc, run) =>
-      printRun(run, acc.first, acc.packs) |> (r) => (parts = concat(acc.parts, r.parts), first = false, packs = r.packs))
-    .parts)
+  cat(fold(topRuns(ss), (parts = List<Doc>(), first = true), (acc, run) =>
+      (parts = concat(acc.parts, printRun(run, acc.first)), first = false)).parts)
 
-# The top level cut into runs: each import run, and each other statement alone.
+# The top level cut into runs: each run of imports, each run of declarations,
+# and the namespace alone.
 fun topRuns(ss: List<PStmt>): List<List<PStmt>> => fold(ss, List<List<PStmt>>(), addToRun)
 
-fun addToRun(runs: List<List<PStmt>>, st: PStmt): List<List<PStmt>>
-  let lastRun = head(takeLastOne(runs)) ?? List<PStmt>()
-  ret isImport(st) && all(lastRun, isImport) && !isEmpty(lastRun)
-    ? append(dropLastOne(runs), append(lastRun, st))
-    : append(runs, List(st))
+fun addToRun(runs: List<List<PStmt>>, st: PStmt): List<List<PStmt>> => match(head(takeLastOne(runs)))
+  (lastRun: List<PStmt>) => match(head(lastRun))
+    (prev: PStmt) if sameRun(prev, st) => append(dropLastOne(runs), append(lastRun, st))
+    ()                                 => append(runs, List(st))
+  () => List(List(st))
+
+fun sameRun(a: PStmt, b: PStmt): Bool =>
+  (isImport(a) && isImport(b)) || (isDeclaration(a) && isDeclaration(b))
+
+fun isDeclaration(st: PStmt): Bool => !isImport(st) && !isNamespace(st)
 
 fun isImport(st: PStmt): Bool => match(st)
   (i: PsImport) => true
   ()            => false
 
-# A run's documents, and whether it is a declaration that packs against a
-# one-line declaration after it.
-fun printRun(run: List<PStmt>, first: Bool, prevPacks: Bool): (parts: List<Doc>, packs: Bool) => match(head(run))
-  (i: PsImport) => (parts = printImports(run, first), packs = false)
-  (st: PStmt)   => printTop(st, first, prevPacks)
-  ()            => (parts = List(), packs = false)
-
-fun printTop(st: PStmt, first: Bool, prevPacks: Bool): (parts: List<Doc>, packs: Bool)
-  let d = printStmt(st)
-  let packs = !isNamespace(st) && !hasHard(d)
-  let blanks = first || (prevPacks && packs) ? 0 : 1
-  ret (parts = List(anchorTop(stmtLine(st), blanks), first ? nothing() : hardLine(), d), packs = packs)
-
 fun isNamespace(st: PStmt): Bool => match(st)
   (n: PsNamespace) => true
   ()               => false
+
+fun printRun(run: List<PStmt>, first: Bool): List<Doc> => match(head(run))
+  (i: PsImport)    => printImports(run, first)
+  (n: PsNamespace) => List(anchorTop(stmtLine(n), first ? 0 : 1), first ? nothing() : hardLine(), printStmt(n))
+  (st: PStmt)      => List(printDecls(run, first))
+  ()               => List()
+
+fun printDecls(run: List<PStmt>, first: Bool): Doc =>
+  decls(fold(run, (ds = List<Decl>(), first = first), (acc, st) =>
+      (ds = append(acc.ds, Decl(cat(anchorTopDecl(stmtLine(st)), acc.first ? nothing() : hardLine()), printStmt(st))),
+       first = false)).ds)
 
 fun printImports(run: List<PStmt>, first: Bool): List<Doc>
   let paths = sort(dedupe(map(run, importPath)))
@@ -124,20 +132,32 @@ fun printStmt(st: PStmt): Doc => match(st)
   (ei: PsElseIf)        => cat(text("else if "), exprDoc(ei.eiCond), blockDoc(ei.eiStmts))
   (el: PsElse)          => cat(text("else"), blockDoc(el.elStmts))
 
-# An indented block of statements under the line that owns it. A statement
-# keeps one blank line before it when the source had one there.
+# An indented block of statements under the line that owns it. A statement other
+# than the first keeps one blank line before it when the source had one there.
 fun blockDoc(ss: List<PStmt>): Doc =>
-  nest(2, cat(flatMap(ss, (st) => List(anchorStmt(stmtLine(st)), hardLine(), printStmt(st)))))
+  nest(2, cat(fold(ss, (parts = List<Doc>(), first = true), (acc, st) =>
+      (parts = concat(acc.parts, List(anchorStmt(stmtLine(st), acc.first), hardLine(), printStmt(st))),
+       first = false)).parts))
 
-# `fun [attrs] name<gens>(params): Ret where W` and its body: `=> e` when the
-# body is one value, else an indented block ending in `ret`.
+# `fun [attrs] name<gens>(params): Ret where W` and its body.
 fun printFun(f: PsFun): Doc
   let sig = cat(text("fun "), attrsDoc(f.fAttrs), text(bareOf(f.fName)), gensDoc(f.fGens),
                 paramsRetDoc(f.fParams, f.fRet))
   let signature = whereDoc(sig, f.fWheres)
   ret match(f.fBody)
-    (bk: PeBlock) => cat(signature, bodyDoc(bk))
+    (bk: PeBlock) => funBodyDoc(signature, f.fRet, bk)
     (other)       => signature
+
+# `=> e` when the body is one value, the function declares no return type,
+# and that takes at most two lines, the `fun` line included; otherwise an
+# indented block ending in `ret e` (USER RULING #91).
+fun funBodyDoc(signature: Doc, r: Spec|None, bk: PeBlock): Doc
+  let block = cat(signature, blockDoc(withRet(bk)))
+  ret isEmpty(bk.blockStmts) && !declaresType(r) ? choice(cat(signature, arrowDoc(bk.blockValue)), block, 2) : block
+
+fun declaresType(r: Spec|None): Bool => match(r)
+  (sp: Spec) => true
+  ()         => false
 
 fun retDoc(r: Spec|None): Doc => match(r)
   (sp: Spec) => cat(text(": "), specDoc(sp))
@@ -196,15 +216,12 @@ fun printInstance(ti: PsTraitInstance): Doc
                       isEmpty(ti.tiGens) ? nothing() : text(" "), specDoc(ti.tiPattern))
   ret cat(whereDoc(sig, ti.tiWheres), membersDoc(ti.tiMembers))
 
-# Members: one-line members pack together; a member printed on more than one
-# line (a block body, match arms, members of its own) has a blank line on each
-# side.
+# Members: a run of declarations. Those laid out on one line pack together; a
+# member on more than one line has a blank line on each side.
 fun membersDoc(ms: List<PStmt>): Doc =>
-  nest(2, cat(fold(ms, (parts = List<Doc>(), prevBlock = false, first = true), (acc, m) =>
-      memberDoc(m) |> (d) =>
-          (parts = concat(acc.parts, List(anchorMember(stmtLine(m), !acc.first && (acc.prevBlock || hasHard(d))),
-                                          hardLine(), d)),
-           prevBlock = hasHard(d), first = false)).parts))
+  nest(2, decls(fold(ms, (ds = List<Decl>(), first = true), (acc, m) =>
+      (ds = append(acc.ds, Decl(cat(anchorMember(stmtLine(m), !acc.first), hardLine()), memberDoc(m))),
+       first = false)).ds))
 
 fun memberDoc(m: PStmt): Doc => match(m)
   (e: PsEnum) => printEnum(e, "enum")
@@ -567,12 +584,14 @@ fun binaryRun(b: ShBinary): (first: PExpr, links: List<Link>) => match(shapeOf(b
   ()                                  => (first = b.bLeft, links = List(Link(b.bOp, b.bRight)))
 
 # A ternary chain: each condition and its result on one line, `:` leading
-# each line after the first. `ownNest`: indent the `:` lines four; false when
-# the chain already starts a line of its own (an `=>` body).
+# each line after the first. `ownNest`: the chain four in, its first link
+# included, so what that link wraps (a match's arms) is deeper than the `:`
+# lines; false when the chain already starts a line of its own (an `=>` body).
 fun ternaryDoc(t: ShTernary, ownNest: Bool): Doc
   let lines = ternaryLines(t)
-  let rest = cat(map(lines.rest, (l) => cat(anchorBreak(startLine(l)), line(), text(": "), ternaryArm(l))))
-  ret group(cat(ternaryArm(lines.first), ownNest ? nest(4, rest) : rest))
+  let chain = cat(ternaryArm(lines.first),
+                  cat(map(lines.rest, (l) => cat(anchorBreak(startLine(l)), line(), text(": "), ternaryArm(l)))))
+  ret group(ownNest ? nest(4, chain) : chain)
 
 # The chain's first `cond ? result`, then each later `: cond ? result` (or the
 # final `: value`), as expressions to print with ternaryArm.

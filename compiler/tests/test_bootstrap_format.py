@@ -74,17 +74,19 @@ namespace Fmt
 
 import System
 
-fun combine(alpha: Int, beta: Int, gamma: Int, delta: Int, epsilon: Int, zeta: Int, eta: Int, theta: Int): Int => alpha
-fun use(): Int => combine(1000000001, 1000000002, 1000000003, 1000000004, 1000000005, 1000000006, 1000000007, 1000000008)
+fun use(): Int
+  let total = combine(1000000001, 1000000002, 1000000003, 1000000004, 1000000005, 1000000006, 1000000007, 1000000008, 1000000009)
+  ret total
 """,
 """\
 namespace Fmt
 
 import System
 
-fun combine(alpha: Int, beta: Int, gamma: Int, delta: Int, epsilon: Int, zeta: Int, eta: Int, theta: Int): Int => alpha
-fun use(): Int => combine(
-    1000000001, 1000000002, 1000000003, 1000000004, 1000000005, 1000000006, 1000000007, 1000000008)
+fun use(): Int
+  let total = combine(
+      1000000001, 1000000002, 1000000003, 1000000004, 1000000005, 1000000006, 1000000007, 1000000008, 1000000009)
+  ret total
 """),
 
     # A `=>` body stays on its line when wrapping its call's arguments is enough.
@@ -93,16 +95,17 @@ namespace Fmt
 
 import System
 
-fun describeTheThingWithAVeryLongNameIndeed(first: String, second: String, third: String): String => first + second
-fun wrapped(first: String, second: String, third: String): String => describeTheThingWithAVeryLongNameIndeed(first, second, third)
+fun describeTheThingWithAVeryLongNameIndeed(first: String, second: String, third: String) => first + second
+fun wrapped(first: String, second: String, third: String, fourth: String) => describeTheThingWithAVeryLongNameIndeed(first, second, third)
 """,
 """\
 namespace Fmt
 
 import System
 
-fun describeTheThingWithAVeryLongNameIndeed(first: String, second: String, third: String): String => first + second
-fun wrapped(first: String, second: String, third: String): String => describeTheThingWithAVeryLongNameIndeed(
+fun describeTheThingWithAVeryLongNameIndeed(first: String, second: String, third: String) => first + second
+
+fun wrapped(first: String, second: String, third: String, fourth: String) => describeTheThingWithAVeryLongNameIndeed(
     first, second, third)
 """),
 
@@ -129,6 +132,36 @@ fun grade(score: Int): String
   ret label
 """),
 
+    # A chain not on a line of its own is four in throughout, its first link included: a
+    # match there has its arms deeper than the `:` lines, or the `:` would read as an arm's.
+    "ternary_match": ("""\
+namespace Fmt
+
+import System
+import System::Containers
+
+fun pick(xs: List<Int>): String
+  let kind = isEmpty(xs)
+    ? match(head(xs))
+        (e: Int) => "int"
+        () => "none"
+    : "empty"
+  ret kind
+""",
+"""\
+namespace Fmt
+
+import System
+import System::Containers
+
+fun pick(xs: List<Int>): String
+  let kind = isEmpty(xs) ? match(head(xs))
+        (e: Int) => "int"
+        () => "none"
+      : "empty"
+  ret kind
+"""),
+
     # Pipelines: once wrapped, every `|>` on its own line, four in. A lambda stage whose
     # body is a pipeline carries it on at the same depth.
     "pipeline": ("""\
@@ -138,7 +171,7 @@ import System
 import System::Containers
 
 fun short(xs: List<Int>): List<Int> => xs |> (ys) => map(ys, (y) => y + 1)
-fun long(xs: List<Int>): List<Int> => xs |> (ys) => map(ys, (y) => y + 1) |> (ys) => filter(ys, (y) => y > 10) |> (ys) => map(ys, (y) => y * 2)
+fun long(xs: List<Int>): List<Int> => xs |> (ys) => map(ys, (y) => y + 1) |> (ys) => filter(ys, (y) => y > 10) |> (ys) => map(ys, (y) => y * 2) |> (ys) => filter(ys, (y) => y < 100)
 fun chained(xs: List<Int>): Int => xs |> (ys) => map(ys, (y) => y + 1) |> (ys) => fold(ys, 0, (a, y) => a + y)
 """,
 """\
@@ -147,12 +180,18 @@ namespace Fmt
 import System
 import System::Containers
 
-fun short(xs: List<Int>): List<Int> => xs |> (ys) => map(ys, (y) => y + 1)
-fun long(xs: List<Int>): List<Int> => xs
-    |> (ys) => map(ys, (y) => y + 1)
-    |> (ys) => filter(ys, (y) => y > 10)
-    |> (ys) => map(ys, (y) => y * 2)
-fun chained(xs: List<Int>): Int => xs |> (ys) => map(ys, (y) => y + 1) |> (ys) => fold(ys, 0, (a, y) => a + y)
+fun short(xs: List<Int>): List<Int>
+  ret xs |> (ys) => map(ys, (y) => y + 1)
+
+fun long(xs: List<Int>): List<Int>
+  ret xs
+      |> (ys) => map(ys, (y) => y + 1)
+      |> (ys) => filter(ys, (y) => y > 10)
+      |> (ys) => map(ys, (y) => y * 2)
+      |> (ys) => filter(ys, (y) => y < 100)
+
+fun chained(xs: List<Int>): Int
+  ret xs |> (ys) => map(ys, (y) => y + 1) |> (ys) => fold(ys, 0, (a, y) => a + y)
 """),
 
     # Match arms: one space before `=>`, no alignment. Wrapped literal alternatives: `|` leads.
@@ -175,16 +214,18 @@ namespace Fmt
 
 import System
 
-fun name(x: Int|String|None): String => match(x)
-  (i: Int) => "int"
-  (s: String) => s
-  () => "none"
+fun name(x: Int|String|None): String
+  ret match(x)
+    (i: Int) => "int"
+    (s: String) => s
+    () => "none"
 
-fun kind(c: Int32): String => match(c)
-  (
-      '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'A' | 'B' | 'C'
-      | 'D') => "hex"
-  () => "other"
+fun kind(c: Int32): String
+  ret match(c)
+    (
+        '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'A' | 'B' | 'C'
+        | 'D') => "hex"
+    () => "other"
 """),
 
     # Blank lines: one between declarations, two above a banner and one below, runs inside
@@ -245,7 +286,8 @@ namespace Fmt
 
 import System
 
-fun pick(x: Int|String|None): Int|None => None
+fun pick(x: Int|String|None): Int|None
+  ret None
 """),
 
     # Comments are re-indented, never rewrapped; a trailing one is one space after the code.
@@ -293,7 +335,8 @@ import System::IO
 import Alpha
 import Zeta::Thing
 
-fun f(): System::Int => 0
+fun f(): System::Int
+  ret 0
 """),
 
     # A wrapped signature: parameters four in, filled; the return type after `)`; `where` on
@@ -312,16 +355,54 @@ import System
 
 fun streamSomethingAlongTheWay<S, T, E>(
     source: S, initialValue: T, errorFallback: E, howManyTimes: Int): (stream: S, value: T)
-    where Stream<S, T, E> => (stream = source, value = initialValue)
+    where Stream<S, T, E>
+  ret (stream = source, value = initialValue)
 """),
 
-    # A body that is only `ret e` is `=> e`.
+    # `=> e` only when the function declares no return type and `=> e` takes at most two
+    # lines, the `fun` line included; otherwise a block ending in `ret e`. A declaration on
+    # more than one line has a blank line each side, however it got there.
+    "arrow_or_ret": ("""\
+namespace Fmt
+
+import System
+
+fun typed(a: Int): Int => a + 1
+fun short(a: Int) => a + 1
+fun two(alphaCondition: Bool, betaCondition: Bool, gammaCondition: Bool) => anyOfThese(alphaCondition, betaCondition) || gammaCondition || alphaCondition && betaCondition
+fun after(a: Int) => a
+fun three(x: Int|String|None) => match(x)
+  (i: Int) => "int"
+  () => "other"
+""",
+"""\
+namespace Fmt
+
+import System
+
+fun typed(a: Int): Int
+  ret a + 1
+
+fun short(a: Int) => a + 1
+
+fun two(alphaCondition: Bool, betaCondition: Bool, gammaCondition: Bool) =>
+    anyOfThese(alphaCondition, betaCondition) || gammaCondition || alphaCondition && betaCondition
+
+fun after(a: Int) => a
+
+fun three(x: Int|String|None)
+  ret match(x)
+    (i: Int) => "int"
+    () => "other"
+"""),
+
+    # A body that is only `ret e` is `=> e` when no return type is declared.
     "ret_only": ("""\
 namespace Fmt
 
 import System
 
-fun f(a: Int): Int
+fun f(a: Int)
   ret a * 2
 """,
 """\
@@ -329,7 +410,7 @@ namespace Fmt
 
 import System
 
-fun f(a: Int): Int => a * 2
+fun f(a: Int) => a * 2
 """),
 
     # Members: one-liners pack; a member on more than one line has a blank line each side.
@@ -339,12 +420,12 @@ namespace Fmt
 import System
 
 class Point(x: Int, y: Int)
-  fun sum(): Int => x + y
-  fun diff(): Int => x - y
+  fun sum() => x + y
+  fun diff() => x - y
   fun scaled(k: Int): Point
     let nx = x * k
     ret Point(nx, y * k)
-  fun neg(): Point => Point(0 - x, 0 - y)
+  fun neg() => Point(0 - x, 0 - y)
 """,
 """\
 namespace Fmt
@@ -352,14 +433,14 @@ namespace Fmt
 import System
 
 class Point(x: Int, y: Int)
-  fun sum(): Int => x + y
-  fun diff(): Int => x - y
+  fun sum() => x + y
+  fun diff() => x - y
 
   fun scaled(k: Int): Point
     let nx = x * k
     ret Point(nx, y * k)
 
-  fun neg(): Point => Point(0 - x, 0 - y)
+  fun neg() => Point(0 - x, 0 - y)
 """),
 
     # Top level: one-line declarations pack, as members do.
@@ -370,15 +451,15 @@ import System
 
 let [const] ONE: Int = 1
 let [const] TWO: Int = 2
-fun three(): Int => 3
-fun four(): Int
+fun three() => 3
+fun four()
   ret ONE + 3
 fun five(): Int => 5
 class Six(x: Int)
-fun seven(x: Int): Int => match(x)
+fun seven(x: Int) => match(x)
   (0) => 0
   ()  => 7
-fun eight(): Int => 8
+fun eight() => 8
 """,
 """\
 namespace Fmt
@@ -387,16 +468,20 @@ import System
 
 let [const] ONE: Int = 1
 let [const] TWO: Int = 2
-fun three(): Int => 3
-fun four(): Int => ONE + 3
-fun five(): Int => 5
+fun three() => 3
+fun four() => ONE + 3
+
+fun five(): Int
+  ret 5
+
 class Six(x: Int)
 
-fun seven(x: Int): Int => match(x)
-  (0) => 0
-  () => 7
+fun seven(x: Int)
+  ret match(x)
+    (0) => 0
+    () => 7
 
-fun eight(): Int => 8
+fun eight() => 8
 """),
 
     # The shortest spelling: `&&`, `||`, `is`, and brackets only where precedence needs them.
@@ -417,10 +502,17 @@ namespace Fmt
 
 import System
 
-fun both(a: Bool, b: Bool): Bool => a && b
-fun either(a: Bool, b: Bool): Bool => a || b
-fun isInt(x: Int|String): Bool => x is Int
-fun parens(a: Int, b: Int, c: Int): Int => (a + b) * c + a * b
+fun both(a: Bool, b: Bool): Bool
+  ret a && b
+
+fun either(a: Bool, b: Bool): Bool
+  ret a || b
+
+fun isInt(x: Int|String): Bool
+  ret x is Int
+
+fun parens(a: Int, b: Int, c: Int): Int
+  ret (a + b) * c + a * b
 """),
 
     # A ternary in the `?` branch keeps its brackets; one in the `:` branch is a chain link.
@@ -437,8 +529,11 @@ namespace Fmt
 
 import System
 
-fun f(a: Bool, b: Bool): Int => a ? (b ? 1 : 2) : 3
-fun g(a: Bool, b: Bool): Int => a ? 1 : b ? 2 : 3
+fun f(a: Bool, b: Bool): Int
+  ret a ? (b ? 1 : 2) : 3
+
+fun g(a: Bool, b: Bool): Int
+  ret a ? 1 : b ? 2 : 3
 """),
 
     # A wrapped operator run: each operator leads its line, four in.
@@ -456,11 +551,13 @@ namespace Fmt
 
 import System
 
-fun anyOf(first: Bool, second: Bool, third: Bool): Bool => first
-fun check(alphaCondition: Bool, betaCondition: Bool, gammaCondition: Bool, deltaCondition: Bool): Bool =>
-    anyOf(alphaCondition, betaCondition, gammaCondition)
-    || anyOf(betaCondition, gammaCondition, deltaCondition)
-    || deltaCondition
+fun anyOf(first: Bool, second: Bool, third: Bool): Bool
+  ret first
+
+fun check(alphaCondition: Bool, betaCondition: Bool, gammaCondition: Bool, deltaCondition: Bool): Bool
+  ret anyOf(alphaCondition, betaCondition, gammaCondition)
+      || anyOf(betaCondition, gammaCondition, deltaCondition)
+      || deltaCondition
 """),
 
     # Literals keep their spelling.
@@ -503,10 +600,17 @@ namespace Fmt
 
 import System
 
-fun inc(a: Int): Int => a + 1
-fun dbl(a: Int): Int => a * 2
-fun two(a: Int): Int => dbl(inc(a))
-fun three(a: Int): Int => a |> dbl |> inc |> dbl
+fun inc(a: Int): Int
+  ret a + 1
+
+fun dbl(a: Int): Int
+  ret a * 2
+
+fun two(a: Int): Int
+  ret dbl(inc(a))
+
+fun three(a: Int): Int
+  ret a |> dbl |> inc |> dbl
 """),
 
     # `a & ~b` survives the parser's `&~`.
@@ -522,7 +626,8 @@ namespace Fmt
 
 import System
 
-fun clear(a: Int, b: Int): Int => a & ~b
+fun clear(a: Int, b: Int): Int
+  ret a & ~b
 """),
 
     # `typealias Name: Type`, colon tight like every other.
