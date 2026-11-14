@@ -571,6 +571,12 @@ def _expr_inline_function(
                              args, target.return_type, resolver)
 
 
+def _binds_lambda(stmt: s.Statement) -> bool:
+    """`let f = <lambda>`: the only binding `_beta_reduce_expressions` acts on."""
+    return (isinstance(stmt, s.LetStatement) and not isinstance(stmt, s.DestructureStatement)
+            and isinstance(stmt.default_value, e.LambdaExpression))
+
+
 def _beta_reduce_expressions(stmts: list[s.Statement],
                              catalog_for_expr_inline: dict[str, s.FunctionStatement],
                              global_resolver: "g.Resolver | None" = None) -> list[s.Statement]:
@@ -588,9 +594,7 @@ def _beta_reduce_expressions(stmts: list[s.Statement],
 
     single_use_lambdas: dict[str, e.LambdaExpression] = {}
     for i, stmt in enumerate(stmts):
-        if not isinstance(stmt, s.LetStatement) or isinstance(stmt, s.DestructureStatement):
-            continue
-        if not isinstance(stmt.default_value, e.LambdaExpression):
+        if not _binds_lambda(stmt):
             continue
         # Count usages across the remaining statements.
         rest = stmts[i+1:]
@@ -605,7 +609,15 @@ def _beta_reduce_expressions(stmts: list[s.Statement],
         # statement scope so those lambdas reach call position and beta-reduce
         # rather than surviving to be lifted into closures. (search_and_replace
         # visits children first, so this fires bottom-up.)
+        #
+        # ONLY a block that binds a lambda: one that binds none has nothing of
+        # its own to reduce, and its contents were reduced on the way up.
+        # Re-reducing it anyway walked every nested block again once per
+        # enclosing block — exponential in nesting depth, which a `|>`
+        # pipeline makes one block per stage (#119).
         if isinstance(thing, e.BlockExpression):
+            if not any(_binds_lambda(st) for st in thing.statements):
+                return rw.UNCHANGED
             inner = list(thing.statements) + [s.ReturnStatement(thing.value.line_ref, thing.value)]
             reduced = _beta_reduce_expressions(inner, catalog_for_expr_inline, global_resolver)
             if reduced and isinstance(reduced[-1], s.ReturnStatement):
