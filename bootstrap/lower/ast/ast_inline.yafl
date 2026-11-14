@@ -1471,6 +1471,15 @@ fun aiSingles(ss: List<PStmt>, all: List<PStmt>, i, acc: Singles) =>
   fold(ss, (acc = acc, i = i),
        (st, x) => (acc = aiSingleAdd(x, all, st.i, st.acc), i = st.i + 1)).acc
 
+# `let f = <lambda>`: the only binding aiBetaReduceExpressions acts on
+# (ast_inline.py `_binds_lambda`).
+fun aiBindsLambda(st: PStmt): Bool => match(st)
+  (let2: PsLet) => match(let2.lDefault)
+    (lam: PeLambda) => true
+    (o: PExpr)      => false
+    ()              => false
+  (o2: PStmt)   => false
+
 fun aiSingleAdd(st, all: List<PStmt>, i, acc) => match(st)
   (let2: PsLet) => match(let2.lDefault)
     (dv: PExpr) => match(dv)
@@ -1505,9 +1514,15 @@ fun aiRep(n: Int, x: PExpr): (n2: Int, rep: PExpr|None) => (n, x)
 # expression-position inlining: an untyped parameter's binding let is typed
 # from its argument, and an argument naming a match-arm binder has a type only
 # inside that arm.
+#
+# A nested block is re-reduced ONLY when it binds a lambda: one that binds none
+# has nothing of its own to reduce, and its contents were reduced on the way
+# up. Re-reducing it anyway walked every nested block again once per enclosing
+# block — exponential in nesting depth, which a `|>` pipeline makes one block
+# per stage (#119).
 fun aiBetaCb(n, x, singles: Singles, catalog: Catalog,
              r, sc: Resolver|None): (n2: Int, rep: PExpr|None) => match(x)
-  (bk: PeBlock) => aiBetaBlock(bk, catalog, r, n)
+  (bk: PeBlock) => any(bk.blockStmts, aiBindsLambda) ? aiBetaBlock(bk, catalog, r, n) : aiNoRep(n)
   (c: PeCall)   => aiBetaCall(c, singles, catalog, sc, n)
   (o: PExpr)    => aiNoRep(n)
 
