@@ -586,20 +586,28 @@ fun binaryRun(b: ShBinary): (first: PExpr, links: List<Link>) => match(shapeOf(b
       |> (r) => (first = r.first, links = append(r.links, Link(b.bOp, b.bRight)))
   ()                                  => (first = b.bLeft, links = List(Link(b.bOp, b.bRight)))
 
-# A ternary. A single `c ? a : b` flows: `: b` stays on the line when it fits
-# there, else leads the next (USER RULING #91). A longer chain, or one whose
-# first link holds a match (what followed its last arm would be the arm's),
-# has each condition and its result on one line, `:` leading each line after
-# the first. `ownNest`: the `:` lines four in — for a chain, its first link
-# too, so a match's arms are deeper than them; false when the ternary already
-# starts a line of its own (an `=>` body).
+# A ternary. A single `c ? a : b` flows (USER RULINGS #91): after the
+# condition, `? a : b` on its line when that fits; else `? a` there and `: b`
+# leading the next; else `?` and `:` each leading a line. That is two groups:
+# the outer holds the `:` break, the inner the `?` break, which decides for
+# itself once the outer has broken. A longer chain, or one whose first link
+# holds a match (what followed its last arm would be the arm's), has each
+# condition and its result on one line, `:` leading each line after the
+# first. `ownNest`: the `?` and `:` lines four in — for a chain, its first
+# link too, so a match's arms are deeper than them; false when the ternary
+# already starts a line of its own (an `=>` body).
 fun ternaryDoc(t: ShTernary, ownNest: Bool): Doc
   let lines = ternaryLines(t)
-  let first = ternaryArm(lines.first)
+  let cond = operandDoc(t.tCond, pOr(), true)
+  let result = operandDoc(t.tThen, pOr(), true)
   let links = map(lines.rest, (l) => cat(anchorBreak(startLine(l)), line(), text(": "), ternaryArm(l)))
   ret match(head(links))
-    (only: Doc) if isEmpty(dropOne(links)) && !hasHard(first) => cat(first, group(ownNest ? nest(4, only) : only))
-    () => group(ownNest ? nest(4, cat(first, cat(links))) : cat(first, cat(links)))
+    (only: Doc) if isEmpty(dropOne(links)) && !hasHard(cond) && !hasHard(result) =>
+        cat(cond, group(nestIf(ownNest, cat(group(cat(anchorBreak(startLine(t.tThen)), line(), text("? "), result)),
+                                            only))))
+    () => group(nestIf(ownNest, cat(ternaryArm(lines.first), cat(links))))
+
+fun nestIf(yes: Bool, d: Doc): Doc => yes ? nest(4, d) : d
 
 # The chain's first `cond ? result`, then each later `: cond ? result` (or the
 # final `: value`), as expressions to print with ternaryArm.

@@ -162,8 +162,9 @@ fun pick(xs: List<Int>): String
   ret kind
 """),
 
-    # A single `c ? a : b` flows: `: b` stays on the line when it fits there, wrapped
-    # condition or not; it leads the next line, four in, when it does not.
+    # A single `c ? a : b` flows. After the condition, wrapped or not: `? a : b` on its
+    # line when that fits; else `? a` there and `: b` leading the next; else `?` and `:`
+    # each lead a line, four in.
     "ternary_flow": ("""\
 namespace Fmt
 
@@ -174,6 +175,9 @@ fun check(alpha: Bool, beta: Bool, gamma: Bool, delta: Bool): Int
 
 fun pick(alpha: Bool): String
   ret alpha ? "the first of two rather long strings, which takes up most of the line" : "and the second one, just as long"
+
+fun chomp(line: String, n: Int): String
+  ret n > 0 && byteAt(line, n - 1) == '\\n' ? (n > 1 && byteAt(line, n - 2) == '\\r' ? slice(line, 0, n - 2) : slice(line, 0, n - 1)) : line
 """,
 """\
 namespace Fmt
@@ -189,6 +193,11 @@ fun check(alpha: Bool, beta: Bool, gamma: Bool, delta: Bool): Int
 fun pick(alpha: Bool): String
   ret alpha ? "the first of two rather long strings, which takes up most of the line"
       : "and the second one, just as long"
+
+fun chomp(line: String, n: Int): String
+  ret n > 0 && byteAt(line, n - 1) == '\\n'
+      ? (n > 1 && byteAt(line, n - 2) == '\\r' ? slice(line, 0, n - 2) : slice(line, 0, n - 1))
+      : line
 """),
 
     # Parameters flow: they start after `(` and wrap four in, filled; the return type goes
