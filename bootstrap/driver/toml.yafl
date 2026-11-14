@@ -45,7 +45,7 @@ fun parseToml(text) => tomlLines(splitLines(text), 1, Set(), List())
 # per-line work needs a statement body (lets and early returns) and match arms
 # are expressions, so the two used to be mutually recursive functions — and
 # [tail] does not survive that. The comment then claimed the depth was "single
-# digits", which is true of a manifest and false of this parser: `ybootstrap
+# digits", which is true of a manifest and false of this parser: `yaflc
 # toml` reads arbitrary stdin, and 30 000 lines aborted the process with a
 # stack overflow. Returning a decision instead of recursing keeps the marker.
 enum LineOut

@@ -1,6 +1,6 @@
 """The port's COMMAND LINE does main.py's job — exactly.
 
-Every case runs `python main.py ARGS` and `ybootstrap ARGS` side by side, in the
+Every case runs `python main.py ARGS` and `yaflc ARGS` side by side, in the
 same directory and environment, and requires the SAME exit code, the SAME
 stdout, the SAME stderr (the program's own name normalised — argparse prints
 `main.py`, the port prints its own), the SAME C written by `-c`, and binaries

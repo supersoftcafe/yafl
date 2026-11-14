@@ -1,20 +1,24 @@
 cmake_minimum_required(VERSION 3.19)
 project(yafl_meta LANGUAGES C)
 
-# Top-level driver.  Build everything with:
+# Top-level driver.  Build and install with:
 #   cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local
 #   cmake --build build -j
+#   cmake --build build --target yaflc
 #   cmake --install build
 #
 # This builds:
 #   - yafllib       → libyafl.so / libyafl.a / yafl.h
-#   - compiler      → yafl  (PyInstaller)
 #   - System lib    → lib/yafl/system.yl  (.yl zip: yafl.toml + stdlib sources + yafl.h + libyafl.a)
-# and installs them under ${CMAKE_INSTALL_PREFIX}.  The compiler finds libraries
-# under ${CMAKE_INSTALL_PREFIX}/lib/yafl (override with the YAFL_PATH env var).
+#   - yaflc         → the YAFL compiler, written in YAFL (on request: see below)
+#   - compiler/     → the Python compiler, which builds yaflc. Local use only:
+#                     it is NOT installed.
+# and installs yaflc, System and System::Test under ${CMAKE_INSTALL_PREFIX}.
+# yaflc finds libraries under ${CMAKE_INSTALL_PREFIX}/lib/yafl (override with
+# the YAFL_PATH env var).
 #
 # `examples/` is deliberately NOT built here: it is a standalone sample project
-# that consumes the *installed* `yafl`, so build it separately after installing
+# that consumes the *installed* `yaflc`, so build it separately after installing
 # (cd examples && cmake -B build && cmake --build build).
 
 add_subdirectory(yafllib)
@@ -49,6 +53,23 @@ add_custom_target(stage_system_test ALL
             ${CMAKE_SOURCE_DIR}/compiler/libs/system-test ${YAFL_STAGE_DIR}/system-test
     COMMENT "Staging the System::Test library")
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/compiler/libs/system-test DESTINATION lib/yafl)
+
+# ── The compiler ──────────────────────────────────────────────────────────────
+# yaflc, the YAFL compiler, built by the Python compiler exactly as the test
+# gate builds its -O3 fixture (build_bootstrap.py, reusing a verified cached
+# build when it can). Only on request, not part of ALL: a Python build takes
+# ~20 minutes, and the test gate builds its own copy anyway.
+#   cmake --build build --target yaflc
+# `cmake --install` fails, naming the file, if it has not been built.
+set(YAFLC_BIN ${CMAKE_BINARY_DIR}/yaflc)
+add_custom_target(yaflc
+    COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static> PYTHONHASHSEED=0
+            ${Python3_EXECUTABLE} build_bootstrap.py -O 3 -o ${YAFLC_BIN} --c-output ${YAFLC_BIN}.c
+            --reuse -L ${YAFL_STAGE_DIR}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler
+    COMMENT "Building yaflc")
+add_dependencies(yaflc yafl_static package_system_library stage_system_test)
+install(PROGRAMS ${YAFLC_BIN} DESTINATION bin)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # The Python compiler suite is registered as a CTest test, run against the
@@ -139,16 +160,16 @@ endif()
 # (~10 minutes) while the rest blocked on a lock serialised the parallel run.
 # Each is produced once here, as a fixture the tests depend on.
 #
-# The -O3 port is build/ybootstrap — the compiler the Python suite, the
+# The -O3 port is build/yaflc — the compiler the Python suite, the
 # examples and a user run, on either path. The full path's other levels are
-# build/ybootstrap_o<N>. Each keeps the C it was linked from beside it
+# build/yaflc_o<N>. Each keeps the C it was linked from beside it
 # (<binary>.c), which its self-compile at the end must reproduce byte for byte.
-set(YAFL_BOOTSTRAP_BIN ${CMAKE_BINARY_DIR}/ybootstrap)
+set(YAFL_BOOTSTRAP_BIN ${YAFLC_BIN})
 function(yafl_port_binary opt out)
     if(opt EQUAL 3)
         set(${out} ${YAFL_BOOTSTRAP_BIN} PARENT_SCOPE)
     else()
-        set(${out} ${CMAKE_BINARY_DIR}/ybootstrap_o${opt} PARENT_SCOPE)
+        set(${out} ${CMAKE_BINARY_DIR}/yaflc_o${opt} PARENT_SCOPE)
     endif()
 endfunction()
 
@@ -175,7 +196,7 @@ endforeach()
 #
 #   cmake -B build -DYAFL_TEST_COMPILER=python
 set(YAFL_TEST_COMPILER port CACHE STRING
-    "Compiler the behaviour tests drive: port (build/ybootstrap) or python (main.py)")
+    "Compiler the behaviour tests drive: port (build/yaflc) or python (main.py)")
 set_property(CACHE YAFL_TEST_COMPILER PROPERTY STRINGS port python)
 if(NOT YAFL_TEST_COMPILER MATCHES "^(port|python)$")
     message(FATAL_ERROR "YAFL_TEST_COMPILER must be port or python, not '${YAFL_TEST_COMPILER}'")

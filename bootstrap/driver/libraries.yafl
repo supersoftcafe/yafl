@@ -263,7 +263,7 @@ fun pathStr(p: String): String
 #   * every library under `compiler/libs/` (System::Test), each only when no
 #     library already loaded owns one of its namespaces.
 #
-# The tree is the directory above this binary's own (`build/ybootstrap` sits
+# The tree is the directory above this binary's own (`build/yaflc` sits
 # in `build/`), as Python finds it above its source file. A binary named
 # without a directory (found on PATH) has no tree.
 

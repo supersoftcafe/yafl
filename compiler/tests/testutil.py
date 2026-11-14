@@ -145,7 +145,7 @@ def raise_stack_limit() -> None:
 # `-L <libs> [-O N] [--profile] -c out.c | -o out file.yafl`, whichever compiler
 # it is. YAFL_COMPILER picks which:
 #
-#     port    (default)  the self-hosted compiler, build/ybootstrap
+#     port    (default)  the self-hosted compiler, build/yaflc
 #                        (YAFL_BOOTSTRAP_BIN overrides — see shared_bootstrap_binary)
 #     python             compiler/main.py, under this interpreter
 #
@@ -453,7 +453,7 @@ from pathlib import Path as _Path
 
 _BOOT_DIR = _Path(__file__).parent.parent.parent / "bootstrap"
 _DEFAULT_BOOTSTRAP_BIN = (_Path(__file__).parent.parent.parent
-                          / "build" / "ybootstrap")
+                          / "build" / "yaflc")
 
 
 def reference_cache_dir() -> _Path:

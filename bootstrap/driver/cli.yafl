@@ -1,7 +1,7 @@
 # bootstrap/driver/cli.yafl — the compiler's COMMAND LINE: compiler/main.py,
 # ported flag for flag.
 #
-#   ybootstrap [-h] [-O LEVEL] [-a OUTFILE] [-c OUTFILE] [-o OUTFILE] [-L DIR]
+#   yaflc [-h] [-O LEVEL] [-a OUTFILE] [-c OUTFILE] [-o OUTFILE] [-L DIR]
 #              [--profile] [-W WARNING] [--test] [--inline-threshold OPS]
 #              files [files ...]
 #

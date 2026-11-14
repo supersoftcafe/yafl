@@ -125,7 +125,7 @@ jobs:
           shopt -s nullglob
           for core in /tmp/cores/core.*; do
             exe=$(file "$core" | grep -o "execfn: '[^']*'" | cut -d"'" -f2)
-            [ -x "$exe" ] || exe=build/ybootstrap
+            [ -x "$exe" ] || exe=build/yaflc
             echo "::group::$core ($exe)"
             gdb -batch -ex 'info threads' -ex 'thread apply all bt full' "$exe" "$core" 2>&1 | head -n 600
             echo "::endgroup::"
@@ -142,8 +142,8 @@ jobs:
           name: protocol-failure-${{ matrix.id }}
           path: |
             /tmp/cores/
-            build/ybootstrap
-            build/ybootstrap.c
+            build/yaflc
+            build/yaflc.c
             build/protocol-runs/
           if-no-files-found: ignore
           retention-days: 14

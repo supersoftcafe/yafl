@@ -1,4 +1,4 @@
-"""bootstrap/format/ — the formatter (#91): `ybootstrap --format` and
+"""bootstrap/format/ — the formatter (#91): `yaflc --format` and
 `--format-check`.
 
 There is one layout for YAFL source; nobody chooses it per project. Two kinds

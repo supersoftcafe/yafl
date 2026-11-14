@@ -4,14 +4,14 @@ This is the hardest input the compiler has — itself — and it exercises paths
 nothing else reaches: codegen over the compiler's own sources, GC and runtime
 behaviour under a compiler-sized workload, and any residual nondeterminism.
 
-    ybootstrap -O1 -L <libs> -c <out.c> bootstrap/
+    yaflc -O1 -L <libs> -c <out.c> bootstrap/
 
 exactly as a user compiles a project: `bootstrap/` is a project directory, its
 units named by their paths relative to it (`driver/main.yafl`) — the names
 build_bootstrap.py gives them — and the stdlib comes from the System library
 on the search path.
 
-    python selfcompile.py -L build/stage --expect build/ybootstrap.c   # the gate
+    python selfcompile.py -L build/stage --expect build/yaflc.c   # the gate
     python selfcompile.py -L build/stage --runs 2                       # timing
 
 `--expect` is the correctness gate run LAST by ctest: the port must emit, byte
@@ -55,7 +55,7 @@ def main(argv: list[str]) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--binary", type=Path,
                     default=Path(os.environ.get("YAFL_BOOTSTRAP_BIN",
-                                                _REPO / "build" / "ybootstrap")))
+                                                _REPO / "build" / "yaflc")))
     ap.add_argument("-L", "--lib-path", dest="lib_path", required=True, metavar="DIR",
                     help="library search path holding the System library")
     ap.add_argument("-O", dest="level", default="1", choices=["0", "1", "2", "3"],

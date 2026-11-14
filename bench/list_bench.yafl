@@ -10,7 +10,7 @@
 # then-new list; the old one is gone. The modes, scales and checksums are
 # unchanged, so numbers stay comparable with those runs.)
 #
-#   env -u YAFL_PATH -u YAFL_LIBYAFL_A build/ybootstrap -O3 -o build/bench_list bench/list_bench.yafl
+#   env -u YAFL_PATH -u YAFL_LIBYAFL_A build/yaflc -O3 -o build/bench_list bench/list_bench.yafl
 #   bench/run_bench.py --modes build,prepend,map,filter,concat,takedrop list=build/bench_list
 namespace Bench::ListBench
 

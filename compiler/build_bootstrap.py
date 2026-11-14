@@ -11,7 +11,7 @@ the cost while every other bootstrap test blocked on an exclusive flock — with
 Tests consume a built artefact; deciding when to rebuild it is the operator's
 call, exactly as it is for the runtime archive.
 
-    python build_bootstrap.py                 # -> build/ybootstrap
+    python build_bootstrap.py                 # -> build/yaflc
     python build_bootstrap.py -o /tmp/mine    # somewhere else
 
 Point the suite at a binary with YAFL_BOOTSTRAP_BIN, which is how you test a
@@ -56,7 +56,7 @@ _HERE = Path(__file__).resolve().parent          # .../compiler
 _REPO = _HERE.parent
 _BOOT_DIR = _REPO / "bootstrap"
 
-DEFAULT_BINARY = _REPO / "build" / "ybootstrap"
+DEFAULT_BINARY = _REPO / "build" / "yaflc"
 
 
 def build(out: Path, optimization_level: int = 1, c_output: Path | None = None,
@@ -110,7 +110,7 @@ def build(out: Path, optimization_level: int = 1, c_output: Path | None = None,
 
 def _port_sources() -> list[Path]:
     """Named by path relative to bootstrap/ — `driver/main.yafl` — the names a
-    compiler gives a project directory's units, so `ybootstrap bootstrap/`
+    compiler gives a project directory's units, so `yaflc bootstrap/`
     (selfcompile.py) compiles exactly these units under exactly these names."""
     from libraries import unit_name
     sources = sorted(_BOOT_DIR.rglob("*.yafl"), key=lambda p: unit_name(p, _BOOT_DIR))
@@ -223,8 +223,8 @@ def _link_key() -> str:
 class _Cache:
     def __init__(self, root: Path):
         self.root = root
-        self.binary_path = root / "ybootstrap"
-        self.c_path = root / "ybootstrap.c"
+        self.binary_path = root / "yaflc"
+        self.c_path = root / "yaflc.c"
         self.keys_path = root / "keys.json"
         self.verified_path = root / "verified.json"
 

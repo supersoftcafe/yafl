@@ -139,24 +139,26 @@ into an interrupt driven model.
 
 Requirements.
 * Python 3.12+ (the compiler uses PEP 695 generics and `tomllib`)
-* PyInstaller — `pip install -r compiler/requirements.txt` (build-time only; it packages the compiler into the `yafl` binary)
+* PyInstaller — `pip install -r compiler/requirements.txt` (build-time only; it packages the Python compiler for the test protocol)
 * CMake
 * A C compiler like gcc, clang or msvc
 
-The compiler has no third-party *runtime* dependencies; only the build step needs
-PyInstaller. Installing also lays down the `System` library as
-`${CMAKE_INSTALL_PREFIX}/lib/yafl/system.yl`, which the `yafl` binary discovers
-automatically (override the search path with the `YAFL_PATH` environment variable).
+The compiler is `yaflc`, written in YAFL. The Python compiler in `compiler/`
+builds it and is for local use only: it is not installed. Installing also lays
+down the `System` library as `${CMAKE_INSTALL_PREFIX}/lib/yafl/system.yl`, which
+`yaflc` discovers automatically (override the search path with the `YAFL_PATH`
+environment variable).
 
-Build and install everything — the `yafl` compiler and the `System` library — from
-the repository root:
+Build and install `yaflc` and the `System` library from the repository root:
 ```
 cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build build -j
+cmake --build build --target yaflc
 sudo cmake --install build
 ```
-This installs `yafl` to `<prefix>/bin` and the `System` library to
-`<prefix>/lib/yafl/system.yl`; nothing is written to `<prefix>/include` or the
+The `yaflc` target is the Python compiler building `yaflc`, which takes a while
+the first time. This installs `yaflc` to `<prefix>/bin` and the `System` library
+to `<prefix>/lib/yafl/system.yl`; nothing is written to `<prefix>/include` or the
 `<prefix>/lib` root. On Windows, drop `sudo` and pick a writable
 `-DCMAKE_INSTALL_PREFIX`.
 
@@ -177,7 +179,7 @@ The two compilers have parity, so either is a drop-in replacement for the
 other: `--compiler` picks the one every behaviour test and example runs
 against. The CTest gate starts by having the Python compiler build the
 self-hosted one at each level the tests run at, keeping the C it emitted
-(`build/ybootstrap` is the -O3 one; `build/ybootstrap_o<N>` the others). It
+(`build/yaflc` is the -O3 one; `build/yaflc_o<N>` the others). It
 runs the compiler suite and the YAFL `[test]` folders — each level built by the
 port built at that level — and ends with one self-compile per level: the port
 compiles its own sources at its level and must reproduce that C byte for byte.
@@ -240,7 +242,7 @@ To run the Python suite by hand from `compiler/`, point it at a built port and
 runtime archive:
 ```
 cd compiler
-YAFL_BOOTSTRAP_BIN=../build/ybootstrap YAFL_LIBYAFL_A=../build/yafllib/libyafl.a \
+YAFL_BOOTSTRAP_BIN=../build/yaflc YAFL_LIBYAFL_A=../build/yafllib/libyafl.a \
 PYTHONHASHSEED=0 unittest-parallel -j 0 -s tests -t .
 ```
 `YAFL_COMPILER=python` runs the same tests against the Python compiler.
@@ -251,14 +253,14 @@ Compiled programs are statically linked against the runtime, so they need no
 You can test that the compiler is installed and working like so:
 ```
 cd examples
-yafl -o test hellowWorld.yafl
+yaflc -o test helloWorld.yafl
 ./test
 ```
 
 If you like, you can examine the intermediate C code like so:
 ```
 cd examples
-yafl -c test.c hellowWorld.yafl
+yaflc -c test.c helloWorld.yafl
 more test.c
 ```
 

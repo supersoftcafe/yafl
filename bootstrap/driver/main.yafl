@@ -1,8 +1,8 @@
 # bootstrap/main.yafl — driver for the self-hosted compiler.
 #
-#   ybootstrap [-O LEVEL] [-o OUT] ... files       the compiler (cli.yafl)
-#   ybootstrap --stage tokens < src.yafl            token dump  (KIND|indent|line|col|text)
-#   ybootstrap --stage census < src.yafl            declaration census (KIND|line|name)
+#   yaflc [-O LEVEL] [-o OUT] ... files       the compiler (cli.yafl)
+#   yaflc --stage tokens < src.yafl            token dump  (KIND|indent|line|col|text)
+#   yaflc --stage census < src.yafl            declaration census (KIND|line|name)
 #
 # Each `--stage` mode reads a source stream on stdin and prints a dump that the
 # Python test harnesses diff against the reference compiler's own output.
@@ -1199,7 +1199,7 @@ fun writePartsStep(st: (io2: IO, failed: Bool), x: String) =>
 # stdin, one pipeline stage's output on stdout — the port's equivalent of the
 # Python suite calling a compiler.py function directly. Everything else is the
 # compiler's COMMAND LINE, main.py's flag for flag (cli.yafl). A bare mode word
-# is not accepted: `ybootstrap c` must mean the file `c`, never a stage.
+# is not accepted: `yaflc c` must mean the file `c`, never a stage.
 fun main(): System::Int => match(head(args()))
   (m: System::String) => m == "--stage" ? stageMain(dropOne(args())) : cliMain(args())
   ()                  => cliMain(args())

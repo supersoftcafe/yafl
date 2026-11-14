@@ -1,9 +1,9 @@
 """PORT 9 — the three-step self-host: stage2 ≡ stage3, byte-for-byte.
 
-  stage1: the PYTHON compiler compiles bootstrap/*.yafl at -O1 → ybootstrap₁
+  stage1: the PYTHON compiler compiles bootstrap/*.yafl at -O1 → yaflc₁
           (this is exactly the cached shared_bootstrap_binary).
-  stage2: ybootstrap₁ compiles the SAME sources at -O1 → C₂ → clang → ybootstrap₂.
-  stage3: ybootstrap₂ compiles the same sources again        → C₃.
+  stage2: yaflc₁ compiles the SAME sources at -O1 → C₂ → clang → yaflc₂.
+  stage3: yaflc₂ compiles the same sources again        → C₃.
 
 C₂ == C₃ proves the compiler reached a FIXED POINT: the binary built by the
 port behaves identically to the binary built by Python on the hardest input

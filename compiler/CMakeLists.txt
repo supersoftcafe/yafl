@@ -14,12 +14,9 @@ add_custom_target(build_executable ALL
     BYPRODUCTS ${YAFL_COMPILER_BIN}
     COMMENT "Building standalone executable using PyInstaller"
 )
-# The stdlib is installed under ${CMAKE_INSTALL_PREFIX}/lib/yafl/system.yl (see
-# the top-level CMakeLists), which the compiler discovers at runtime via its
-# default search path.
-
-install(PROGRAMS ${YAFL_COMPILER_BIN}
-        DESTINATION bin)
+# Not installed: the Python compiler is for local use only — it builds yaflc
+# (the top-level `yaflc` target) and the tests compare against it. yaflc is the
+# compiler that gets installed.
 
 set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES
     "build;dist;__pycache__;${EXECUTABLE_NAME}.spec")

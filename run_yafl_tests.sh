@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build and run the YAFL [test] folders — compiler/yafl_tests and
-# compiler/stdlib_tests — with the port (build/ybootstrap), against THIS
+# compiler/stdlib_tests — with the port (build/yaflc), against THIS
 # tree: System from the compiler/stdlib sources, yafl.h from yafllib/, and
 # build/yafllib/libyafl.a rebuilt from yafllib/ first. No Python.
 #
@@ -22,7 +22,7 @@ for suite in stdlib_tests; do
     echo "== $suite (-O$opt)"
     # No -L and no YAFL_PATH: the port then assembles System from the tree's
     # stdlib sources and links the tree's runtime archive.
-    if env -u YAFL_PATH -u YAFL_LIBYAFL_A build/ybootstrap -O"$opt" --test \
+    if env -u YAFL_PATH -u YAFL_LIBYAFL_A build/yaflc -O"$opt" --test \
             -o "$out/$suite" "compiler/$suite"; then
         "$out/$suite" || status=1
     else
