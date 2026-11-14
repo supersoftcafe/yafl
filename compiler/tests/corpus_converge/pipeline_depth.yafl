@@ -1,0 +1,30 @@
+# Regression pin (#119): a pipeline of sixteen `|>` stages. Each stage is a
+# block whose `let` holds the stage before it, so the blocks nest sixteen
+# deep. The AST inliner used to re-walk every nested block once for each
+# block above it, so compile time grew about threefold per stage and this
+# file did not compile in hours. It must compile in seconds, and both
+# compilers must emit the same C for it.
+namespace PipelineDepth
+
+import System
+import System::Containers
+
+fun build(): List<Int> => List<Int>()
+  |> (l) => append(l, 1)
+  |> (l) => append(l, 2)
+  |> (l) => append(l, 3)
+  |> (l) => append(l, 4)
+  |> (l) => append(l, 5)
+  |> (l) => append(l, 6)
+  |> (l) => append(l, 7)
+  |> (l) => append(l, 8)
+  |> (l) => append(l, 9)
+  |> (l) => append(l, 10)
+  |> (l) => append(l, 11)
+  |> (l) => append(l, 12)
+  |> (l) => append(l, 13)
+  |> (l) => append(l, 14)
+  |> (l) => append(l, 15)
+  |> (l) => append(l, 16)
+
+fun main(): Int => fold(build(), 0, (a: Int, x: Int) => a + x) - 136
