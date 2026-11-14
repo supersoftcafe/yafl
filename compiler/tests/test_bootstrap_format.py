@@ -2,7 +2,7 @@
 `--format-check`.
 
 There is one layout for YAFL source; nobody chooses it per project. Two kinds
-of test pin it down:
+of test pin it down, and a third keeps its description (docs/style.md) true:
 
   the rules      one small program per layout rule (USER RULINGS #91), with
                  the formatter's output written out verbatim — a change to
@@ -11,6 +11,7 @@ of test pin it down:
                  standard library) formatted: it still parses to the same
                  tree, keeps every comment in order, and a second format
                  changes nothing.
+  the guide      every example in docs/style.md is already in the layout.
 
 The formatter is the port's alone (USER RULING #91), so there is no Python
 side to compare with.
@@ -31,6 +32,9 @@ _REPO = Path(__file__).resolve().parent.parent.parent
 
 # The repository's own sources: what the round trip formats.
 _CORPUS = stdlib_files() + sorted((_REPO / "bootstrap").rglob("*.yafl"))
+
+# The layout written out for people; its examples are checked against the formatter.
+_STYLE_GUIDE = _REPO / "docs" / "style.md"
 
 
 def _comments(src: str) -> list[str]:
@@ -794,6 +798,19 @@ class TestBootstrapFormat(TimedTestCase):
         self.assertEqual(0, r.returncode)
         for option in ("--format", "--format-check"):
             self.assertIn(option, r.stdout)
+
+    # ── the style guide ─────────────────────────────────────────────────────
+
+    def test_style_guide_examples_are_in_the_layout(self):
+        """Every `yafl` example in docs/style.md is a fixed point of the
+        formatter: the guide cannot say one thing while the formatter does
+        another. An example without a namespace is checked under one."""
+        examples = re.findall(r"^```yafl\n(.*?)^```$", _STYLE_GUIDE.read_text(), re.S | re.M)
+        self.assertGreater(len(examples), 10, "examples went missing?")
+        for i, src in enumerate(examples, 1):
+            with self.subTest(example=i, first_line=src.splitlines()[0]):
+                text = src if src.startswith("namespace ") else "namespace Style\n\n" + src
+                self.assertEqual(text, self._format(f"style_{i}.yafl", text))
 
     # ── the round trip ──────────────────────────────────────────────────────
 
