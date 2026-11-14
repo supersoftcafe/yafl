@@ -91,7 +91,8 @@ fun checkFun(f: PsFun, r0): Set<PErr>
       # A top-level function's are reported before the check phase.
       union(f.fGlobal ? noErrs() : funUntypedErrors(f, bodyR, noErrs()),
       union(attrErrs(f.fAttrs, isKnownFunAttr, f.psfLine, "a function"),
-             unusedParamWarns(f))))))))))
+      union(parameterAttrErrs(f.fParams),
+             unusedParamWarns(f)))))))))))
 
 # A declared result must actually be produced: a body that type-checks to no
 # value (no `ret` reaches the function block and no trailing value) would

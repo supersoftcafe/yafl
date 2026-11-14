@@ -327,7 +327,7 @@ class FunctionStatement(DataStatement):
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
                 + tail_err + inline_err + future_err + linear_param_err + terminal_err + inner_where_err + default_err
                 + missing_ret_err + untyped_err + test_err
-                + self.unknown_attribute_errors("a function")
+                + self.unknown_attribute_errors("a function") + self.parameter_attribute_errors()
                 + self.__unused_param_warnings())
 
     def __unused_param_warnings(self) -> list[Error]:

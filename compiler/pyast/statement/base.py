@@ -74,6 +74,13 @@ class NamedStatement(Statement):
                 for name in self.attributes
                 if name not in self._KNOWN_ATTRIBUTES]
 
+    def parameter_attribute_errors(self) -> list[Error]:
+        """A parameter is a let, so it takes the attributes a let takes and no
+        others — on a function and on a class alike. The parameters' own check
+        never reaches them: they are the targets of the parameter list."""
+        return [err for let in self.parameters.flatten()
+                for err in let.unknown_attribute_errors("a parameter")]
+
     def _find_trait_data(self, resolver: g.Resolver, query: str) -> "g.Findings[g.Resolved[DataStatement]]":
         # Deferred: base ← classdef would be an import cycle (ClassStatement IS
         # a NamedStatement); this method only runs long after both initialise.

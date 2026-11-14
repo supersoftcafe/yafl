@@ -137,6 +137,17 @@ fun bindingAttrErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
       union(futureErrs(attrs, lr, init),
              attrErrs(attrs, isKnownLetAttr, lr, "a let"))))
 
+# A parameter is a let, so it takes the attributes a let takes and no others —
+# on a function and on a class alike (base.py parameter_attribute_errors). The
+# parameters' own check never reaches them: they are the parameter list's
+# targets.
+fun parameterAttrErrs(params: PStmt): Set<PErr> =>
+  fold(flattenParams(params), noErrs(), (acc, p) => union(acc, parameterAttrErrsOf(p)))
+
+fun parameterAttrErrsOf(p: PStmt): Set<PErr> => match(p)
+  (l: PsLet) => attrErrs(l.lAttrs, isKnownLetAttr, l.pslLine, "a parameter")
+  (o: PStmt) => noErrs()
+
 fun constErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
   if !hasAttr(attrs, "const")
     ret noErrs()

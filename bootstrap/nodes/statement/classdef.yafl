@@ -49,8 +49,9 @@ fun classChecks(c, r0): Set<PErr>
       union(linearClassErrs(c),
       union(linearClassGenErrs(c, c.cGens, noErrs()),
       union(slotOverrideErrs(c),
-             attrErrs(c.cAttrs, isKnownClassAttr, c.pscLine,
-                      c.cIsInterface ? "an interface" : "a class"))))))))))))
+      union(attrErrs(c.cAttrs, isKnownClassAttr, c.pscLine,
+                     c.cIsInterface ? "an interface" : "a class"),
+             parameterAttrErrs(c.cParams)))))))))))))
 
 # A [foreign] class is an opaque handle the runtime hands out: no argument, no
 # subclasses, no constructor parameters, and nothing but [foreign] methods.

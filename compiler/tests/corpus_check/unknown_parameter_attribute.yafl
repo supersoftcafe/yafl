@@ -1,0 +1,9 @@
+# check-contract corpus: a parameter takes the attributes a let takes and no
+# others, on a class and on a function alike (#98).
+typealias Int : __builtin_type__<bigint>
+typealias Int32 : __builtin_type__<int32>
+
+class [final] B(used: Int32, [capacty] cap: Int32)
+
+fun f([bogus] x: Int, [terminal] y: Int): Int
+  ret x

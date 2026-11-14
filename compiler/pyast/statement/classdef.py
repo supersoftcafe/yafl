@@ -398,7 +398,7 @@ class ClassStatement(TypeStatement):
             if not (isinstance(cf.declared_type, t.BuiltinSpec) and cf.declared_type.type_name == "int32"):
                 array_err.append(Error(cf.line_ref, "a [capacity] field must be of type Int32"))
 
-        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + class_linear_err + linear_tp_err + bad_slots_err + empty_slots_err + array_err + fragile_warns + self.unknown_attribute_errors("a class" if not self.is_interface else "an interface")
+        return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + class_linear_err + linear_tp_err + bad_slots_err + empty_slots_err + array_err + fragile_warns + self.unknown_attribute_errors("a class" if not self.is_interface else "an interface") + self.parameter_attribute_errors()
 
 
     def global_codegen(self, resolver: g.Resolver) -> tuple[cg_ir.Object, list[cg_ir.Function]]:
