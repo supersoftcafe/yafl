@@ -36,3 +36,4 @@ from pyast.expression.loop import RecurExpression, LoopExpression
 from pyast.expression.conversion import ConvertExpression, converted, needs_conversion
 from pyast.expression.coalesce import CoalesceExpression, without_none
 from pyast.expression.pipe import PipeExpression
+from pyast.expression.interp import InterpolatedStringExpression, InterpolationSlot, InterpolationOrigin

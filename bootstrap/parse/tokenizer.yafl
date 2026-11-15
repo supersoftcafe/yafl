@@ -28,6 +28,7 @@ enum TokKind
   enum KEof()
   enum KChar()
   enum KRegex()
+  enum KInterp()
 
 class [final] Token(kind: TokKind, text: System::String,
                     indent: System::Int, line: System::Int, col: System::Int)
@@ -47,6 +48,7 @@ fun kindName(k) => match(k)
   (f: KEof)    => "EOF"
   (g: KChar)   => "CHAR"
   (h: KRegex)  => "REGEX"
+  (i: KInterp) => "INTERP"
 
 fun isKeyword(s: System::String) => match(s)
   ("ret" | "let" | "fun" | "typealias" | "where" | "class" | "interface"
@@ -101,6 +103,46 @@ fun quotedEnd(ln, pos, quote)
       ret i + 2 <= System::length(ln) ? body(i + 2) : i
     ret c == quote ? i + 1 : body(i + 1)
   ret body(pos + 1)
+
+# `$"…"` from the first byte after its quote: the end of the lexeme, closing
+# quote included when present — the Python INTERP pattern, greedily. Text is an
+# escape (two bytes), or any byte but backslash, quote and `{`; a slot is `{`,
+# then plain string / char literals (each needing its closing quote) or any
+# byte but quote, apostrophe and braces, then an optional `}`. A lone
+# trailing backslash ends the lexeme before it.
+fun [tail] interpEnd(ln, i): System::Int
+  if i >= System::length(ln)
+    ret i
+  let c = System::byteAt(ln, i)
+  if c == '\\'
+    ret i + 2 <= System::length(ln) ? interpEnd(ln, i + 2) : i
+  if c == '"'
+    ret i + 1
+  ret c == '{' ? interpEnd(ln, slotEnd(ln, i + 1)) : interpEnd(ln, i + 1)
+
+# Past a slot's body from `j`: its `}` included when present.
+fun [tail] slotEnd(ln, j): System::Int
+  if j >= System::length(ln)
+    ret j
+  let c = System::byteAt(ln, j)
+  if c == '}'
+    ret j + 1
+  if c == '{'
+    ret j
+  if c == '"' || c == '\''
+    let close = closedQuoteEnd(ln, j + 1, c)
+    ret close < 0 ? j : slotEnd(ln, close)
+  ret slotEnd(ln, j + 1)
+
+# A literal's end past its closing `quote`, scanning from `i`; -1 when it has
+# none on this line (the Python `"(?:\\.|[^\\"])*"` cannot match).
+fun [tail] closedQuoteEnd(ln, i, quote): System::Int
+  if i >= System::length(ln)
+    ret -1
+  let c = System::byteAt(ln, i)
+  if c == '\\'
+    ret i + 2 <= System::length(ln) ? closedQuoteEnd(ln, i + 2, quote) : -1
+  ret c == quote ? i + 1 : closedQuoteEnd(ln, i + 1, quote)
 
 # A `backtick quoted` identifier, or -1 when the closing backtick is missing
 # on this line (the Python rule then fails and the backtick byte falls through
@@ -185,6 +227,8 @@ fun nextToken(ln, pos): (kind: TokKind, stop: System::Int)
     ret (KString(), quotedEnd(ln, pos, '"'))
   if c == '\''
     ret (KChar(), quotedEnd(ln, pos, '\''))
+  if c == '$' && pos + 1 < System::length(ln) && System::byteAt(ln, pos + 1) == '"'
+    ret (KInterp(), interpEnd(ln, pos + 2))
   if isIdentStart(c)
     let stop = wordEnd(ln, pos + 1)
     # re"..." — only when the identifier scan stopped exactly at `re` and a

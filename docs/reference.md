@@ -211,11 +211,35 @@ Type variables are introduced in angle brackets after the function or interface 
 | Integer | `0`, `42`, `1000000` (bigint `Int`); typed suffixes `42i32`, `0xFFi32`, `7i8`, `9i64` |
 | Float | `3.14`, `1e9`, `2.5f32` |
 | String | `"hello"`, `"line\n"`, `"tab\there"` |
+| Interpolated string | `$"x = {x}"`, `$"{t:F}"`, `$"literal \{brace}"` |
 | Char | `'A'`, `'\n'`, `'\\'`, `'\''`, `'é'`, `'🎉'` |
 | Boolean | `true`, `false` |
 | Unit | `None` |
 
-String escape sequences: `\n` (newline), `\r` (return), `\t` (tab), `\0` (NUL), `\\` (backslash), `\"` (quote), `\'` (single quote).
+String escape sequences: `\n` (newline), `\r` (return), `\t` (tab), `\0` (NUL), `\\` (backslash), `\"` (quote), `\'` (single quote), `\{` and `\}` (braces), and the codepoint forms `\xNN`, `\uXXXX` and `\u{…}`.
+
+An **interpolated string** is a string literal prefixed with `$`. Each slot
+`{expression}` is replaced by `show(expression)`, and `{expression:spec}` by
+`show(expression, "spec")`, from the `Show<T>` trait. The spec is the text after
+the first `:` that is outside brackets and is not part of `::` or `:=`, so a
+ternary in a slot needs brackets: `$"{(n > 1 ? "many" : "one")}"`. `show(value,
+spec)` has a default that ignores the spec; an instance with a use for one
+overrides it.
+
+```yafl
+let x = 27
+$"x = {x}"            # "x = 27"
+$"\{x}"               # "{x}" — only `{` needs escaping; `}` alone is text
+$"{t:F}"              # show(t, "F")
+$"{lookup(m, "k")}"   # a slot may hold string and char literals
+```
+
+`show` is looked up where the string is written, so `$"a{x}b"` behaves exactly
+like `"a" + show(x) + "b"`, a local `show` overload included. The slots are
+evaluated left to right and the pieces are joined in one allocation. A slot may
+not contain another interpolated string — bind it with `let` first. A `$"…"`
+with no slots is an ordinary string literal, and `\{` / `\}` also decode in
+plain strings.
 
 A **char literal** is a single-quoted Unicode codepoint and has type `Int32` —
 there is no `char` type, and every scalar fits in `Int32`. It is exactly an

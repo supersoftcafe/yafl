@@ -73,7 +73,7 @@ fun rxGlobal(p: String, index: Int): PStmt
             SNamed("System::Regex", List(), regexLine(index)),
             PeCall(PeName("System::Regex", List(), regexLine(index), None),
                    PeTuple(list1(PTupEnt("", false, PeStr(p, regexLine(index)))), regexLine(index)),
-                   regexLine(index)),
+                   regexLine(index), None),
             "", List(), regexLine(index), false, List<PStmt>())
 
 fun rxReplace(x, patterns: List<String>) => match(x)

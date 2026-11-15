@@ -94,6 +94,10 @@ def __float() -> p.Parser[e.Expression]:
 _STRING_ESCAPES = {
     'n': '\n', 'r': '\r', 't': '\t', '0': '\0',
     '\\': '\\', '"': '"', "'": "'",
+    # `\{` opens no slot in an interpolated string; `\}` is accepted though a
+    # `}` outside a slot is plain text anyway. Both decode in plain strings
+    # too, so a literal means the same with or without its `$`.
+    '{': '{', '}': '}',
 }
 
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
@@ -219,6 +223,165 @@ def __regex() -> p.Parser[e.Expression]:
                 return p.Result.ok(e.RegexExpression(head.line_ref, value[3:-1]), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
+
+
+def __interp() -> p.Parser[e.Expression]:
+    """`$"text {expr} text {expr:spec}"` — an interpolated string. A literal
+    with no slot is an ordinary string literal."""
+    def _p(tokens: list[p.Token]) -> p.Result[e.Expression]:
+        match tokens:
+            case[head, *tail] if head.kind == p.TokenKind.INTERP:
+                value = head.value
+                if len(value) < 3 or not value.endswith('"'):
+                    return p.Result.error("interpolated string missing quote", tail, head.line_ref)
+                parts, err = _split_interpolation(value[2:-1], head)
+                if err is not None:
+                    return p.Result(None, tail, head.line_ref, [err])
+                if not any(isinstance(part, e.InterpolationSlot) for part in parts):
+                    return p.Result.ok(e.StringExpression(head.line_ref, "".join(parts), value),
+                                       tail, head.line_ref)
+                return p.Result.ok(e.InterpolatedStringExpression(head.line_ref, parts, value),
+                                   tail, head.line_ref)
+        return p.Result.none(tokens, tokens[0].line_ref)
+    return p.Parser(_p)
+
+
+def _skip_quoted(body: str, i: int) -> int:
+    """`body[i]` opens a string or char literal: the index just past its
+    closing quote, or -1 when it has none."""
+    quote = body[i]
+    i += 1
+    while i < len(body):
+        if body[i] == '\\':
+            i += 2
+        elif body[i] == quote:
+            return i + 1
+        else:
+            i += 1
+    return -1
+
+
+def _spec_colon(slot: str) -> int:
+    """The index of the colon that starts a slot's spec — the first `:`
+    outside brackets and literals that is not part of `::` or `:=` — or -1.
+    A ternary in a slot is therefore bracketed: `{(c ? a : b)}`."""
+    depth = 0
+    i = 0
+    while i < len(slot):
+        c = slot[i]
+        if c in '"\'':
+            end = _skip_quoted(slot, i)
+            if end < 0:
+                return -1
+            i = end
+            continue
+        if c in '([':
+            depth += 1
+        elif c in ')]':
+            depth -= 1
+        elif c == ':' and depth == 0:
+            if slot[i+1:i+2] in (':', '=') or slot[i-1:i] == ':':
+                i += 2 if slot[i+1:i+2] in (':', '=') else 1
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None]:
+    """Split an interpolated string's body (between the quotes) into decoded
+    text pieces and slots. Each slot's expression is tokenized and parsed on
+    its own, its tokens placed at their real columns in the source line."""
+    lr = head.line_ref
+    # The column of body[0]: the token's own column, past `$"`.
+    base = lr.offset + 2
+    def at(index: int) -> p.LineRef:
+        return p.LineRef(lr.filename, lr.line, base + index)
+
+    parts: list = []
+    raw: list[str] = []
+    def flush() -> p.Error | None:
+        if raw:
+            decoded, err = _unescape_string("".join(raw))
+            if err is not None:
+                return p.Error(lr, err)
+            raw.clear()
+            if decoded:
+                if parts and isinstance(parts[-1], str):
+                    parts[-1] += decoded
+                else:
+                    parts.append(decoded)
+        return None
+
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c == '\\':
+            raw.append(body[i:i+2])
+            i += 2
+            continue
+        if c != '{':
+            raw.append(c)
+            i += 1
+            continue
+        if (err := flush()) is not None:
+            return parts, err
+        # The slot runs to the first `}` outside its string and char literals.
+        j = i + 1
+        while j < len(body) and body[j] != '}':
+            if body[j] in '"\'':
+                end = _skip_quoted(body, j)
+                if end < 0:
+                    return parts, p.Error(at(j), "unterminated literal in interpolation slot")
+                j = end
+            elif body[j] == '{':
+                return parts, p.Error(at(j), "`{` inside an interpolation slot — "
+                                             "write `\\{` for a literal brace")
+            else:
+                j += 1
+        if j >= len(body):
+            return parts, p.Error(at(i), "unterminated interpolation slot — "
+                                         "write `\\{` for a literal brace")
+        slot = body[i+1:j]
+        colon = _spec_colon(slot)
+        text = slot if colon < 0 else slot[:colon]
+        spec: str | None = None
+        if colon >= 0:
+            spec, err = _unescape_string(slot[colon+1:])
+            if err is not None:
+                return parts, p.Error(at(i + 1 + colon + 1), err)
+            if not spec:
+                return parts, p.Error(at(i + 1 + colon), "empty format spec after `:`")
+        if not text.strip():
+            return parts, p.Error(at(i), "empty interpolation slot")
+        expression, err = _parse_slot(text, at(i + 1), head.indent)
+        if err is not None:
+            return parts, err
+        parts.append(e.InterpolationSlot(at(i), expression, spec, text.strip()))
+        i = j + 1
+    if (err := flush()) is not None:
+        return parts, err
+    return parts, None
+
+
+def _parse_slot(text: str, start: p.LineRef, indent: int) -> tuple[e.Expression | None, p.Error | None]:
+    """A slot's expression, tokenized and parsed alone. `start` is where its
+    first character sits in the source; every token is moved there."""
+    from parsing.tokenizer import tokenize
+    tokens = [dataclasses.replace(tok, indent=indent,
+                  line_ref=p.LineRef(start.filename, start.line, start.offset + tok.line_ref.offset - 1))
+              for tok in tokenize(text, start.filename)]
+    nested = next((tok for tok in tokens if tok.kind == p.TokenKind.INTERP), None)
+    if nested is not None:
+        return None, p.Error(nested.line_ref, "an interpolated string inside an interpolation slot — "
+                                              "bind it with `let` first")
+    result = parse_expression(tokens)
+    if result.errors:
+        return None, result.errors[0]
+    if result.value is None or result.tokens[0].kind != p.TokenKind.EOF:
+        where = result.tokens[0].line_ref if result.tokens else start
+        return None, p.Error(where, "could not parse the interpolation slot as one expression")
+    return result.value, None
 
 
 def __named() -> p.Parser[e.Expression]:
@@ -399,6 +562,55 @@ def lower_pipe(last_result: e.Expression, function: e.Expression) -> e.Expressio
         else e.TupleExpression(last_result.line_ref, [e.TupleEntryExpression(None, last_result)])
     call = e.CallExpression(function.line_ref, function, parameter)
     return call
+
+
+# An interpolation slot's temporary: `$interp@<slot position hash>`, a name no
+# source can spell, so nothing in a slot can resolve to another slot's value.
+_INTERP_TEMP_PREFIX = "$interp@"
+
+# str_concat_n's fixed operand arrays (yafllib/str.c, lowering/string_concat.py).
+_CONCAT_CAP = 16
+
+
+def lower_interpolation(x: e.InterpolatedStringExpression) -> e.Expression:
+    """`$"a{x}b{y:s}"`, lowered to
+
+        { let $interp@1: System::String = show(x)
+          let $interp@2: System::String = show(y, "s")
+          str_concat_n("a", $interp@1, "b", $interp@2) }
+
+    `show` is resolved where the string is written, as `"a" + show(x)` would
+    be. Each slot's value is bound to a String-typed temporary: the join is a
+    builtin that checks nothing, so the binding is what type-checks a `show`
+    that answers something else. The slots evaluate left to right. The join
+    is ONE exact-size concatenation, grouped by the runtime's operand cap."""
+    lr = x.line_ref
+    lets: list[s.Statement] = []
+    operands: list[e.Expression] = []
+    for part in x.parts:
+        if isinstance(part, str):
+            operands.append(e.StringExpression(lr, part))
+            continue
+        slr = part.line_ref
+        args = [e.TupleEntryExpression(None, part.expression)]
+        if part.spec is not None:
+            args.append(e.TupleEntryExpression(None, e.StringExpression(slr, part.spec)))
+        call = e.CallExpression(slr, e.NamedExpression(slr, "show"), e.TupleExpression(slr, args),
+                                origin=e.InterpolationOrigin(part.text))
+        tmp = f"{_INTERP_TEMP_PREFIX}{slr.hash6()}"
+        lets.append(s.LetStatement(slr, tmp, None, {}, (), call, t.NamedSpec(slr, "System::String", ())))
+        operands.append(e.NamedExpression(slr, tmp))
+    return e.BlockExpression(lr, lets, _concat_of(lr, operands))
+
+
+def _concat_of(lr: p.LineRef, operands: list[e.Expression]) -> e.Expression:
+    if len(operands) == 1:
+        return operands[0]
+    if len(operands) > _CONCAT_CAP:
+        return _concat_of(lr, [_concat_of(lr, operands[:_CONCAT_CAP])] + operands[_CONCAT_CAP:])
+    count = e.IntegerExpression(lr, len(operands), 32)
+    return e.BuiltinOpExpression(lr, t.BuiltinSpec(lr, "str"), e.StringExpression(lr, "str_concat_n"),
+        e.TupleExpression(lr, [e.TupleEntryExpression(None, v) for v in [count] + operands]))
 
 
 def __invert_operand(expr: e.Expression) -> e.Expression | None:
@@ -1012,7 +1224,7 @@ __parse_match_subject = p.requires(p.sym("("), p.delimited_list(__parse_expressi
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression").build(__to_match_expression)
 
 __parse_paren_expr = __parse_expr_tuple.map(__to_paren_expr)
-__parse_terminal = __float() | __integer() | __char() | __string() | __regex() | __parse_builtin_op | __parse_pin_set | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
+__parse_terminal = __float() | __integer() | __char() | __string() | __interp() | __regex() | __parse_builtin_op | __parse_pin_set | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
 # Postfix operators form ONE left-associative chain so dot/call/index interleave
 # freely: `f().g()`, `a().b`, `m()[0].x`. `.` is only ever member access (floats
@@ -1329,10 +1541,16 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
 
 
 def __lower_pipes(statements: list[s.Statement]) -> list[s.Statement]:
-    """Every PipeExpression lowered (lower_pipe), innermost first — the order
-    the parser itself once lowered them in."""
+    """Every PipeExpression (lower_pipe) and InterpolatedStringExpression
+    (lower_interpolation) lowered, innermost first — the order the parser
+    itself once lowered pipes in. A pipe inside a slot is lowered before the
+    string that holds it."""
     def replace(_resolver: g.Resolver, x: Any) -> Any:
-        return lower_pipe(x.subject, x.stage) if isinstance(x, e.PipeExpression) else rw.UNCHANGED
+        if isinstance(x, e.PipeExpression):
+            return lower_pipe(x.subject, x.stage)
+        if isinstance(x, e.InterpolatedStringExpression):
+            return lower_interpolation(x)
+        return rw.UNCHANGED
     root = g.ResolverRoot([])
     return [lowered if (lowered := st.search_and_replace(root, replace)) is not rw.UNCHANGED else st
             for st in statements]

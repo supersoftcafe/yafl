@@ -24,6 +24,22 @@ immutable dataclasses, `dataclasses.replace` for every change, read-only
 context flowing down, results flowing up. There is no global mutable state.
 Learn that discipline once and every module reads the same way.
 
+Two parsed forms never get past `parse()`: a pipeline `x |> f`
+(`PipeExpression`, lowered by `lower_pipe`) and an interpolated string
+`$"a{x}b"` (`InterpolatedStringExpression`, lowered by `lower_interpolation`
+to String-typed `show` bindings joined by one `str_concat_n`). The formatter
+reads them before lowering; nothing else ever sees them. The port mirrors both
+(`PePipe` / `PeInterp`, lowered in `fixupProgram`).
+
+A lowered call the user never wrote carries an **origin record**
+(`CallExpression.origin`, the port's `PeCall.pecOrigin`): what it was lowered
+from — today an interpolation slot's source text. Type checking runs after
+lowering and sees only the call; `check()` reads the origin to phrase the
+call's own errors in the user's terms (`cannot interpolate `x`: …`) at the
+slot's position. The origin is not part of a call's identity. In the port the
+field has no default, so every site that builds or rebuilds a call has to
+state what becomes of it.
+
 
 ## 1. The node protocol
 
@@ -324,6 +340,7 @@ this is the collected summary. **AST-level**, after the fixpoint and checks:
 | `Lazy$<irmangle>` | per-IR-type lazy thunk stub class | `lowering/lazy_thunks.py` |
 | `$tag`, `$s0…` | by-value tagged-union struct fields | `pyast/union_repr.py` / `codegen/typedecl.py` |
 | `$pipe@Ab12Cd` | the capture-avoiding intermediate a `\|>`-lambda beta-block binds its argument to | parser (`__to_pipeline`) |
+| `$interp@Ab12Cd` | an interpolation slot's `show` result, a `System::String`-typed binding (the join is a builtin that checks nothing, so the binding is what type-checks it) | parser (`lower_interpolation`) |
 | `$drop_keep@Ab12Cd` | a drop-wrapped scope's saved result (computed before the drops run) | `lowering/drops.py` |
 | `cond/`, `args/`, `expr/`… | structural path prefixes on IR names | `OperationBundle.with_prefix` |
 

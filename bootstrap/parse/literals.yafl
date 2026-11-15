@@ -77,6 +77,12 @@ fun simpleEscape(c)
     ret "\""
   if c == '\''
     ret "'"
+  # `\{` opens no slot in an interpolated string; `\}` is accepted too. Both
+  # decode in plain strings as well (parser.py _STRING_ESCAPES).
+  if c == '{'
+    ret "{"
+  if c == '}'
+    ret "}"
   ret ""
 
 fun unescapeU(raw, i, acc)

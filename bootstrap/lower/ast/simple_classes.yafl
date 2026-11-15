@@ -627,7 +627,7 @@ fun scMakeLiftedCall(c: PeCall, d: PeDot, clsName)
     (tp: PeTuple) => tp.exprs
     (o: PExpr)    => List()
   let newArgs = PeTuple(concat(prepend(PTupEnt("", false, d.base), List()), args), lr)
-  ret PeCall(PeName(clsName + "__" + d.member, List(), lr), newArgs, lr)
+  ret PeCall(PeName(clsName + "__" + d.member, List(), lr), newArgs, lr, c.pecOrigin)
 
 fun scBuildMethodCall(c: PeCall, d: PeDot, clsName, cands: ScCands)
   ret match(scClassFor(cands, clsName))
