@@ -148,7 +148,14 @@ static void _entrypoint(object_t* self, fun_t cont) {
     if (Kgen() != 1)   fail("object left the old generation unexpectedly", Kgen());
     printf("test_gc_gen: unreferenced old object correctly exempt from minor\n");
 
-    // (4) A MAJOR cycle must reclaim it.
+    // (4) A MAJOR cycle must reclaim it. Scrub first: the Kstate()/Kgen()
+    // checks above passed K's address to the gc_debug_* helpers, and an
+    // optimising compiler may spill that argument into the callee's frame
+    // (gcc 15 at -O2/-O3 does, in gc_debug_object_state, where gcc 13 used a
+    // callee-saved register). Once the helper returns, the dead slot sits just
+    // below our stack pointer, inside the root scan's window, and pins K
+    // through the major (issue #55).
+    scrub();
     gc_debug_request_major();
     run_one_cycle();
     int st = Kstate();
