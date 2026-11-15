@@ -221,7 +221,7 @@ String escape sequences: `\n` (newline), `\r` (return), `\t` (tab), `\0` (NUL), 
 An **interpolated string** is a string literal prefixed with `$`. Each slot
 `{expression}` is replaced by `show(expression)`, and `{expression:spec}` by
 `show(expression, "spec")`, from the `Show<T>` trait. The spec is the text after
-the first `:` that is outside brackets and is not part of `::` or `:=`, so a
+the first `:` that is outside brackets and is not part of `::`, so a
 ternary in a slot needs brackets: `$"{(n > 1 ? "many" : "one")}"`. `show(value,
 spec)` has a default that ignores the spec; an instance with a use for one
 overrides it.
@@ -234,12 +234,11 @@ $"{t:F}"              # show(t, "F")
 $"{lookup(m, "k")}"   # a slot may hold string and char literals
 ```
 
-`show` is looked up where the string is written, so `$"a{x}b"` behaves exactly
-like `"a" + show(x) + "b"`, a local `show` overload included. The slots are
-evaluated left to right and the pieces are joined in one allocation. A slot may
-not contain another interpolated string — bind it with `let` first. A `$"…"`
-with no slots is an ordinary string literal, and `\{` / `\}` also decode in
-plain strings.
+`show` is looked up where the string is written, so `$"a{x}b"` produces the
+same string as `"a" + show(x) + "b"`, a local `show` overload included. A slot
+may not contain another interpolated string — bind it with `let` first. A
+`$"…"` with no slots is an ordinary string literal, and `\{` / `\}` also decode
+in plain strings.
 
 A **char literal** is a single-quoted Unicode codepoint and has type `Int32` —
 there is no `char` type, and every scalar fits in `Int32`. It is exactly an

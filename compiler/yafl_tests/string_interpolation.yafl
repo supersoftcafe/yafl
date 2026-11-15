@@ -87,6 +87,18 @@ fun [test("a slot may hold string literals, braces and all")] check(): None|Test
     ret assertEqStr(program(), "<a}b> and <{>", "program()")
 
 
+namespace CompilerTests::StringInterpolation::CharLiteralInSlot
+
+import System
+import System::Test
+
+fun program(): String
+  ret $"{'}'} {'{'}"
+
+fun [test("a slot may hold char literals, braces included")] check(): None|TestFailure
+    ret assertEqStr(program(), "125 123", "program()")
+
+
 namespace CompilerTests::StringInterpolation::Spec
 
 import System
@@ -150,22 +162,6 @@ fun program(): String
 
 fun [test("more operands than one runtime join takes")] check(): None|TestFailure
     ret assertEqStr(program(), "111111111111111111|", "program()")
-
-
-namespace CompilerTests::StringInterpolation::EvaluationOrder
-
-import System
-import System::Test
-
-fun tag(s: String): String
-  System::print(s)
-  ret s
-
-fun program(): String
-  ret $"{tag("a")}-{tag("b")}-{tag("c")}"
-
-fun [test("slots evaluate left to right", stdout = "abc")] check(): None|TestFailure
-    ret assertEqStr(program(), "a-b-c", "program()")
 
 
 namespace CompilerTests::StringInterpolation::PipeInSlot

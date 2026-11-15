@@ -50,6 +50,13 @@ class TestStringInterpolationErrors(unittest.TestCase):
         self.assertIn("t.yafl[6:", out)
         self.assertIn("interpolation slot", out)
 
+    def test_an_unbracketed_ternary_splits_at_its_colon(self):
+        # The spec starts at the first top-level `:`, so `{x > 0 ? 1 : 2}`
+        # leaves `x > 0 ? 1 ` as the expression, which does not parse.
+        out = _diagnostics('$"a {x > 0 ? 1 : 2} b"')
+        self.assertIn("t.yafl[6:", out)
+        self.assertIn("interpolation slot", out)
+
     def test_nested_interpolated_string(self):
         out = _diagnostics('$"a {$"{x}"} b"')
         self.assertIn(f"t.yafl[6:{_BODY + 3}] - an interpolated string inside an interpolation slot", out)
@@ -61,6 +68,23 @@ class TestStringInterpolationErrors(unittest.TestCase):
     def test_no_show_instance_names_the_slot(self):
         out = _diagnostics('$"a {Foo()} b"')
         self.assertIn(f"t.yafl[6:{_BODY + 2}] - cannot interpolate `Foo()`: no `show` accepts arguments (Foo)", out)
+
+    def test_a_show_that_returns_no_string(self):
+        # The join checks its operands are Strings; the lowered `show` speaks
+        # through its origin, at the slot.
+        src = """namespace Main
+import System
+class Foo()
+fun show(f: Foo): Int
+  ret 1
+fun main(): Int
+  System::println($"a {Foo()} b")
+  ret 0
+"""
+        r = compile_c_result(src, "t.yafl")
+        self.assertFalse(r.c, "a show that answers an Int must be rejected")
+        self.assertIn(f"t.yafl[7:{_BODY + 2}] - cannot interpolate `Foo()`: `show` returns Int, not String",
+                      r.stdout)
 
     def test_an_unresolved_name_is_reported_alone(self):
         # The slot's own error is the cause; the `show` call it feeds adds

@@ -67,7 +67,7 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
   (lm: PeLambda)  => checkLambda(lm, r, expected)
   (bk: PeBlock)   => checkBlock(bk, r, expected)
   (mt: PeMatch)   => checkMatch(mt, r, expected)
-  (op: PeBuiltinOp) => checkExpr(op.opParams, r, None)
+  (op: PeBuiltinOp) => checkBuiltinOp(op, r)
   (ps: PePinSet)  => checkPinSet(ps, r)
   (nw: PeNew)     => checkNew(nw, r)
   (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2, fa) =>

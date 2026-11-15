@@ -564,43 +564,27 @@ def lower_pipe(last_result: e.Expression, function: e.Expression) -> e.Expressio
     return call
 
 
-# An interpolation slot's temporary: `$interp@<slot position hash>`, a name no
-# source can spell, so nothing in a slot can resolve to another slot's value.
-_INTERP_TEMP_PREFIX = "$interp@"
-
 # str_concat_n's fixed operand arrays (yafllib/str.c, lowering/string_concat.py).
 _CONCAT_CAP = 16
 
 
 def lower_interpolation(x: e.InterpolatedStringExpression) -> e.Expression:
-    """`$"a{x}b{y:s}"`, lowered to
-
-        { let $interp@1: System::String = show(x)
-          let $interp@2: System::String = show(y, "s")
-          str_concat_n("a", $interp@1, "b", $interp@2) }
+    """`$"a{x}b{y:s}"`, lowered to `str_concat_n("a", show(x), "b", show(y, "s"))`.
 
     `show` is resolved where the string is written, as `"a" + show(x)` would
-    be. Each slot's value is bound to a String-typed temporary: the join is a
-    builtin that checks nothing, so the binding is what type-checks a `show`
-    that answers something else. The slots evaluate left to right. The join
-    is ONE exact-size concatenation, grouped by the runtime's operand cap."""
-    lr = x.line_ref
-    lets: list[s.Statement] = []
-    operands: list[e.Expression] = []
-    for part in x.parts:
-        if isinstance(part, str):
-            operands.append(e.StringExpression(lr, part))
-            continue
-        slr = part.line_ref
-        args = [e.TupleEntryExpression(None, part.expression)]
-        if part.spec is not None:
-            args.append(e.TupleEntryExpression(None, e.StringExpression(slr, part.spec)))
-        call = e.CallExpression(slr, e.NamedExpression(slr, "show"), e.TupleExpression(slr, args),
-                                origin=e.InterpolationOrigin(part.text))
-        tmp = f"{_INTERP_TEMP_PREFIX}{slr.hash6()}"
-        lets.append(s.LetStatement(slr, tmp, None, {}, (), call, t.NamedSpec(slr, "System::String", ())))
-        operands.append(e.NamedExpression(slr, tmp))
-    return e.BlockExpression(lr, lets, _concat_of(lr, operands))
+    be. The join is ONE exact-size concatenation, grouped by the runtime's
+    operand cap. str_concat_n checks that every operand is a String
+    (BuiltinOpExpression.check), so a `show` that answers something else is
+    an error, phrased through the call's origin as the slot the user wrote."""
+    return _concat_of(x.line_ref, [
+        e.StringExpression(x.line_ref, part) if isinstance(part, str) else
+        e.CallExpression(part.line_ref, e.NamedExpression(part.line_ref, "show"),
+            e.TupleExpression(part.line_ref,
+                [e.TupleEntryExpression(None, part.expression)]
+                + ([] if part.spec is None else
+                   [e.TupleEntryExpression(None, e.StringExpression(part.line_ref, part.spec))])),
+            origin=e.InterpolationOrigin(part.text))
+        for part in x.parts])
 
 
 def _concat_of(lr: p.LineRef, operands: list[e.Expression]) -> e.Expression:
@@ -1537,14 +1521,15 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
             case _: # Discard and report an error
                 errors.append(p.Error(statement.line_ref, f"unexpected statement {type(statement)}"))
 
-    return p.Result(__lower_pipes(new_statements), result.tokens, result.line_ref, errors)
+    return p.Result(__lower_parse_forms(new_statements), result.tokens, result.line_ref, errors)
 
 
-def __lower_pipes(statements: list[s.Statement]) -> list[s.Statement]:
-    """Every PipeExpression (lower_pipe) and InterpolatedStringExpression
-    (lower_interpolation) lowered, innermost first — the order the parser
-    itself once lowered pipes in. A pipe inside a slot is lowered before the
-    string that holds it."""
+def __lower_parse_forms(statements: list[s.Statement]) -> list[s.Statement]:
+    """The forms that exist only as the parser read them, lowered: every
+    PipeExpression (lower_pipe) and InterpolatedStringExpression
+    (lower_interpolation), innermost first — the order the parser itself once
+    lowered pipes in. A pipe inside a slot is lowered before the string that
+    holds it."""
     def replace(_resolver: g.Resolver, x: Any) -> Any:
         if isinstance(x, e.PipeExpression):
             return lower_pipe(x.subject, x.stage)

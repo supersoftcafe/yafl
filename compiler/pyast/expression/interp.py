@@ -2,19 +2,20 @@
 read it.
 
 Like PipeExpression, the node exists only between the parser and the end of
-`parse()`, which lowers every one (parsing.parser.lower_interpolation): each
-slot becomes a `show(expr)` / `show(expr, "spec")` call bound to a String-typed
-temporary, and the whole string one `str_concat_n` over the text pieces and
-those temporaries — a single exact-size join, never a chain of `+` that would
-copy the growing prefix again at every step. Nothing after `parse()` sees it.
+`parse()`, which lowers every one (parsing.parser.lower_interpolation) to
+ONE `str_concat_n` over the text pieces and a `show(expr)` / `show(expr,
+"spec")` call per slot — a single exact-size join, never a chain of `+` that
+would copy the growing prefix again at every step. Nothing after `parse()`
+sees it.
 
 `show` is looked up where the string is written, exactly as a hand-written
 `"a" + show(x)` would be, so a local overload of `show` takes over.
 
 Each lowered `show` call carries an InterpolationOrigin: the slot's source
-text. Type checking runs after lowering and sees only the call; the origin
-lets its errors say what the user wrote (`cannot interpolate `x`: …`) at the
-slot, rather than describe a call nobody wrote.
+text. Type checking runs after lowering and sees only the call (and the join,
+which checks its operands are Strings); the origin lets their errors say what
+the user wrote (`cannot interpolate `x`: …`) at the slot, rather than
+describe a call nobody wrote.
 """
 from __future__ import annotations
 
