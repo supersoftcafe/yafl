@@ -1,0 +1,81 @@
+# check-contract corpus: PRIVATE NAMES (#17). A name that starts with `_` is
+# visible from its own namespace, from the namespaces inside it and from the
+# namespaces it is inside, and from nowhere else. A member's namespace is its
+# class's or enum's. A private name another namespace cannot see never takes
+# part in its overloads: `_pick` in Other is Other's own, not ambiguous with
+# Lib's.
+namespace Lib
+
+typealias Int : __builtin_type__<bigint>
+
+let _limit: Int = 3
+
+fun _helper(x: Int): Int
+  ret x
+
+fun _pick(x: Int): Int
+  ret x
+
+class _Hidden(v: Int)
+
+class Box(_v: Int, w: Int)
+
+enum Shape
+  enum _Dot()
+  enum Line(_len: Int)
+
+fun own(b: Box): Int
+  ret _helper(b._v)
+
+namespace Lib::Inner
+
+import Lib
+
+# A child sees its parent's private names.
+fun _deep(b: Box): Int
+  ret _helper(b._v)
+
+namespace Lib
+
+# A parent sees its child's private names.
+fun outer(b: Box): Int
+  ret Lib::Inner::_deep(b)
+
+namespace Other
+
+import Lib
+
+fun _pick(x: Int): Int
+  ret x
+
+fun ownPick(x: Int): Int
+  ret _pick(x)
+
+fun badCall(x: Int): Int
+  ret _helper(x)
+
+fun badQualified(x: Int): Int
+  ret Lib::_helper(x)
+
+fun badLet(): Int
+  ret _limit
+
+fun badField(b: Box): Int
+  ret b._v
+
+fun goodField(b: Box): Int
+  ret b.w
+
+fun badVariant(): Shape
+  ret _Dot()
+
+fun badEnumField(l: Line): Int
+  ret l._len
+
+# `Library` starts with the letters of `Lib` but is not inside it.
+namespace Library
+
+import Lib
+
+fun badLookalike(x: Int): Int
+  ret _helper(x)

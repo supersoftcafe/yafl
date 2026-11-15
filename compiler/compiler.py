@@ -383,7 +383,7 @@ def __stmt_scope_resolver(stmt: s.Statement, glb: g.Resolver) -> g.Resolver:
         own_ns = stmt.name.rpartition('::')[0]  # e.g. "Main" from "Main::main@JnNy0L"
         if own_ns:
             import_scopes.add(own_ns)
-        scoped = g.AddScopeResolution(glb, import_scopes)
+        scoped = g.AddScopeResolution(glb, import_scopes, own_ns)
         # A global let's initialiser resolves like a function body: it needs the
         # trait/interface methods (operators) in scope. FunctionStatement adds
         # this itself (for a top-level function; an inner one adds none — see
@@ -483,14 +483,19 @@ def __collect_diagnostics(statements: list[s.Statement],
     if new_errors:
         return diagnostics, warnings
 
-    # Catch any NamedSpec that the compile loop failed to resolve
+    # Catch any NamedSpec that the compile loop failed to resolve, looked up
+    # under each statement's own scope, so a type that is there but private
+    # to another namespace (#17) says so.
     named_spec_errors: list[Error] = []
-    def _find_named_specs(_, thing):
+    def _find_named_specs(scoped, thing):
         if isinstance(thing, t.NamedSpec):
-            named_spec_errors.append(Error(thing.line_ref, f"Failed to resolve type '{thing.name}'"))
+            hidden = scoped.find_hidden_type(thing.name)
+            named_spec_errors.append(
+                g.private_error(thing.line_ref, thing.name, g.namespace_of(hidden[0].unique_name)) if hidden
+                else Error(thing.line_ref, f"Failed to resolve type '{thing.name}'"))
         return thing
     for stmt in statements:
-        stmt.search_and_replace(resolver, _find_named_specs)
+        stmt.search_and_replace(__stmt_scope_resolver(stmt, resolver), _find_named_specs)
     if named_spec_errors:
         return named_spec_errors, warnings
     return [], warnings

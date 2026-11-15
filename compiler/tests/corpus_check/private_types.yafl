@@ -1,0 +1,23 @@
+# check-contract corpus: a PRIVATE TYPE (#17) named from another namespace is
+# refused like any private name. On its own here: an unresolved type is only
+# reported once every other check has passed.
+namespace Lib
+
+typealias Int : __builtin_type__<bigint>
+
+class _Hidden(v: Int)
+
+class Shown(v: Int)
+
+namespace Other
+
+import Lib
+
+fun badType(h: _Hidden): Int
+  ret 0
+
+fun goodType(s: Shown): Int
+  ret 0
+
+fun main(): Int
+  ret 0
