@@ -2444,9 +2444,10 @@ static void gc_fsa_mark_sweep$pump_ring(void) {
             atomic_fetch_sub_explicit(&gc_pages_in_flight, 1, memory_order_seq_cst);
             continue;
         }
-#ifdef YAFL_GC_PUMP_PROBE
-        // Test-only hook (tests/test_gc_pump_window.c): an entry is between
-        // the ring and the lists, where another executor may run the tail.
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_RESET_PROBE)
+        // Test-only hook (tests/test_gc_pump_window.c, test_gc_reset_window.c):
+        // an entry is between the ring and the lists, where another executor
+        // may run the tail.
         { extern void gc_test_pump_probe(void); gc_test_pump_probe(); }
 #endif
         gc_page_t *page;
@@ -2649,11 +2650,15 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
     return maybe_done;
 }
 
-// The EXCLUSIVE transition tail of the mark stage: runs under fsa_lock with
-// zero concurrent executors, re-verifies completion, and either requeues work
-// (overflow re-scan) or retires the stage. Returns the stage to store.
+// The EXCLUSIVE transition tail of the mark stage: runs under fsa_lock, so no
+// other TAIL runs beside it, re-verifies completion, and either requeues work
+// (overflow re-scan) or retires the stage. Exclusive among tails only: nothing
+// waits for gc_stage_executors to drain, so body executors (pumping the ring,
+// claiming pages) and mutators' barriers (pushing on the ring) run on beside
+// it. Every decision here rests on the pool lock and the in-flight counts,
+// never on being alone — see the overflow branch (issue #132).
 static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
-#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_WRITER_PROBE)
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_WRITER_PROBE) || defined(YAFL_GC_RESET_PROBE)
     { extern void gc_test_tail_probe(void); gc_test_tail_probe(); }
 #endif
     // Late ring entries (and any page they requeue) keep the stage alive.
@@ -2677,8 +2682,24 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     bool rp_flag = atomic_exchange(&reprocess_overflow_flag, false);
     if (rp_flag) {
         GC_STAT_BUMP(gc_stat_overflows);
-        memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
-        reprocess_page_head = reprocess_page_tail = 0;
+#ifdef YAFL_GC_RESET_PROBE
+        // Test-only hook (tests/test_gc_reset_window.c): the overflow re-scan
+        // has been decided, its emptiness check made and the pool lock let go,
+        // where a mutator may push and another executor claim the entry.
+        { extern void gc_test_reset_probe(void); gc_test_reset_probe(); }
+#endif
+        // The ring is NOT reset here. The emptiness check above was made
+        // under the pool lock, but mutators' barriers and other executors'
+        // pumps run on after it, lock-free: a push can reserve an index and
+        // fill its slot, and a pump claim that index (counting itself in
+        // flight), at any moment. Clearing the slots and rewinding head and
+        // tail could empty a slot after its pump claimed it, and the pump
+        // would spin on it forever, in flight, so marking never retired —
+        // every allocator then stalled in the reserve gate with the heap
+        // full (issue #132, test_gc_reset_window). Nor does the ring need it:
+        // head and tail are monotonic and slots are addressed modulo the
+        // ring, so the ring is simply empty, and entries pushed from here on
+        // are delivered as usual (page_needs_scan, during the re-scan).
         gc_pool_lock();
         // Epoch bumps BEFORE the pages become poppable: a concurrent body's
         // claim (serialised by this same lock) must never see a freshly
@@ -2720,7 +2741,7 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     }
 #endif
 }
-#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE) || defined(YAFL_GC_WRITER_PROBE)
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE) || defined(YAFL_GC_WRITER_PROBE) || defined(YAFL_GC_RESET_PROBE)
 // tests/test_gc_pump_window.c, test_gc_overflow_window.c, test_gc_writer_window.c: a mutator's
 // mark, a second executor's tail, other executors' marking, and the state the
 // probes wait for, by hand.
@@ -2739,6 +2760,8 @@ void gc_test_mutator_mark(object_t *object);
 void gc_test_mutator_mark(object_t *object) { atomic_gc_object_mark_as_seen(object); }
 void gc_test_mark_tail(void);
 void gc_test_mark_tail(void) { gc_fsa_mark_sweep_tail(); }
+void gc_test_pump_ring(void);
+void gc_test_pump_ring(void) { gc_fsa_mark_sweep$pump_ring(); }   // one executor's pump, alone
 bool gc_test_object_seen(object_t *object);
 bool gc_test_object_seen(object_t *object) {
     gc_page_t* page; ptrdiff_t slot;
