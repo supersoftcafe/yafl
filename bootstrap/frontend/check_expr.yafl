@@ -40,20 +40,27 @@ fun tupleFieldExists(es: List<SEntry>, name: String) => any(es, (x) => x.seName 
 
 fun checkClassDot(d: PeDot, c2: SClass, r) => match(soleItem(findType(r, c2.scName)))
   (f: Found) => match(f.fStmt)
-    (cs: PsClass) => classDotErrs(d, classFindData(cs, r, d.member))
+    (cs: PsClass) => classDotErrs(d, classFindData(cs, r, d.member), c2.scName, r)
     (o: PStmt)    => noErrs()
   ()         => noErrs()
 
-fun classDotErrs(d: PeDot, datas: List<Found>)
+fun classDotErrs(d: PeDot, datas: List<Found>, owner: String, r: Resolver)
   if isEmpty(datas)
     ret oneErr(d.pedLine, "Could not find a field named " + d.member)
   if sizeAtLeast(datas, 2)
     ret oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
-  ret noErrs()
+  ret memberPrivacy(d, owner, r)
+
+# A member's namespace is its class's or enum's (#17).
+fun memberPrivacy(d: PeDot, owner: String, r: Resolver): Set<PErr>
+  let ownerNs = namespaceOf(owner)
+  ret canSee(viewerNamespace(r), ownerNs, d.member)
+    ? noErrs()
+    : oneErr(d.pedLine, privateMessage(d.member, ownerNs))
 
 fun checkEnumDot(d: PeDot, e2: SEnum, r)
   ret match(enumMember(r, e2, d.member))
-    (h: NfHit)        => noErrs()
+    (h: NfHit)        => memberPrivacy(d, e2.seRoot, r)
     (a2: NfAmbiguous) => oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
     (m: NfMiss)       => oneErr(d.pedLine, "Could not find field " + d.member)
 

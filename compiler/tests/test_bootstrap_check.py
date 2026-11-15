@@ -121,6 +121,36 @@ class TestBootstrapCheck(TestCase):
             errors = [ln for ln in output.splitlines() if "already declared" in ln]
             self.assertEqual(expected, errors, output)
 
+    def _both_check(self, text: str) -> list[str]:
+        return [self._python_diagnostics_uncached(text),
+                subprocess.run([self.binary, "--stage", "check"], input=text,
+                               capture_output=True, timeout=120, text=True,
+                               env=_RUN_ENV).stdout]
+
+    def test_private_names_are_namespace_visible(self):
+        # #17: a `_` name — top-level or member — is visible from its own
+        # namespace, the namespaces inside it and the ones it is inside. Every
+        # other use is refused as private; nothing else fails to resolve: the
+        # child and parent uses, the public field, and Other's own `_pick`
+        # (Lib's is no candidate there, so the call is not ambiguous).
+        text = (_CORPUS_DIR / "private_names.yafl").read_text()
+        expected = ["x[55:7] - '_helper' is private to namespace Lib",
+                    "x[58:7] - '_helper' is private to namespace Lib",
+                    "x[61:7] - '_limit' is private to namespace Lib",
+                    "x[64:9] - '_v' is private to namespace Lib",
+                    "x[70:7] - '_Dot' is private to namespace Lib",
+                    "x[73:9] - '_len' is private to namespace Lib",
+                    "x[81:7] - '_helper' is private to namespace Lib"]
+        for output in self._both_check(text):
+            self.assertEqual(expected, [ln for ln in output.splitlines() if "private" in ln], output)
+            for refusal in ("Ambiguous", "Failed to resolve", "Could not find"):
+                self.assertNotIn(refusal, output)
+
+    def test_private_types_are_namespace_visible(self):
+        text = (_CORPUS_DIR / "private_types.yafl").read_text()
+        for output in self._both_check(text):
+            self.assertEqual("x[16:16] - '_Hidden' is private to namespace Lib\n", output)
+
     def test_clean_sources_stay_clean(self):
         # The converge corpus is all VALID code: both sides must agree it is
         # diagnostic-free (bar the no-main note every library file shares).

@@ -41,6 +41,32 @@ fun [tail] lastSep(s, at, best: Int): Int
 
 fun matchName(left, right) => simpleName(left) == simpleName(right)
 
+# ── private names (#17) ─────────────────────────────────────────────────────
+# A name that starts with `_` is private to its namespace: visible from that
+# namespace, the namespaces inside it and the ones it is inside. A member's
+# namespace is its class's or enum's.
+
+# "Lib::Inner" from "Lib::Inner::_deep@3TivX6"; "" for a name in no namespace.
+fun namespaceOf(name: String): String
+  let s = simpleName(name)
+  let ix = lastSep(s, 0, -1)
+  ret ix < 0 ? "" : slice(s, 0, ix)
+
+fun isPrivate(name: String): Bool => startsWith(bareOfUnique(name), "_")
+
+# The same namespace, or one inside the other: `Lib` and `Lib::Inner`, never
+# `Lib` and `Library`.
+fun namespacesRelated(a: String, b: String): Bool
+  ret a == b || startsWith(a, b + "::") || startsWith(b, a + "::")
+
+# Whether code in `viewer` may name `name`, declared in `ownerNs`. Code in no
+# namespace ("") sees everything.
+fun canSee(viewer: String, ownerNs: String, name: String): Bool
+  ret viewer == "" || !isPrivate(name) || namespacesRelated(viewer, ownerNs)
+
+fun privateMessage(name: String, ownerNs: String): String
+  ret "'" + bareOfUnique(name) + "' is private to namespace " + ownerNs
+
 # The enum declaration `root` names, or None when it does not name exactly
 # one enum.
 fun findEnum(r, root: String): PsEnum|None => match(soleItem(findType(r, root)))
@@ -391,7 +417,9 @@ enum Resolver
   # name is ALSO looked up under each of them, which is how `print` finds
   # `System::print@hash`. Only a name that is neither qualified nor already
   # hashed is retried this way.
-  enum RScopes(rsNames: List<String>, rsParent: Resolver)
+  # rsViewer: the statement's own namespace, from which private names are
+  # seen (#17); "" sees everything.
+  enum RScopes(rsNames: List<String>, rsViewer: String, rsParent: Resolver)
   # The `where`-supplied trait/interface operators. They JOIN the scope (only a
   # local shadows them), and — the part that matters — they report INCOMPLETE
   # while a trait param has not grounded.
@@ -593,13 +621,54 @@ fun mergeNamesB(out: List<String>, seen: Set<String>, ns: List<String>) =>
 # per-namespace root round trips (one query-string build + one root query
 # each) are replaced by ONE filtered bare-index lookup at the root: same
 # bags, same namespace-then-declaration order (Python AddScopeResolution).
-fun scopedFindings(sc: RScopes, query, wantType: Bool): Findings
+fun scopedFindings(sc: RScopes, query: String, wantType: Bool): Findings
+  ret visibleFindings(sc, query, allScopedFindings(sc, query, wantType))
+
+fun allScopedFindings(sc: RScopes, query: String, wantType: Bool): Findings
   let direct = wantType ? findType(sc.rsParent, query)
                         : findData(sc.rsParent, query)
   ret contains(query, "::") || contains(query, "@")
     ? direct
     : joinFindings(direct,
                    bareScoped(sc.rsParent, query, wantType, sc.rsNames))
+
+# Only a name AS WRITTEN is subject to privacy: a resolved unique name (it
+# carries `@`) is an identity already checked where it was written.
+fun visibleFindings(sc: RScopes, query: String, found: Findings): Findings
+  if contains(query, "@") || all(found.bItems, (x) => scopeSees(sc, x))
+    ret found
+  ret Findings(filter(found.bItems, (x) => scopeSees(sc, x)), found.bComplete)
+
+fun scopeSees(sc: RScopes, x: Found): Bool => canSee(sc.rsViewer, namespaceOf(x.fName), x.fName)
+
+# The private candidates for a WRITTEN name that the viewer cannot see: what
+# findType/findData left out. Only a diagnostic reads these, to say why a name
+# did not resolve.
+fun findHiddenData(r: Resolver, query: String): List<Found> => hiddenFindings(r, query, false)
+
+fun findHiddenType(r: Resolver, query: String): List<Found> => hiddenFindings(r, query, true)
+
+fun [tail] hiddenFindings(r: Resolver, query: String, wantType: Bool): List<Found> => match(r)
+  (root: RRoot)    => List()
+  (sc: RScopes)    => contains(query, "@")
+    ? List()
+    : filter(allScopedFindings(sc, query, wantType).bItems, (x) => !scopeSees(sc, x))
+  (d: RData)       => hiddenFindings(d.rdParent, query, wantType)
+  (t2: RTypes)     => hiddenFindings(t2.rtParent, query, wantType)
+  (tr: RTraits)    => hiddenFindings(tr.rtrParent, query, wantType)
+  (cb: RClassBody) => hiddenFindings(cb.rcbParent, query, wantType)
+  (rg: RGen)       => hiddenFindings(rg.rgParent, query, wantType)
+
+# The namespace whose code is being resolved; "" where no statement's scope is
+# in force.
+fun [tail] viewerNamespace(r: Resolver): String => match(r)
+  (root: RRoot)    => ""
+  (sc: RScopes)    => sc.rsViewer
+  (d: RData)       => viewerNamespace(d.rdParent)
+  (t2: RTypes)     => viewerNamespace(t2.rtParent)
+  (tr: RTraits)    => viewerNamespace(tr.rtrParent)
+  (cb: RClassBody) => viewerNamespace(cb.rcbParent)
+  (rg: RGen)       => viewerNamespace(rg.rgParent)
 
 # addFindings without the allocation when either side is a complete empty —
 # the overwhelmingly common shapes here.
