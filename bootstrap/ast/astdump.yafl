@@ -177,6 +177,11 @@ fun dumpExpr(x, depth, out) => match(x)
   (pp: PePipe)      => dLine(out, depth, "Pipe", pp.pepiLine, "")
     |> (s1) => dumpExpr(pp.pipeSubject, depth + 1, s1)
     |> (s2) => dumpExpr(pp.pipeStage, depth + 1, s2)
+  # Never dumped: fixupProgram lowers every interpolated string first.
+  (ip: PeInterp)    => fold(ip.interpParts, dLine(out, depth, "Interp", ip.peipLine, ""),
+                            (acc, part) => match(part)
+                              (sl: PipSlot) => dumpExpr(sl.ipExpr, depth + 1, acc)
+                              (t2: PipText) => acc)
   # tail_loop lowering only — exercised by the tail-stage contract.
   (lp: PeLoop)      => dLine(out, depth, "Loop", lp.pelpLine,
                              join(loopParamNames(lp.loopParams,

@@ -581,5 +581,5 @@ fun dropCall(let2: PsLet)
                                              PeName(let2.lName, List(),
                                                     let2.pslLine)), List()),
                               let2.pslLine),
-                      let2.pslLine),
+                      let2.pslLine, None),
                let2.pslLine)

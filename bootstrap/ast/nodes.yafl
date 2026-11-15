@@ -67,7 +67,11 @@ enum PExpr
   # position it meant, once, before monomorphisation, and from there on the
   # index is the field and `member` only what the author wrote.
   enum PeDot(base: PExpr, member: String, pedLine: PLine, pedIndex: Int|None = None)
-  enum PeCall(function: PExpr, parameter: PExpr, pecLine: PLine)
+  # pecOrigin: what the call was lowered FROM when the user never wrote it (an
+  # interpolation slot's `show`), so its errors speak of what they did write.
+  # No default: every site that builds or rebuilds a call says what becomes of
+  # it — a lowering can't drop it by omission.
+  enum PeCall(function: PExpr, parameter: PExpr, pecLine: PLine, pecOrigin: POrigin|None)
   enum PeTuple(exprs: List<PTupEnt>, petLine: PLine)
   enum PeTernary(condition: PExpr, trueResult: PExpr, falseResult: PExpr, pety: PLine)
   # lamRet: the lambda's own CallableSpec, computed by its compile each pass
@@ -117,6 +121,12 @@ enum PExpr
   # nothing after parseProgram sees it; the formatter reads it before then.
   # pepiLine is the stage's position, the one every lowering of it carries.
   enum PePipe(pipeSubject: PExpr, pipeStage: PExpr, pepiLine: PLine)
+  # `$"text {expr} text {expr, spec}"`, as the parser read it. Like PePipe it
+  # exists only between the parser and fixupProgram, which lowers every one
+  # (builders.lowerInterp) to String-typed `show` temporaries joined by ONE
+  # str_concat_n; the formatter prints it before then. A literal with no slot
+  # is a plain PeStr. peipSpelling is the literal as written.
+  enum PeInterp(interpParts: List<PInterpPart>, peipLine: PLine, peipSpelling: String)
   # ── PeLowered: introduced BY a lowering pass, absent from parsed trees ─────
   # Grouped for the same reason as PeLiteral: the passes that run before these
   # exist, or that have no business in them, pass them through untouched, and
@@ -137,6 +147,21 @@ enum PExpr
                 lzStubOnly: Bool, pelzLine: PLine)
 
 class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr)
+
+# One piece of an interpolated string: decoded text, or a slot — its
+# expression, the decoded spec after the separating comma (None when there is
+# none), the expression's source text, and the slot's position (its `{`).
+enum PInterpPart
+  enum PipText(ipText: String)
+  enum PipSlot(ipExpr: PExpr, ipSpec: String|None, ipText: String, ipLine: PLine)
+
+# What a lowered call was lowered FROM (PeCall.pecOrigin). Error reporting
+# reads it to phrase its message and point at the source the user wrote.
+enum POrigin
+  enum PoInterpolation(poText: String)
+
+fun originReword(o: POrigin, message: String): String => match(o)
+  (i: PoInterpolation) => "cannot interpolate `" + i.poText + "`: " + message
 
 enum PLit
   enum PlExpr(litExpr: PExpr)

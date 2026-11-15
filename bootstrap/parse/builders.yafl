@@ -22,7 +22,7 @@ fun oneEntryTuple(x, lr) => PeTuple(prepend(PTupEnt("", false, x), List()), lr)
 fun twoEntryTuple(a, b, lr)
   ret PeTuple(append(append(List(), PTupEnt("", false, a)), PTupEnt("", false, b)), lr)
 
-fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr)
+fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr, None)
 
 # ── __to_call_operators / __fold_binary: `a op b` → `op`(a, b), andNot fold ──
 
@@ -57,13 +57,67 @@ fun innerOfUnary(param: PExpr) => match(param)
 # The parser keeps `l |> stage` as a PePipe; fixupProgram lowers it here
 # (parser.py lower_pipe / __lower_pipes).
 
-# Every PePipe in the program lowered, innermost first — the order the parser
-# itself once lowered them in.
-fun lowerPipes(ss: List<PStmt>): List<PStmt> => rwStmts(ss, rwOnExpr(lowerPipeNode))
+# The forms that exist only as the parser read them, lowered: every PePipe
+# (lowerPipe) and PeInterp (lowerInterp), innermost first — the order the
+# parser itself once lowered pipes in. A pipe inside a slot is lowered before
+# the string that holds it (parser.py __lower_parse_forms).
+fun lowerParseForms(ss: List<PStmt>): List<PStmt> => rwStmts(ss, rwOnExpr(lowerParseForm))
 
-fun lowerPipeNode(x: PExpr): PExpr|None => match(x)
-  (pp: PePipe) => lowerPipe(pp.pipeSubject, pp.pipeStage)
-  ()           => None
+fun lowerParseForm(x: PExpr): PExpr|None => match(x)
+  (pp: PePipe)   => lowerPipe(pp.pipeSubject, pp.pipeStage)
+  (ip: PeInterp) => lowerInterp(ip)
+  ()             => None
+
+# ── interpolated strings (parser.py lower_interpolation) ────────────────────
+# `$"a{x}b{y:s}"` lowers to `str_concat_n("a", show(x), "b", show(y, "s"))`:
+# ONE exact-size join, grouped by the runtime's operand cap. `show` resolves
+# where the string is written, as `"a" + show(x)` would. str_concat_n checks
+# its operands are Strings (checkBuiltinOp), so a `show` answering something
+# else is an error, phrased through the call's origin as the slot written.
+
+let concatCap = 16   # str_concat_n's fixed operand arrays (yafllib/str.c)
+
+fun lowerInterp(ip: PeInterp): PExpr
+  # The operand count rides the walk that builds the operands (no-length ruling).
+  let ops = fold(ip.interpParts, (xs = List<PExpr>(), n = 0),
+                 (acc, part) => (xs = append(acc.xs, interpOperand(part, ip.peipLine)), n = acc.n + 1))
+  ret concatOf(ops.xs, ops.n, ip.peipLine)
+
+fun interpOperand(part: PInterpPart, lr: PLine): PExpr => match(part)
+  (t2: PipText) => PeStr(t2.ipText, lr, "")
+  (sl: PipSlot) => PeCall(PeName("show", List(), sl.ipLine), slotArgs(sl), sl.ipLine,
+                          PoInterpolation(sl.ipText))
+
+# `show`'s arguments for a slot: its expression, and its spec when it has one.
+fun slotArgs(sl: PipSlot): PExpr => match(sl.ipSpec)
+  (sp: String) => twoEntryTuple(sl.ipExpr, PeStr(sp, sl.ipLine, ""), sl.ipLine)
+  ()           => oneEntryTuple(sl.ipExpr, sl.ipLine)
+
+# `n` operands joined: one of them is itself; past the runtime's cap, the
+# first `cap` are joined first and that join leads the rest, until what is
+# left fits one call (parser.py _concat_of).
+fun [tail] concatOf(ops: List<PExpr>, n: Int, lr: PLine): PExpr
+  if n > concatCap
+    let parts = splitOps(ops, concatCap, List())
+    ret concatOf(prepend(joinOps(parts.first, concatCap, lr), parts.rest), n - concatCap + 1, lr)
+  if n == 1
+    ret match(head(ops))
+      (only: PExpr) => only
+      ()            => PeStr("", lr, "")   # unreachable: n counts ops
+  ret joinOps(ops, n, lr)
+
+# The first `k` operands, and the rest.
+fun [tail] splitOps(ops: List<PExpr>, k: Int, first: List<PExpr>): (first: List<PExpr>, rest: List<PExpr>)
+  if k == 0
+    ret (first = first, rest = ops)
+  ret match(head(ops))
+    (o: PExpr) => splitOps(dropOne(ops), k - 1, append(first, o))
+    ()         => (first = first, rest = ops)
+
+# One str_concat_n over `n` operands.
+fun joinOps(ops: List<PExpr>, n: Int, lr: PLine): PExpr =>
+  PeBuiltinOp(SBuiltin("str", lr), PeStr("str_concat_n", lr, ""),
+              PeTuple(map(prepend(PeInt(n, 32, lr, ""), ops), (o) => PTupEnt("", false, o)), lr), lr)
 
 # `l |> stage`: a lambda stage beta-reduces to a Block binding its params
 # from l; a call stage with one `_` placeholder binds l to $pipe@hash and
@@ -74,7 +128,7 @@ fun lowerPipe(last, stage)
     ret pipePlaceholder(last, stage)
   ret match(stage)
     (lm: PeLambda) => pipeBeta(last, lm)
-    ()             => PeCall(stage, pipeArgs(last), exprLine(stage))
+    ()             => PeCall(stage, pipeArgs(last), exprLine(stage), None)
 
 # Whether a stage lowers to blocks that bind the piped value (a lambda, or a
 # call with one `_` placeholder) rather than to a call of the stage.
@@ -108,7 +162,7 @@ fun pipePlaceholder(last, stage): PExpr
   let lr = exprLine(stage)
   let tmp = pipeTempPrefix() + hash6(lr.plFile, lr.plLine, lr.plCol)
   let filled = match(stage)
-    (c: PeCall) => PeCall(c.function, fillHole(c.parameter, tmp, lr), c.pecLine)
+    (c: PeCall) => PeCall(c.function, fillHole(c.parameter, tmp, lr), c.pecLine, c.pecOrigin)
     (other)     => stage
   let bind = PsLet(tmp, List(), List(), None, last, "", List(), lr)
   ret PeBlock(prepend(bind, List()), filled, "", lr)
@@ -358,6 +412,7 @@ fun exprLine(x) => match(x)
   (cv: PeConvert) => cv.pecvLine
   (qq: PeCoalesce) => qq.peqqLine
   (pp: PePipe) => pp.pepiLine
+  (ip: PeInterp) => ip.peipLine
 
 # ── parse() fixups: namespace qualification, import removal ─────────────────
 # Mirrors parser.py parse()'s tail: imports and namespaces vanish from the
@@ -368,7 +423,7 @@ fun exprLine(x) => match(x)
 fun fixupProgram(stmts: List<PStmt>)
   let groups = blockGroupsOf(stmts)
   ret match(head(groups))
-    (g2: List<PStmt>) => lowerPipes(fixupLoop(stmts, Fixup("Main::", dropOne(groups), g2, List())))
+    (g2: List<PStmt>) => lowerParseForms(fixupLoop(stmts, Fixup("Main::", dropOne(groups), g2, List())))
     ()                => List()   # unreachable: the default block always exists
 
 # Block-scoped ImportGroups (USER RULING 2026-08-23; parser.py mirror): one

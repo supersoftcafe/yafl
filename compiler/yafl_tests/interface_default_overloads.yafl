@@ -1,0 +1,228 @@
+# An interface's default method that OVERLOADS a name the implementation also
+# declares. Overriding is per signature: an implementation's `g(v)` overrides
+# the interface's `g(v)` and nothing else, so the interface's `g(v, s)` keeps
+# its default body. Member lookup once hid every inherited member that shared
+# a name with an own member, so the overload vanished: a class call failed to
+# type-check, and a trait call was devirtualised to the one-argument
+# implementation — a two-argument call into a one-argument function, wrong
+# output or a crash, with no error.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::InterfaceDefaultOverloads::ClassKeepsInheritedOverload
+
+import System
+import System::Test
+
+interface Greeter
+  fun greet(v: Int): String
+  fun greet(v: Int, s: String): String
+    ret greet(v) + s
+
+class Plain() : Greeter
+  fun greet(v: Int): String
+    ret "one"
+
+fun program(): String
+  ret Plain().greet(1, "+two")
+
+fun [test("a class's own overload leaves the inherited default reachable")] check(): None|TestFailure
+    ret assertEqStr(program(), "one+two", "program()")
+
+
+namespace CompilerTests::InterfaceDefaultOverloads::ClassOverridesBoth
+
+import System
+import System::Test
+
+interface Greeter
+  fun greet(v: Int): String
+  fun greet(v: Int, s: String): String
+    ret "default"
+
+class Both() : Greeter
+  fun greet(v: Int): String
+    ret "one"
+  fun greet(v: Int, s: String): String
+    ret "two" + s
+
+fun program(): String
+  ret Both().greet(1) + "," + Both().greet(1, "!")
+
+fun [test("overriding both overloads replaces the default")] check(): None|TestFailure
+    ret assertEqStr(program(), "one,two!", "program()")
+
+
+namespace CompilerTests::InterfaceDefaultOverloads::ThroughInterface
+
+import System
+import System::Test
+
+interface Greeter
+  fun greet(v: Int): String
+  fun greet(v: Int, s: String): String
+    ret greet(v) + s
+
+class Plain() : Greeter
+  fun greet(v: Int): String
+    ret "one"
+
+fun viaInterface(g: Greeter): String
+  ret g.greet(2, "+default")
+
+fun program(): String
+  ret viaInterface(Plain())
+
+fun [test("the default dispatches through the interface")] check(): None|TestFailure
+    ret assertEqStr(program(), "one+default", "program()")
+
+
+namespace CompilerTests::InterfaceDefaultOverloads::TraitInstanceUsesDefault
+
+import System
+import System::Test
+
+interface Render<T>
+  fun render(v: T): String
+  fun render(v: T, spec: String): String
+    ret render(v) + "[" + spec + "]"
+
+instance [ambient] Render<Int>
+  fun render(v: Int): String
+    ret "n"
+
+instance [ambient] Render<Bool>
+  fun render(v: Bool): String
+    ret "b"
+  fun render(v: Bool, spec: String): String
+    ret "B" + spec
+
+fun program(): String
+  ret render(1, "x") + " " + render(true, "y") + " " + render(2) + " " + render(false)
+
+fun [test("a trait call reaches the default, not the shorter overload")] check(): None|TestFailure
+    ret assertEqStr(program(), "n[x] By n b", "program()")
+
+
+namespace CompilerTests::InterfaceDefaultOverloads::GenericCallerUsesDefault
+
+import System
+import System::Test
+
+interface Render<T>
+  fun render(v: T): String
+  fun render(v: T, spec: String): String
+    ret render(v) + "[" + spec + "]"
+
+instance [ambient] Render<Int>
+  fun render(v: Int): String
+    ret "n"
+
+fun both<T>(v: T): String where Render<T>
+  ret render(v) + render(v, "s")
+
+fun program(): String
+  ret both(5)
+
+fun [test("a generic caller reaches the default through its constraint")] check(): None|TestFailure
+    ret assertEqStr(program(), "nn[s]", "program()")
+
+
+namespace CompilerTests::InterfaceDefaultOverloads::GenericClass
+
+import System
+import System::Test
+
+interface Render<T>
+  fun render(v: T): String
+  fun render(v: T, spec: String): String
+    ret render(v) + "[" + spec + "]"
+
+# The class names its parameter differently from the interface's.
+class Box<U>(tag: String) : Render<U>
+  fun render(v: U): String
+    ret tag
+
+# A generic body calls the default before monomorphisation grounds U.
+fun viaBox<U>(b: Box<U>, v: U): String
+  ret b.render(v, "g")
+
+fun program(): String
+  ret Box<Int>("box").render(1, "a") + " " + viaBox(Box<String>("gbox"), "x")
+
+fun [test("a generic class keeps the inherited default")] check(): None|TestFailure
+    ret assertEqStr(program(), "box[a] gbox[g]", "program()")
+
+
+namespace CompilerTests::InterfaceDefaultOverloads::GenericInstance
+
+import System
+import System::Containers
+import System::Test
+
+interface Render<T>
+  fun render(v: T): String
+  fun render(v: T, spec: String): String
+    ret render(v) + "[" + spec + "]"
+
+instance [ambient]<T> Render<List<T>>
+  fun render(v: List<T>): String
+    ret "list"
+
+fun program(): String
+  ret render(prepend(1, List<Int>()), "b")
+
+fun [test("a generic instance keeps the inherited default")] check(): None|TestFailure
+    ret assertEqStr(program(), "list[b]", "program()")
+
+
+namespace CompilerTests::InterfaceDefaultOverloads::ThroughIntermediateInterface
+
+import System
+import System::Test
+
+interface Render<T>
+  fun render(v: T): String
+  fun render(v: T, spec: String): String
+    ret render(v) + "[" + spec + "]"
+
+# The default is a GRANDPARENT member of Plain.
+interface Fancy<T> : Render<T>
+
+class Plain() : Fancy<Int>
+  fun render(v: Int): String
+    ret "plain"
+
+fun program(): String
+  ret Plain().render(1) + " " + Plain().render(1, "c")
+
+fun [test("a default reached through an intermediate interface")] check(): None|TestFailure
+    ret assertEqStr(program(), "plain plain[c]", "program()")
+
+
+namespace CompilerTests::InterfaceDefaultOverloads::ReshapingIntermediateInterface
+
+import System
+import System::Containers
+import System::Test
+
+interface Render<T>
+  fun render(v: T): String
+  fun render(v: T, spec: String): String
+    ret render(v) + "[" + spec + "]"
+
+# Render's T is Wrap's List<X>: the override `render(v: List<Int>)` must be
+# compared against `render(v: List<Int>)`, not against `render(v: T)`.
+interface Wrap<X> : Render<List<X>>
+
+class Wrapped() : Wrap<Int>
+  fun render(v: List<Int>): String
+    ret "wrapped"
+
+fun program(): String
+  let l = prepend(1, List<Int>())
+  ret Wrapped().render(l) + " " + Wrapped().render(l, "d")
+
+fun [test("an override through an interface that reshapes its argument")] check(): None|TestFailure
+    ret assertEqStr(program(), "wrapped wrapped[d]", "program()")

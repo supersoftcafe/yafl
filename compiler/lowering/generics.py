@@ -1077,27 +1077,23 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
         if not method_datas:
             return rw.UNCHANGED
 
-        if len(method_datas) > 1:
-            # Multiple overloads — disambiguate by comparing the concrete type of
-            # the interface method (looked up by exact hash) against class methods.
-            iface_classes = r.find_type(trait_spec.name)
-            if len(iface_classes) == 1 and isinstance(iface_classes[0].statement, s.ClassStatement):
-                iface_cls = iface_classes[0].statement
-                iface_mds = iface_cls.find_data(r, thing.name)
-                if len(iface_mds) == 1 and isinstance(iface_mds[0].statement, s.FunctionStatement):
-                    iface_type = iface_mds[0].statement.get_type()
-                    if iface_type is not None:
-                        if iface_cls.type_params and trait_spec.type_params:
-                            mapping = {p.name: c for p, c in zip(iface_cls.type_params, trait_spec.type_params)}
-                            def sub(_, node, m=mapping):
-                                if isinstance(node, t.GenericPlaceholderSpec) and node.name in m:
-                                    return m[node.name]
-                                return rw.UNCHANGED
-                            iface_type = rw.resolved(iface_type.search_and_replace(r, sub), iface_type)
-                        matching = [md for md in method_datas
-                                    if t.trivially_assignable_equals(r, iface_type, md.statement.get_type())]
-                        if len(matching) == 1:
-                            method_datas = matching
+        # The provider's method must match the interface method's concrete type
+        # — even when it is the only candidate. A lone candidate of another
+        # signature (an overload, not this method's override) would bind the
+        # call to a function of the wrong arity: wrong code, or a crash. The
+        # program was checked during convergence, so that can only be a
+        # compiler bug (member lookup lost the override): say so here.
+        iface_type = _concrete_interface_method_type(r, trait_spec, thing.name)
+        if iface_type is not None:
+            verdicts = [(md, t.trivially_assignable_equals(r, iface_type, md.statement.get_type()))
+                        for md in method_datas]
+            matching = [md for md, v in verdicts if v]
+            if len(matching) == 1:
+                method_datas = matching
+            elif len(verdicts) == 1 and verdicts[0][1] is False:
+                raise ValueError(f"compiler bug: trait method `{thing.name}` at {thing.line_ref} "
+                                 f"would bind to `{method_datas[0].unique_name}` of "
+                                 f"`{provider_class.name}`, which has another signature")
 
         if len(method_datas) != 1:
             return rw.UNCHANGED
@@ -1106,6 +1102,28 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
         return e.DotExpression(thing.line_ref, provider_expr, method_datas[0].unique_name)
 
     return [rw.resolved(stmt.search_and_replace(resolver, redirect), stmt) for stmt in statements]
+
+
+def _concrete_interface_method_type(r: g.Resolver, trait_spec: t.ClassSpec, name: str) -> t.TypeSpec | None:
+    """The type of interface method `name` (an exact, hashed name) with the
+    interface's type parameters replaced by `trait_spec`'s arguments, or None
+    when it cannot be found."""
+    iface_classes = r.find_type(trait_spec.name)
+    if len(iface_classes) != 1 or not isinstance(iface_classes[0].statement, s.ClassStatement):
+        return None
+    iface_cls = iface_classes[0].statement
+    iface_mds = iface_cls.find_data(r, name)
+    if len(iface_mds) != 1 or not isinstance(iface_mds[0].statement, s.FunctionStatement):
+        return None
+    iface_type = iface_mds[0].statement.get_type()
+    if iface_type is None or not (iface_cls.type_params and trait_spec.type_params):
+        return iface_type
+    mapping = {p.name: c for p, c in zip(iface_cls.type_params, trait_spec.type_params)}
+    def sub(_, node):
+        if isinstance(node, t.GenericPlaceholderSpec) and node.name in mapping:
+            return mapping[node.name]
+        return rw.UNCHANGED
+    return rw.resolved(iface_type.search_and_replace(r, sub), iface_type)
 
 
 def report_unresolved_generic_calls(statements: list[s.Statement]) -> "list":

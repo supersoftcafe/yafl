@@ -689,7 +689,7 @@ fun [tail] postfixLoop(base, ps): (v: PExpr|PFail, rest: Ps)
     let args = parseTupleTerm(ps)
     ret match(args.v)
       (f: PFail)    => (f, args.rest)
-      (tup: PExpr)  => postfixLoop(PeCall(base, tup, lr), args.rest)
+      (tup: PExpr)  => postfixLoop(PeCall(base, tup, lr, None), args.rest)
   if atSym(ps, ".")
     let name = peek(bump(ps))
     if !isIdentTok(name)
@@ -721,6 +721,7 @@ fun parseTerminal(ps): (v: PExpr|PFail, rest: Ps)
     (s2: KString) => stringTerm(t.text, lr, ps)
     (c2: KChar)   => charTerm(t.text, lr, ps)
     (r2: KRegex)  => regexTerm(t.text, lr, ps)
+    (i3: KInterp) => interpTerm(t, lr, ps)
     (i2: KIdent)  => parseNamed(ps)
     (sy: KSymbol) => parseSymbolTerminal(t.text, ps)
     ()            => (softFail("expected expression", ps), ps)
@@ -752,6 +753,177 @@ fun stringTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)
   ret u.uErr == ""
     ? (PeStr(u.uText, lr, lexeme), bump(ps))
     : (hardFail(u.uErr, ps), bump(ps))
+
+# ── interpolated strings (parser.py __interp / _split_interpolation) ──────
+# `$"text {expr} text {expr, spec}"`: the body split into decoded text pieces
+# and slots, each slot's expression tokenized and parsed on its own with its
+# tokens placed at their real columns. A literal with no slot is a PeStr.
+
+fun interpTerm(t: Token, lr: PLine, ps): (v: PExpr|PFail, rest: Ps)
+  let lexeme = t.text
+  if length(lexeme) < 3 || !endsWith(lexeme, "\"")
+    ret (hardFail("interpolated string missing quote", ps), bump(ps))
+  let sp = SplitCtx(slice(lexeme, 2, length(lexeme) - 1), t, ps.srcFile)
+  ret match(splitLoop(sp, 0, List(), ""))
+    (f: PFail)                 => (f, bump(ps))
+    (parts: List<PInterpPart>) => (anySlot(parts) ? PeInterp(parts, lr, lexeme)
+                                                  : PeStr(allText(parts), lr, lexeme),
+                                   bump(ps))
+
+# The body being split, the token it came from (its line and column), and the
+# file, for the slots' own tokens.
+class [final] SplitCtx(scBody: String, scTok: Token, scFile: String)
+
+fun anySlot(ps: List<PInterpPart>) => fold(ps, false, (a, p2) => a || match(p2)
+  (sl: PipSlot) => true
+  (t2: PipText) => false)
+
+fun allText(ps: List<PInterpPart>) => fold(ps, "", (a, p2) => match(p2)
+  (t2: PipText) => a + t2.ipText
+  (sl: PipSlot) => a)
+
+# The column of body byte `at`: the token's own, past `$"`, plus the
+# characters before it.
+fun bodyCol(sp: SplitCtx, at: Int) => sp.scTok.col + 2 + countChars(sp.scBody, 0, at, 0)
+
+fun failAtBody(sp: SplitCtx, at: Int, msg) => PFail(true, msg, sp.scTok.line, bodyCol(sp, at), List())
+
+fun [tail] splitLoop(sp: SplitCtx, i: Int, parts: List<PInterpPart>, raw: String): List<PInterpPart>|PFail
+  let body = sp.scBody
+  if i >= length(body)
+    ret flushText(sp, parts, raw)
+  let c = byteAt(body, i)
+  if c == '\\'
+    ret splitLoop(sp, i + 2, parts, raw + slice(body, i, i + 2 <= length(body) ? i + 2 : length(body)))
+  if c != '{'
+    ret splitLoop(sp, i + 1, parts, raw + slice(body, i, i + 1))
+  ret match(flushText(sp, parts, raw))
+    (f: PFail)                  => f
+    (flushed: List<PInterpPart>) => match(slotAt(sp, i))
+      (f: PFail)    => f
+      (sl: SlotRead) => splitLoop(sp, sl.srClose + 1, append(flushed, sl.srSlot), "")
+
+# Pending raw text decoded onto the parts; adjacent text joins one piece and
+# an empty piece is never stored. A decode error sits at the string itself.
+fun flushText(sp: SplitCtx, parts: List<PInterpPart>, raw: String): List<PInterpPart>|PFail
+  if raw == ""
+    ret parts
+  let u = unescape(raw)
+  if u.uErr != ""
+    ret PFail(true, u.uErr, sp.scTok.line, sp.scTok.col, List())
+  if u.uText == ""
+    ret parts
+  ret match(head(takeLastOne(parts)))
+    (t2: PipText) => append(dropLastOne(parts), PipText(t2.ipText + u.uText))
+    ()            => append(parts, PipText(u.uText))
+
+class [final] SlotRead(srSlot: PInterpPart, srClose: Int)
+
+# The slot whose `{` is body byte `i`: it runs to the first `}` outside its
+# string and char literals.
+fun slotAt(sp: SplitCtx, i: Int): SlotRead|PFail
+  let sc = slotClose(sp.scBody, i + 1)
+  if sc.scKind == 0
+    ret readSlot(sp, i, sc.scAt)
+  if sc.scKind == 1
+    ret failAtBody(sp, sc.scAt, "unterminated literal in interpolation slot")
+  if sc.scKind == 2
+    ret failAtBody(sp, sc.scAt, "`{` inside an interpolation slot — write `\\{` for a literal brace")
+  ret failAtBody(sp, i, "unterminated interpolation slot — write `\\{` for a literal brace")
+
+# scKind: 0 the closing `}` is at scAt; 1 an unterminated literal starts at
+# scAt; 2 a `{` at scAt; 3 no `}` before the end.
+class [final] SlotClose(scKind: Int, scAt: Int)
+
+fun [tail] slotClose(body: String, j: Int): SlotClose
+  if j >= length(body)
+    ret SlotClose(3, j)
+  let c = byteAt(body, j)
+  if c == '}'
+    ret SlotClose(0, j)
+  if c == '{'
+    ret SlotClose(2, j)
+  if c == '"' || c == '\''
+    let end = skipQuoted(body, j)
+    ret end < 0 ? SlotClose(1, j) : slotClose(body, end)
+  ret slotClose(body, j + 1)
+
+# `s[i]` opens a string or char literal: the index past its closing quote, or
+# -1 when it has none.
+fun skipQuoted(s: String, i: Int): Int => skipQuotedFrom(s, i + 1, byteAt(s, i))
+
+fun [tail] skipQuotedFrom(s: String, i: Int, quote): Int
+  if i >= length(s)
+    ret -1
+  let c = byteAt(s, i)
+  if c == '\\'
+    ret skipQuotedFrom(s, i + 2, quote)
+  ret c == quote ? i + 1 : skipQuotedFrom(s, i + 1, quote)
+
+# The spec is the text after the separating comma, spaces around it trimmed
+# before its escapes decode, so a written `\t` survives (parser.py).
+fun readSlot(sp: SplitCtx, i: Int, close: Int): SlotRead|PFail
+  let slot = slice(sp.scBody, i + 1, close)
+  let comma = specComma(slot, 0, 0)
+  let text = comma < 0 ? slot : slice(slot, 0, comma)
+  let raw = comma < 0 ? "" : trim(slice(slot, comma + 1, length(slot)))
+  if comma >= 0 && raw == ""
+    ret failAtBody(sp, i + 1 + comma, "empty format spec after `,`")
+  let specU = unescape(raw)
+  if specU.uErr != ""
+    ret failAtBody(sp, i + 1 + comma + 1, specU.uErr)
+  if trim(text) == ""
+    ret failAtBody(sp, i, "empty interpolation slot")
+  let spec: String|None = comma < 0 ? None : specU.uText
+  ret match(parseSlot(sp, text, i + 1))
+    (f: PFail)  => f
+    (x: PExpr)  => SlotRead(PipSlot(x, spec, trim(text),
+                                    PLine(sp.scFile, sp.scTok.line, bodyCol(sp, i))),
+                            close)
+
+# The index of the comma that starts a slot's spec — the first `,` outside
+# brackets and literals — or -1. An expression has no unbracketed comma of
+# its own, so nothing in it is ever mistaken for the separator.
+fun [tail] specComma(slot: String, i: Int, depth: Int): Int
+  if i >= length(slot)
+    ret -1
+  let c = byteAt(slot, i)
+  if c == '"' || c == '\''
+    let end = skipQuoted(slot, i)
+    ret end < 0 ? -1 : specComma(slot, end, depth)
+  if c == '(' || c == '['
+    ret specComma(slot, i + 1, depth + 1)
+  if c == ')' || c == ']'
+    ret specComma(slot, i + 1, depth - 1)
+  if c == ',' && depth == 0
+    ret i
+  ret specComma(slot, i + 1, depth)
+
+# A slot's expression, tokenized and parsed alone; `at` is the body byte its
+# first character sits at, and every token moves there.
+fun parseSlot(sp: SplitCtx, text: String, at: Int): PExpr|PFail
+  let col0 = bodyCol(sp, at)
+  let toks = map(tokenize(text), (tk) => Token(tk.kind, tk.text, sp.scTok.indent,
+                                               sp.scTok.line, col0 + tk.col - 1))
+  ret match(nestedInterp(toks))
+    (n: Token) => PFail(true, "an interpolated string inside an interpolation slot — bind it with `let` first",
+                        n.line, n.col, List())
+    ()         => parseSlotTokens(sp, toks)
+
+fun [tail] nestedInterp(toks: List<Token>): Token|None => match(head(toks))
+  (tk: Token) => match(tk.kind)
+    (k: KInterp) => tk
+    ()           => nestedInterp(dropOne(toks))
+  ()          => None
+
+fun parseSlotTokens(sp: SplitCtx, toks: List<Token>): PExpr|PFail
+  let r = parseExpr(Ps(toks, sp.scTok.line, -1, sp.scFile, 0, false))
+  ret match(r.v)
+    (f: PFail) => f.hard ? f
+      : PFail(true, "could not parse the interpolation slot as one expression", f.line, f.col, List())
+    (x: PExpr) => isEof(peek(r.rest)) ? x
+      : PFail(true, "could not parse the interpolation slot as one expression",
+              peek(r.rest).line, peek(r.rest).col, List())
 
 # A char literal is its codepoint as a 32-bit integer (exactly one scalar).
 fun charTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)

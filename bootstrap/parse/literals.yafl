@@ -62,22 +62,19 @@ fun [tail] unescapeLoop(raw, i, acc): Unescaped
 
 # '\0' produces a NUL byte, which cannot ride a String return marker — encode
 # it as the sentinel "@0" from simpleEscape and expand at the call site above.
-fun simpleEscape(c)
-  if c == 'n'
-    ret "\n"
-  if c == 'r'
-    ret "\r"
-  if c == 't'
-    ret "\t"
-  if c == '0'
-    ret "@0"
-  if c == '\\'
-    ret "\\"
-  if c == '"'
-    ret "\""
-  if c == '\''
-    ret "'"
-  ret ""
+fun simpleEscape(c: Int32): String => match(c)
+  ('n')  => "\n"
+  ('r')  => "\r"
+  ('t')  => "\t"
+  ('0')  => "@0"
+  ('\\') => "\\"
+  ('"')  => "\""
+  ('\'') => "'"
+  # `\{` opens no slot in an interpolated string; `\}` is accepted too. Both
+  # decode in plain strings as well (parser.py _STRING_ESCAPES).
+  ('{')  => "{"
+  ('}')  => "}"
+  ()     => ""
 
 fun unescapeU(raw, i, acc)
   if i + 2 < length(raw) && byteAt(raw, i + 2) == '{'

@@ -389,6 +389,7 @@ fun [tail] linCount(x, env, r, acc): LinOut => match(x)
   (nw: PeNew)    => linCount(nw.newParam, env, r, acc)
   (qq: PeCoalesce) => linPair(qq.qqSubject, qq.qqFallback, env, r, acc)
   (pp: PePipe) => linPair(pp.pipeSubject, pp.pipeStage, env, r, acc)
+  (ip: PeInterp) => linInterpParts(ip.interpParts, env, r, acc)
   (ar: PeArrayRead) => linPair(ar.arrObj, ar.arrIndex, env, r, acc)
   (ne: PeNewEnum) => linFieldArgs(ne.fieldArgs, env, r, acc)
   (op: PeBuiltinOp) => linCount(op.opParams, env, r, acc)
@@ -477,6 +478,15 @@ fun linTriple(a, b, c, env, r,
 # NamedExpressions inside field_args). Not [tail]: the counts sum on the way
 # back up; fieldArgs lists are tiny.
 # Right-nested on purpose: cntAdd folds the rest's counts into the head's.
+# Unreachable once fixupProgram has lowered every interpolated string; the
+# slots count as the expressions they are, in order.
+fun linInterpParts(ps: List<PInterpPart>, env, r, acc): LinOut =>
+  fold(ps, linZero(acc), (o, part) => match(part)
+    (sl: PipSlot) => linAfter(o, linCount(sl.ipExpr, env, r, o.loErrs))
+    (t2: PipText) => o)
+
+fun linAfter(o1: LinOut, o2: LinOut) => LinOut(cntAdd(o1.loCnt, o2.loCnt), o2.loErrs)
+
 fun linFieldArgs(fas: List<PFieldArg>, env, r, acc): LinOut => match(head(fas))
   (fa: PFieldArg) => linFaStep(fa, dropOne(fas), env, r, acc)
   ()              => linZero(acc)

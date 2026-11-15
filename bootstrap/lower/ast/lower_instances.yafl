@@ -37,7 +37,7 @@ fun liLower(ti: PsTraitInstance, acc: List<PStmt>)
                         prepend(ti.tiPattern, List()), ti.tiWheres,
                         ti.tiMembers, false, lr, None, None, ti.tiImports)
   let ownArgs = liOwnArgs(ti.tiGens, lr, List())
-  let value = PeCall(PeName(wbare, ownArgs, lr), PeTuple(List(), lr), lr)
+  let value = PeCall(PeName(wbare, ownArgs, lr), PeTuple(List(), lr), lr, None)
   let attrs = ti.tiAmbient
     ? append(append(List(), PAttr("trait", None)), PAttr("ambient", None))
     : prepend(PAttr("trait", None), List())

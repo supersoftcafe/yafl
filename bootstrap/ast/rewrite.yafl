@@ -317,6 +317,8 @@ fun wkExprKids<S>(x: PExpr, r: Resolver, s: S, w: Walk<S>): (s: S, x: PExpr, ch:
   (pp: PePipe) => wkExpr(pp.pipeSubject, r, s, w)
     |> (sb) => (sb, wkExpr(pp.pipeStage, r, sb.s, w))
     |> (sb, st) => (s = st.s, x = with pp(pipeSubject = sb.x, pipeStage = st.x), ch = sb.ch || st.ch)
+  (ip: PeInterp) => wkInterpParts(ip.interpParts, r, s, w)
+    |> (ps2) => (s = ps2.s, x = with ip(interpParts = ps2.x), ch = ps2.ch)
   (cv: PeConvert) => wkExpr(cv.convInner, r, s, w)
     |> (iv) => (iv, wkSpec(cv.convTarget, r, iv.s, w))
     |> (iv, t) => (s = t.s, x = with cv(convInner = iv.x, convTarget = t.x), ch = iv.ch || t.ch)
@@ -452,6 +454,15 @@ fun wkPositions<S>(ps: List<PPos>, r: Resolver, s: S, w: Walk<S>): (s: S, x: Lis
 
 fun wkTupEnts<S>(es: List<PTupEnt>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PTupEnt>, ch: Bool) =>
   wkList(es, s, (s2, x) => wkTupEnt(s2, x, r, w))
+
+fun wkInterpParts<S>(ps: List<PInterpPart>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PInterpPart>, ch: Bool) =>
+  wkList(ps, s, (s2, x) => wkInterpPart(s2, x, r, w))
+
+# Structural, like a tuple entry: the callback never visits a part.
+fun wkInterpPart<S>(s: S, x: PInterpPart, r: Resolver, w: Walk<S>): (s: S, x: PInterpPart, ch: Bool) => match(x)
+  (t2: PipText) => (s = s, x = x, ch = false)
+  (sl: PipSlot) => wkExpr(sl.ipExpr, r, s, w)
+    |> (e2) => (s = e2.s, x = with sl(ipExpr = e2.x), ch = e2.ch)
 
 fun wkFieldArgs<S>(fas: List<PFieldArg>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PFieldArg>, ch: Bool) =>
   wkList(fas, s, (s2, x) => wkFieldArg(s2, x, r, w))

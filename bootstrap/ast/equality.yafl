@@ -87,6 +87,8 @@ fun eqExpr(a: PExpr, b: PExpr) => match(a, b)
   (x: PeDot, y: PeDot)             => x.member == y.member && eqExpr(x.base, y.base)
                                       && eqLine(x.pedLine, y.pedLine)
                                       && eqIndex(x.pedIndex, y.pedIndex)
+  # pecOrigin is not identity (Python compare=False): a lowered call is the
+  # same call whatever it was lowered from.
   (x: PeCall, y: PeCall)           => eqExpr(x.function, y.function)
                                       && eqExpr(x.parameter, y.parameter)
                                       && eqLine(x.pecLine, y.pecLine)
@@ -136,6 +138,8 @@ fun eqExpr(a: PExpr, b: PExpr) => match(a, b)
   (x: PePipe, y: PePipe)           => eqExpr(x.pipeSubject, y.pipeSubject)
                                       && eqExpr(x.pipeStage, y.pipeStage)
                                       && eqLine(x.pepiLine, y.pepiLine)
+  (x: PeInterp, y: PeInterp)       => eqBy(x.interpParts, y.interpParts, eqInterpPart)
+                                      && eqLine(x.peipLine, y.peipLine)
   (x: PeLoop, y: PeLoop)           => eqExpr(x.loopBody, y.loopBody)
                                       && eqExprs(x.loopParams, y.loopParams)
                                       && eqLine(x.pelpLine, y.pelpLine)
@@ -151,6 +155,12 @@ fun eqExpr(a: PExpr, b: PExpr) => match(a, b)
 
 fun eqTupEnt(a: PTupEnt, b: PTupEnt) => a.tupName == b.tupName && eqBool(a.tupSpread, b.tupSpread)
     && eqExpr(a.tupValue, b.tupValue)
+
+fun eqInterpPart(a: PInterpPart, b: PInterpPart) => match(a, b)
+  (x: PipText, y: PipText) => x.ipText == y.ipText
+  (x: PipSlot, y: PipSlot) => eqExpr(x.ipExpr, y.ipExpr) && eqStrOpt(x.ipSpec, y.ipSpec)
+                              && x.ipText == y.ipText && eqLine(x.ipLine, y.ipLine)
+  ()                       => false
 
 fun eqArm(a: PArm, b: PArm) => a.armName == b.armName
     && eqSpecOpt(a.armType, b.armType)

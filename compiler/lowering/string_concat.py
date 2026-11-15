@@ -80,7 +80,10 @@ def flatten_string_appends(app: Application) -> Application:
                 if args is not None:
                     return spine(args[0], taking) + spine(args[1], taking)
                 if param.function == _CONCAT_N and isinstance(param.parameters, NewStruct):
-                    return [v for fname, v in param.parameters.values if fname != "count"]
+                    # The count is the FIRST field, whatever it is named: an
+                    # interpolated string lowers to a str_concat_n whose
+                    # fields carry tuple names, not "count".
+                    return [v for _, v in param.parameters.values[1:]]
             if (isinstance(param, StackVar) and reads.get(param.name) == 1
                     and param.name not in anchored):
                 source = defs.get(param.name)

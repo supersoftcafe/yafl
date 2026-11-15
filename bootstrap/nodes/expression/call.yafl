@@ -25,7 +25,7 @@ fun compileCall(c: PeCall, r, expected)
     ()           => partialCall(c, arg)
 
 fun partialCall(c: PeCall, arg: ExprOut)
-  ret ExprOut(PeCall(c.function, arg.eoExpr, c.pecLine), arg.eoGlobals,
+  ret ExprOut(PeCall(c.function, arg.eoExpr, c.pecLine, c.pecOrigin), arg.eoGlobals,
               arg.eoHints)
 
 fun callWithShape(c: PeCall, r, arg, tp,
@@ -34,7 +34,7 @@ fun callWithShape(c: PeCall, r, arg, tp,
   let args = retriedArgs(arg, before,
                          paramShapeOf(calleeType(fn.eoExpr, arg.eoExpr, r)),
                          tp, r)
-  ret ExprOut(converted(PeCall(fn.eoExpr, args.eoExpr, c.pecLine), expected, r),
+  ret ExprOut(converted(PeCall(fn.eoExpr, args.eoExpr, c.pecLine, c.pecOrigin), expected, r),
               concat(fn.eoGlobals, args.eoGlobals),
               mergeHints(fn.eoHints, args.eoHints))
 
@@ -54,7 +54,21 @@ fun paramShapeOf(ft: Spec|None) => match(ft)
   (cl: SCallable) => cl.scParams2
   ()              => None
 
-fun checkCall(c: PeCall, r)
+fun checkCall(c: PeCall, r) => match(c.pecOrigin)
+  (o: POrigin) => originErrs(o, c.pecLine, checkCallPlain(c, r))
+  ()           => checkCallPlain(c, r)
+
+# A lowered call's OWN errors are about a call the user never wrote: say what
+# they did write (Python CallExpression.check). An argument's errors are about
+# their code already — and when there are any, they are the cause: an argument
+# of unknown type makes every candidate fit, so the call's own complaint would
+# only be noise.
+fun originErrs(o: POrigin, lr: PLine, errs: Set<PErr>): Set<PErr>
+  let others = filter(errs, (e2) => e2.errLine != lr)
+  ret !isEmpty(others) ? others
+    : map(errs, (e2) => PErr(e2.errLine, originReword(o, e2.errMsg), e2.errWarn, e2.errCategory))
+
+fun checkCallPlain(c: PeCall, r)
   let calleeParams = paramShapeOf(exprType(c.function, r))
   let fnErrs = checkExpr(c.function, r, None)
   let argErrs = checkExpr(c.parameter, r, calleeParams)

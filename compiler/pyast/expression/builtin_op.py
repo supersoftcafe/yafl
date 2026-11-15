@@ -77,7 +77,26 @@ class BuiltinOpExpression(Expression):
         return BoolExpression(self.line_ref, predicate(operands[0].value, operands[1].value))
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
-        return self.params.check(resolver, None)
+        return self.params.check(resolver, None) + self.__concat_errors(resolver)
+
+    def __concat_errors(self, resolver: g.Resolver) -> list[Error]:
+        """str_concat_n joins Strings: every operand after the count must be
+        one. An interpolated string lowers straight to it, so this is what
+        type-checks each slot's `show`; a lowered call speaks through its
+        origin, as the slot the user wrote."""
+        if self.op.value != "str_concat_n" or not isinstance(self.params, TupleExpression):
+            return []
+        from pyast.expression.call import CallExpression, _type_str
+        errors = []
+        for entry in self.params.expressions[1:]:
+            ts = entry.value.get_type(resolver)
+            if ts is None or t.trivially_assignable_equals(resolver, t.BuiltinSpec(self.line_ref, "str"), ts) is not False:
+                continue
+            origin = entry.value.origin if isinstance(entry.value, CallExpression) else None
+            errors.append(Error(entry.value.line_ref,
+                origin.reword(f"`show` returns {_type_str(ts)}, not String") if origin is not None
+                else f"str_concat_n joins Strings, not {_type_str(ts)}"))
+        return errors
 
     # The hash/identity internals are REPRESENTATION-AWARE: on a boxed enum
     # they are the real runtime calls; on a value representation there is no

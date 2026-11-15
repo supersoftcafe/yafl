@@ -214,19 +214,51 @@ fun isArrayField(f: PStmt): Bool => match(f)
   (o: PStmt)    => false
 
 # ── ClassStatement.find_data ─────────────────────────────────────────────────
-# A member lookup: the class's OWN members first (constructor params minus the
-# internal array-storage field, plus body statements) — anything found masks
-# the parents — else every implemented interface's, accumulated. Member access
-# to the array field resolves to the generated ACCESSOR (same name), never the
-# raw storage.
+# A member lookup: the class's OWN members (constructor params minus the
+# internal array-storage field, plus body statements), plus every implemented
+# interface's member that none of them overrides. Overriding is per SIGNATURE:
+# an own `g(v)` hides the inherited `g(v)` but not an inherited overload
+# `g(v, s)`, which stays reachable with its default body. An inherited member
+# stays hidden unless its signature DEFINITELY differs from every own match's.
+# Each member's type is compared in the terms of the class the lookup started
+# from: the type-argument mapping is carried down the whole parent chain, so
+# `Wrap<X> : Render<List<X>>` makes `Render`'s `render(v: T)` a
+# `render(v: List<X>)` (Python find_typed_data). Member access to the array
+# field resolves to the generated ACCESSOR (same name), never the raw storage.
 
-fun classFindData(cs: PsClass, r, query)
-  let own = memberFinds(concat(nonArrayFields(cs), cs.cMembers), query,
-                        List())
+class [final] TypedFound(tfFound: Found, tfType: Spec|None)
+
+fun classFindData(cs: PsClass, r, query): List<Found> =>
+  map(classFindTyped(cs, r, query, List()), (tf) => tf.tfFound)
+
+fun classFindTyped(cs: PsClass, r, query, mapping: List<Binding>): List<TypedFound>
+  let own = map(memberFinds(concat(nonArrayFields(cs), cs.cMembers), query, List()),
+                (f) => TypedFound(f, substOpt(stmtType(f.fStmt), mapping)))
+  let inherited = fold(findClassesOrError(cs.cImplements, r), List(),
+                       (a: List<TypedFound>, x) => match(x.fcClass)
+                         (p: PsClass) => concat(a, classFindTyped(p, r, query,
+                                                                  parentMapping(p, x.fcSpec, mapping)))
+                         ()           => a)
   ret isEmpty(own)
-    ? parentFinds(findClassesOrError(cs.cImplements, r), r, query,
-                  List())
-    : own
+    ? inherited
+    : concat(own, filter(inherited, (i) => !anyOverrides(own, i, r)))
+
+fun anyOverrides(own: List<TypedFound>, inherited: TypedFound, r) =>
+  fold(own, false, (a, o) => a || mayOverride(o.tfType, inherited.tfType, r))
+
+# Whether a member of `own` may override one of `inherited`, both in the
+# class's terms: false only when both are typed and the types definitely
+# differ — an overload, not an override.
+fun mayOverride(own: Spec|None, inherited: Spec|None, r) => match(own, inherited)
+  (o: Spec, i: Spec) => !triFalse(assignableEq(r, i, o))
+  ()                 => true
+
+# `parent`'s placeholders bound to the arguments `parentSpec` gives it, those
+# rewritten by `mapping` into the terms of the class the lookup started from.
+fun parentMapping(parent: PsClass, parentSpec: Spec, mapping: List<Binding>): List<Binding> =>
+  match(parentSpec)
+    (c: SClass) => paramMapping(parent.cGens, substList(c.scParams, mapping))
+    ()          => List()
 
 fun nonArrayFields(cs: PsClass) => dropArrayField(flattenParams(cs.cParams), List())
 
@@ -243,13 +275,6 @@ fun memberFinds(ms: List<PStmt>, query, acc: List<Found>) =>
   fold(ms, acc, (a, x) => nameMatches(stmtName(x), query)
     ? append(a, Found(stmtName(x), x, ScMember()))
     : a)
-
-fun parentFinds(fs: List<FoundClass>, r, query, acc): List<Found> =>
-  fold(fs, acc, (a, x) => parentFindsStep(a, x, r, query))
-
-fun parentFindsStep(a: List<Found>, x: FoundClass, r, query) => match(x.fcClass)
-  (p: PsClass) => concat(a, classFindData(p, r, query))
-  () => a
 
 # `this` inside a generic class carries the class's own placeholders — a bare
 # ClassSpec would fail the declared-arity check later.
