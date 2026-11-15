@@ -873,10 +873,14 @@ fun readSlot(sp: SplitCtx, i: Int, close: Int): SlotRead|PFail
     ret failAtBody(sp, i, "empty interpolation slot")
   let spec: String|None = colon < 0 ? None : specU.uText
   ret match(parseSlot(sp, text, i + 1))
-    (f: PFail)  => f
+    # A spec colon took what may have been a ternary's `:`.
+    (f: PFail)  => colon >= 0 ? failAtBody(sp, i, specColonHint) : f
     (x: PExpr)  => SlotRead(PipSlot(x, spec, trim(text),
                                     PLine(sp.scFile, sp.scTok.line, bodyCol(sp, i))),
                             close)
+
+let specColonHint = "could not parse the interpolation slot before its `:` — a `:` "
+                    + "starts the format spec, so a ternary needs brackets: {(c ? a : b)}"
 
 # The index of the colon that starts a slot's spec — the first `:` outside
 # brackets and literals that is not part of `::` or `:=` — or -1. A ternary

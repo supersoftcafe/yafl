@@ -288,6 +288,10 @@ def _spec_colon(slot: str) -> int:
     return -1
 
 
+_SPEC_COLON_HINT = ("could not parse the interpolation slot before its `:` — a `:` "
+                    "starts the format spec, so a ternary needs brackets: {(c ? a : b)}")
+
+
 def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None]:
     """Split an interpolated string's body (between the quotes) into decoded
     text pieces and slots. Each slot's expression is tokenized and parsed on
@@ -355,6 +359,9 @@ def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None
         if not text.strip():
             return parts, p.Error(at(i), "empty interpolation slot")
         expression, err = _parse_slot(text, at(i + 1), head.indent)
+        if err is not None and colon >= 0:
+            # A spec colon took what may have been a ternary's `:`.
+            return parts, p.Error(at(i), _SPEC_COLON_HINT)
         if err is not None:
             return parts, err
         parts.append(e.InterpolationSlot(at(i), expression, spec, text.strip()))

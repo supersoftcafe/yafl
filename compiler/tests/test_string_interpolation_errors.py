@@ -54,8 +54,8 @@ class TestStringInterpolationErrors(unittest.TestCase):
         # The spec starts at the first top-level `:`, so `{x > 0 ? 1 : 2}`
         # leaves `x > 0 ? 1 ` as the expression, which does not parse.
         out = _diagnostics('$"a {x > 0 ? 1 : 2} b"')
-        self.assertIn("t.yafl[6:", out)
-        self.assertIn("interpolation slot", out)
+        self.assertIn(f"t.yafl[6:{_BODY + 2}] - could not parse the interpolation slot before its `:`", out)
+        self.assertIn("a ternary needs brackets", out)
 
     def test_nested_interpolated_string(self):
         out = _diagnostics('$"a {$"{x}"} b"')
