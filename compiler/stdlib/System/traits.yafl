@@ -68,7 +68,7 @@ interface Shift<TVal>
 # no use for one need not implement it; a type that has one overrides it.
 interface Show<TVal>
   fun show(value: TVal): System::String
-  fun show(value: TVal, spec: System::String): System::String
+  fun show(value: TVal, _spec: System::String): System::String
     ret show(value)
 
 
