@@ -106,6 +106,26 @@ class ClassStatement(TypeStatement):
         return any(slot.name == member_name for slot in self._all_slots)
 
     def find_data(self, resolver: g.Resolver, query: str) -> list[g.Resolved[DataStatement]]:
+        return [match for match, _ in self.find_typed_data(resolver, query, {})]
+
+    def find_typed_data(self, resolver: g.Resolver, query: str, mapping: dict[str, t.TypeSpec]
+                        ) -> list[tuple[g.Resolved[DataStatement], t.TypeSpec | None]]:
+        """The members named `query`, each with its type written in the terms
+        of the class the lookup started from: `mapping` binds this class's
+        type parameters to that class's types (empty at the start).
+
+        The class's own matches, plus every inherited match that none of them
+        overrides. Overriding is per SIGNATURE: an own `g(v)` hides the
+        inherited `g(v)`, but not an inherited overload `g(v, s)`, which stays
+        reachable with its default body. (Hiding by name alone made that
+        overload vanish, and trait devirtualisation then bound its calls to the
+        wrong method.) An inherited member stays hidden unless its signature
+        DEFINITELY differs from every own match's. The mapping is carried down
+        the whole parent chain, so a member declared any number of levels up
+        compares in this class's terms — `Wrap<X> : Render<List<X>>` makes
+        `Render`'s `render(v: T)` a `render(v: List<X>)`. (The slot table can't
+        answer this: it goes stale when monomorphisation re-points a class at
+        a specialised parent.)"""
         # The trailing array field is internal storage — member access to it
         # resolves to the generated accessor method (same name, see
         # create_array_accessor), not the raw field. Construction and codegen
@@ -114,25 +134,18 @@ class ClassStatement(TypeStatement):
         s1 = [p for p in self.parameters.flatten() if p is not array_param]
         s2 = self.statements
         statements = s1 + s2
-        # The class's own matches, plus every parent match that none of them
-        # overrides. Overriding is per SIGNATURE: an own `g(v)` hides the
-        # inherited `g(v)`, but not an inherited overload `g(v, s)`, which
-        # stays reachable with its default body. Hiding by name alone made
-        # that overload vanish, and trait devirtualisation then bound its calls
-        # to the wrong method. An inherited member stays hidden unless its
-        # signature DEFINITELY differs from every own match's — an undecided
-        # comparison hides it, as name-hiding always did. (The slot table can't
-        # answer this: it goes stale when monomorphisation re-points a class at
-        # a specialised parent.)
-        own = [g.Resolved(x.name, x, g.ResolvedScope.MEMBER) for x in statements if g.name_matches(x.name, query)]
-        inherited = [(xtype, parent, match)
+        own = [(g.Resolved(x.name, x, g.ResolvedScope.MEMBER),
+                t.substitute_placeholders(x.get_type(), mapping, resolver))
+               for x in statements if g.name_matches(x.name, query)]
+        inherited = [found
                      for xtype, parent in c.find_classes_or_error(self.implements, resolver)
                      if isinstance(parent, ClassStatement)
-                     for match in parent.find_data(resolver, query)]
+                     for found in parent.find_typed_data(resolver, query,
+                                                         c.parent_mapping(resolver, parent, xtype, mapping))]
         if not own:
-            return [match for _, _, match in inherited]
-        return own + [match for xtype, parent, match in inherited
-                      if not any(c.may_override(resolver, o.statement, match.statement, parent, xtype) for o in own)]
+            return inherited
+        return own + [(match, mtype) for match, mtype in inherited
+                      if not any(c.may_override(resolver, otype, mtype) for _, otype in own)]
 
 
     def get_fields(self, resolver: g.Resolver) -> list[LetStatement]:

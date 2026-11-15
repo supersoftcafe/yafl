@@ -1080,9 +1080,9 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
         # The provider's method must match the interface method's concrete type
         # — even when it is the only candidate. A lone candidate of another
         # signature (an overload, not this method's override) would bind the
-        # call to a function of the wrong arity: wrong code, or a crash. So a
-        # lone candidate whose type definitely differs is not redirected to, and
-        # among several the one that matches is kept.
+        # call to a function of the wrong arity: wrong code, or a crash. The
+        # program was checked during convergence, so that can only be a
+        # compiler bug (member lookup lost the override): say so here.
         iface_type = _concrete_interface_method_type(r, trait_spec, thing.name)
         if iface_type is not None:
             verdicts = [(md, t.trivially_assignable_equals(r, iface_type, md.statement.get_type()))
@@ -1091,7 +1091,9 @@ def __resolve_trait_references(statements: list[s.Statement]) -> list[s.Statemen
             if len(matching) == 1:
                 method_datas = matching
             elif len(verdicts) == 1 and verdicts[0][1] is False:
-                return rw.UNCHANGED
+                raise ValueError(f"compiler bug: trait method `{thing.name}` at {thing.line_ref} "
+                                 f"would bind to `{method_datas[0].unique_name}` of "
+                                 f"`{provider_class.name}`, which has another signature")
 
         if len(method_datas) != 1:
             return rw.UNCHANGED

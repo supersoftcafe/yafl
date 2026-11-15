@@ -49,30 +49,27 @@ def override_inherited_slots(
     return base_enhanced + parent_filtered
 
 
-def may_override(
+def parent_mapping(
         resolver: g.Resolver,
-        own: s.DataStatement,
-        inherited: s.DataStatement,
         parent: s.ClassStatement,
-        parent_type: t.TypeSpec
-) -> bool:
-    """Whether the class member `own` may override `inherited`, a member
-    reached through the implemented `parent_type` (a use of `parent`). False
-    only when both are typed and the types definitely differ — an overload,
-    not an override. For a member `parent` declares itself, the parent's type
-    parameters are replaced by `parent_type`'s arguments first, so `Show<T>`'s
-    `show(v: T)` compares as `show(v: Int)` for an instance of `Show<Int>`. A
-    member from further up is written in ITS declarer's parameters, which this
-    mapping doesn't describe: it compares unsubstituted, where a placeholder
-    leaves the answer undecided — hidden, as before."""
-    own_type = own.get_type()
-    inherited_type = inherited.get_type()
+        parent_type: t.TypeSpec,
+        mapping: dict[str, t.TypeSpec]
+) -> dict[str, t.TypeSpec]:
+    """`parent`'s type parameters bound to the arguments of `parent_type` (how
+    a class names it in its implements list), those arguments rewritten by
+    `mapping` into the terms of the class a member lookup started from."""
+    if not (isinstance(parent_type, t.ClassSpec) and parent.type_params and parent_type.type_params):
+        return {}
+    return {p.name: t.substitute_placeholders(a, mapping, resolver)
+            for p, a in zip(parent.type_params, parent_type.type_params)}
+
+
+def may_override(resolver: g.Resolver, own_type: t.TypeSpec | None, inherited_type: t.TypeSpec | None) -> bool:
+    """Whether a class member of `own_type` may override an inherited member of
+    `inherited_type`, both written in the class's terms. False only when both
+    are typed and the types definitely differ — an overload, not an override."""
     if own_type is None or inherited_type is None:
         return True
-    if isinstance(parent_type, t.ClassSpec) and parent.type_params and parent_type.type_params \
-            and any(inherited is x for x in parent.statements):
-        mapping = {p.name: a for p, a in zip(parent.type_params, parent_type.type_params)}
-        inherited_type = t.substitute_placeholders(inherited_type, mapping, resolver)
     return t.trivially_assignable_equals(resolver, inherited_type, own_type) is not False
 
 

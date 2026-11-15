@@ -219,47 +219,46 @@ fun isArrayField(f: PStmt): Bool => match(f)
 # interface's member that none of them overrides. Overriding is per SIGNATURE:
 # an own `g(v)` hides the inherited `g(v)` but not an inherited overload
 # `g(v, s)`, which stays reachable with its default body. An inherited member
-# stays hidden unless its signature DEFINITELY differs from every own match's
-# (Python find_data / may_override). Member access to the array field resolves
-# to the generated ACCESSOR (same name), never the raw storage.
+# stays hidden unless its signature DEFINITELY differs from every own match's.
+# Each member's type is compared in the terms of the class the lookup started
+# from: the type-argument mapping is carried down the whole parent chain, so
+# `Wrap<X> : Render<List<X>>` makes `Render`'s `render(v: T)` a
+# `render(v: List<X>)` (Python find_typed_data). Member access to the array
+# field resolves to the generated ACCESSOR (same name), never the raw storage.
 
-fun classFindData(cs: PsClass, r, query)
-  let own = memberFinds(concat(nonArrayFields(cs), cs.cMembers), query,
-                        List())
-  let parents = findClassesOrError(cs.cImplements, r)
+class [final] TypedFound(tfFound: Found, tfType: Spec|None)
+
+fun classFindData(cs: PsClass, r, query): List<Found> =>
+  map(classFindTyped(cs, r, query, List()), (tf) => tf.tfFound)
+
+fun classFindTyped(cs: PsClass, r, query, mapping: List<Binding>): List<TypedFound>
+  let own = map(memberFinds(concat(nonArrayFields(cs), cs.cMembers), query, List()),
+                (f) => TypedFound(f, substOpt(stmtType(f.fStmt), mapping)))
+  let inherited = fold(findClassesOrError(cs.cImplements, r), List(),
+                       (a: List<TypedFound>, x) => match(x.fcClass)
+                         (p: PsClass) => concat(a, classFindTyped(p, r, query,
+                                                                  parentMapping(p, x.fcSpec, mapping)))
+                         ()           => a)
   ret isEmpty(own)
-    ? parentFinds(parents, r, query, List())
-    : concat(own, notOverridden(parents, own, r, query))
+    ? inherited
+    : concat(own, filter(inherited, (i) => !anyOverrides(own, i, r)))
 
-# The inherited matches of `query` that no member of `own` may override.
-fun notOverridden(fs: List<FoundClass>, own: List<Found>, r, query): List<Found> =>
-  fold(fs, List(), (a, x) => match(x.fcClass)
-    (p: PsClass) => concat(a, filter(classFindData(p, r, query),
-                                     (f) => !anyOverrides(own, f, p, x.fcSpec, r)))
-    ()           => a)
+fun anyOverrides(own: List<TypedFound>, inherited: TypedFound, r) =>
+  fold(own, false, (a, o) => a || mayOverride(o.tfType, inherited.tfType, r))
 
-fun anyOverrides(own: List<Found>, inherited: Found, parent: PsClass, parentSpec: Spec, r) =>
-  fold(own, false, (a, o) => a || mayOverride(o.fStmt, inherited.fStmt, parent, parentSpec, r))
+# Whether a member of `own` may override one of `inherited`, both in the
+# class's terms: false only when both are typed and the types definitely
+# differ — an overload, not an override.
+fun mayOverride(own: Spec|None, inherited: Spec|None, r) => match(own, inherited)
+  (o: Spec, i: Spec) => !triFalse(assignableEq(r, i, o))
+  ()                 => true
 
-# Whether `own` may override `inherited`, reached through `parentSpec` (a use
-# of `parent`): false only when both are typed and the types definitely differ
-# — an overload, not an override. For a member `parent` declares itself, the
-# parent's placeholders take the implemented type's arguments first, so
-# `Show<T>`'s `show(v: T)` compares as `show(v: Int)` for an instance of
-# `Show<Int>`. A member from further up is written in its declarer's
-# placeholders, which this mapping doesn't describe: it compares unsubstituted,
-# where a placeholder leaves the answer undecided — hidden, as before.
-fun mayOverride(own: PStmt, inherited: PStmt, parent: PsClass, parentSpec: Spec, r) =>
-  match(stmtType(own), stmtType(inherited))
-    (o: Spec, i: Spec) => !triFalse(assignableEq(r, substitute(i, parentBindings(parent, parentSpec, stmtName(inherited))), o))
-    ()                 => true
-
-fun parentBindings(parent: PsClass, parentSpec: Spec, member: String): List<Binding> => match(parentSpec)
-  (c: SClass) => declaresMember(parent, member) ? paramMapping(parent.cGens, c.scParams) : List()
-  ()          => List()
-
-fun declaresMember(parent: PsClass, member: String) =>
-  fold(parent.cMembers, false, (a, x) => a || stmtName(x) == member)
+# `parent`'s placeholders bound to the arguments `parentSpec` gives it, those
+# rewritten by `mapping` into the terms of the class the lookup started from.
+fun parentMapping(parent: PsClass, parentSpec: Spec, mapping: List<Binding>): List<Binding> =>
+  match(parentSpec)
+    (c: SClass) => paramMapping(parent.cGens, substList(c.scParams, mapping))
+    ()          => List()
 
 fun nonArrayFields(cs: PsClass) => dropArrayField(flattenParams(cs.cParams), List())
 
@@ -276,13 +275,6 @@ fun memberFinds(ms: List<PStmt>, query, acc: List<Found>) =>
   fold(ms, acc, (a, x) => nameMatches(stmtName(x), query)
     ? append(a, Found(stmtName(x), x, ScMember()))
     : a)
-
-fun parentFinds(fs: List<FoundClass>, r, query, acc): List<Found> =>
-  fold(fs, acc, (a, x) => parentFindsStep(a, x, r, query))
-
-fun parentFindsStep(a: List<Found>, x: FoundClass, r, query) => match(x.fcClass)
-  (p: PsClass) => concat(a, classFindData(p, r, query))
-  () => a
 
 # `this` inside a generic class carries the class's own placeholders — a bare
 # ClassSpec would fail the declared-arity check later.
