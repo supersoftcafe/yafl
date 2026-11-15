@@ -90,11 +90,14 @@ def parse_self_compiles(log_path: Path) -> list[tuple[str, float]]:
 
 
 def parse_ctest_summary(log_path: Path) -> tuple[int, int] | None:
-    """(failed, total) from a ctest run; None if the summary line never printed."""
+    """(failed, total) from a ctest run; None if the summary line never printed.
+
+    ctest 4 leaves out the failures when there are none: `100% tests passed out
+    of 65`, where ctest 3 printed `100% tests passed, 0 tests failed out of 65`."""
     for line in log_path.read_text().splitlines():
-        m = re.match(r"(\d+)% tests passed, (\d+) tests failed out of (\d+)", line)
+        m = re.match(r"\d+% tests passed(?:, (\d+) tests? failed)? out of (\d+)", line)
         if m:
-            return int(m.group(2)), int(m.group(3))
+            return int(m.group(1) or 0), int(m.group(2))
     return None
 
 
