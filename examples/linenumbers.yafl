@@ -19,7 +19,7 @@ fun main(): System::Int
   let inClosed = input.io.close()
   ret match(input.v)
     (text: String) => number(text, inClosed)
-    (e: IOError)   => 1
+    (e: IOError) => 1
 
 # Number the lines of `text` onto stdout, then report the outcome: a write
 # error wins, otherwise a failed close (of stdin or stdout), otherwise success.
