@@ -393,8 +393,9 @@ def namespaces_related(a: str, b: str) -> bool:
 def can_see(viewer: str | None, owner_namespace: str, name: str) -> bool:
     """Whether code in `viewer` may name `name`, declared in `owner_namespace`:
     a public name always, a private one from its own namespace, the ones
-    inside it and the ones it is inside. No viewer (no statement's scope in
-    force) sees everything."""
+    inside it and the ones it is inside. Every statement has a namespace
+    (`Main` by default); no viewer means no statement's scope is in force —
+    a lookup of already-resolved names — and sees everything."""
     return viewer is None or not is_private(name) or namespaces_related(viewer, owner_namespace)
 
 

@@ -383,7 +383,7 @@ def __stmt_scope_resolver(stmt: s.Statement, glb: g.Resolver) -> g.Resolver:
         own_ns = stmt.name.rpartition('::')[0]  # e.g. "Main" from "Main::main@JnNy0L"
         if own_ns:
             import_scopes.add(own_ns)
-        scoped = g.AddScopeResolution(glb, import_scopes, own_ns or None)
+        scoped = g.AddScopeResolution(glb, import_scopes, own_ns)
         # A global let's initialiser resolves like a function body: it needs the
         # trait/interface methods (operators) in scope. FunctionStatement adds
         # this itself (for a top-level function; an inner one adds none — see

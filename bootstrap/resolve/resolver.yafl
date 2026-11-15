@@ -59,8 +59,9 @@ fun isPrivate(name: String): Bool => startsWith(bareOfUnique(name), "_")
 fun namespacesRelated(a: String, b: String): Bool
   ret a == b || startsWith(a, b + "::") || startsWith(b, a + "::")
 
-# Whether code in `viewer` may name `name`, declared in `ownerNs`. Code in no
-# namespace ("") sees everything.
+# Whether code in `viewer` may name `name`, declared in `ownerNs`. Every
+# statement has a namespace (`Main` by default); "" means no statement's scope
+# is in force — a lookup of already-resolved names — and sees everything.
 fun canSee(viewer: String, ownerNs: String, name: String): Bool
   ret viewer == "" || !isPrivate(name) || namespacesRelated(viewer, ownerNs)
 
@@ -418,7 +419,7 @@ enum Resolver
   # `System::print@hash`. Only a name that is neither qualified nor already
   # hashed is retried this way.
   # rsViewer: the statement's own namespace, from which private names are
-  # seen (#17); "" sees everything.
+  # seen (#17).
   enum RScopes(rsNames: List<String>, rsViewer: String, rsParent: Resolver)
   # The `where`-supplied trait/interface operators. They JOIN the scope (only a
   # local shadows them), and — the part that matters — they report INCOMPLETE
