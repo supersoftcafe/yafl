@@ -49,6 +49,33 @@ def override_inherited_slots(
     return base_enhanced + parent_filtered
 
 
+def may_override(
+        resolver: g.Resolver,
+        own: s.DataStatement,
+        inherited: s.DataStatement,
+        parent: s.ClassStatement,
+        parent_type: t.TypeSpec
+) -> bool:
+    """Whether the class member `own` may override `inherited`, a member
+    reached through the implemented `parent_type` (a use of `parent`). False
+    only when both are typed and the types definitely differ — an overload,
+    not an override. For a member `parent` declares itself, the parent's type
+    parameters are replaced by `parent_type`'s arguments first, so `Show<T>`'s
+    `show(v: T)` compares as `show(v: Int)` for an instance of `Show<Int>`. A
+    member from further up is written in ITS declarer's parameters, which this
+    mapping doesn't describe: it compares unsubstituted, where a placeholder
+    leaves the answer undecided — hidden, as before."""
+    own_type = own.get_type()
+    inherited_type = inherited.get_type()
+    if own_type is None or inherited_type is None:
+        return True
+    if isinstance(parent_type, t.ClassSpec) and parent.type_params and parent_type.type_params \
+            and any(inherited is x for x in parent.statements):
+        mapping = {p.name: a for p, a in zip(parent.type_params, parent_type.type_params)}
+        inherited_type = t.substitute_placeholders(inherited_type, mapping, resolver)
+    return t.trivially_assignable_equals(resolver, inherited_type, own_type) is not False
+
+
 def fragile_base_captures(
         resolver: g.Resolver,
         base_slots: list[s.ClassFunctionSlot],

@@ -1140,18 +1140,19 @@ fun redirectMethod(nm: PeName, ts: SClass, provider: PsLet, cls: PsClass,
   let mds0 = classFindData(cls, r, simpleName(nm.refName))
   if isEmpty(mds0)
     ret None
-  let many = match(soleFoundOf(mds0))
-    (one: Found) => false
-    ()           => true
-  let mds = many ? disambiguateMethods(mds0, nm, ts, r) : mds0
+  # The provider's method must match the interface method's concrete type —
+  # even when it is the only candidate: a lone overload of another signature
+  # would bind the call to a function of the wrong arity (Python redirect).
+  let mds = disambiguateMethods(mds0, nm, ts, r)
   ret match(soleFoundOf(mds))
     (md: Found) => PeDot(PeName(provider.lName, List(), nm.penLine,
                                 None),
                          md.fName, nm.penLine)
     ()          => None
 
-# Multiple overloads — disambiguate by comparing the concrete type of the
-# interface method (looked up by exact hash) against the class methods.
+# Disambiguate by comparing the concrete type of the interface method (looked
+# up by exact hash) against the class methods: of several, the one that
+# matches; a lone candidate whose type definitely differs, none.
 fun disambiguateMethods(mds, nm: PeName, ts: SClass,
                         r) => match(soleItem(findType(r, ts.scName)))
   (f: Found) => match(f.fStmt)
@@ -1176,7 +1177,11 @@ fun disambiguateByType(mds, ts: SClass, icls: PsClass,
   let single = match(soleFoundOf(matching))
     (one: Found) => true
     ()           => false
-  ret single ? matching : mds
+  ret single ? matching : (loneMismatch(mds, ifaceType, r) ? List() : mds)
+
+fun loneMismatch(mds: List<Found>, ifaceType: Spec, r) => match(soleFoundOf(mds))
+  (md: Found) => triFalse(assignableEq(r, ifaceType, stmtType(md.fStmt)))
+  ()          => false
 
 fun matchingByType(ms: List<Found>, ifaceType: Spec, r, acc: List<Found>) =>
   fold(ms, acc, (a, x) => triTrue(assignableEq(r, ifaceType, stmtType(x.fStmt))) ? append(a, x) : a)

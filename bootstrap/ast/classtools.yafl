@@ -214,19 +214,52 @@ fun isArrayField(f: PStmt): Bool => match(f)
   (o: PStmt)    => false
 
 # ── ClassStatement.find_data ─────────────────────────────────────────────────
-# A member lookup: the class's OWN members first (constructor params minus the
-# internal array-storage field, plus body statements) — anything found masks
-# the parents — else every implemented interface's, accumulated. Member access
-# to the array field resolves to the generated ACCESSOR (same name), never the
-# raw storage.
+# A member lookup: the class's OWN members (constructor params minus the
+# internal array-storage field, plus body statements), plus every implemented
+# interface's member that none of them overrides. Overriding is per SIGNATURE:
+# an own `g(v)` hides the inherited `g(v)` but not an inherited overload
+# `g(v, s)`, which stays reachable with its default body. An inherited member
+# stays hidden unless its signature DEFINITELY differs from every own match's
+# (Python find_data / may_override). Member access to the array field resolves
+# to the generated ACCESSOR (same name), never the raw storage.
 
 fun classFindData(cs: PsClass, r, query)
   let own = memberFinds(concat(nonArrayFields(cs), cs.cMembers), query,
                         List())
+  let parents = findClassesOrError(cs.cImplements, r)
   ret isEmpty(own)
-    ? parentFinds(findClassesOrError(cs.cImplements, r), r, query,
-                  List())
-    : own
+    ? parentFinds(parents, r, query, List())
+    : concat(own, notOverridden(parents, own, r, query))
+
+# The inherited matches of `query` that no member of `own` may override.
+fun notOverridden(fs: List<FoundClass>, own: List<Found>, r, query): List<Found> =>
+  fold(fs, List(), (a, x) => match(x.fcClass)
+    (p: PsClass) => concat(a, filter(classFindData(p, r, query),
+                                     (f) => !anyOverrides(own, f, p, x.fcSpec, r)))
+    ()           => a)
+
+fun anyOverrides(own: List<Found>, inherited: Found, parent: PsClass, parentSpec: Spec, r) =>
+  fold(own, false, (a, o) => a || mayOverride(o.fStmt, inherited.fStmt, parent, parentSpec, r))
+
+# Whether `own` may override `inherited`, reached through `parentSpec` (a use
+# of `parent`): false only when both are typed and the types definitely differ
+# — an overload, not an override. For a member `parent` declares itself, the
+# parent's placeholders take the implemented type's arguments first, so
+# `Show<T>`'s `show(v: T)` compares as `show(v: Int)` for an instance of
+# `Show<Int>`. A member from further up is written in its declarer's
+# placeholders, which this mapping doesn't describe: it compares unsubstituted,
+# where a placeholder leaves the answer undecided — hidden, as before.
+fun mayOverride(own: PStmt, inherited: PStmt, parent: PsClass, parentSpec: Spec, r) =>
+  match(stmtType(own), stmtType(inherited))
+    (o: Spec, i: Spec) => !triFalse(assignableEq(r, substitute(i, parentBindings(parent, parentSpec, stmtName(inherited))), o))
+    ()                 => true
+
+fun parentBindings(parent: PsClass, parentSpec: Spec, member: String): List<Binding> => match(parentSpec)
+  (c: SClass) => declaresMember(parent, member) ? paramMapping(parent.cGens, c.scParams) : List()
+  ()          => List()
+
+fun declaresMember(parent: PsClass, member: String) =>
+  fold(parent.cMembers, false, (a, x) => a || stmtName(x) == member)
 
 fun nonArrayFields(cs: PsClass) => dropArrayField(flattenParams(cs.cParams), List())
 

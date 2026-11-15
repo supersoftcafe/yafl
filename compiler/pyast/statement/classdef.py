@@ -114,13 +114,25 @@ class ClassStatement(TypeStatement):
         s1 = [p for p in self.parameters.flatten() if p is not array_param]
         s2 = self.statements
         statements = s1 + s2
-        # a) try to find in this class. Anything we find masks out parent matches, so no need to recurse.
-        # b) if 'a' fails, search all parents and accumulate all the results.
-        matches = [g.Resolved(x.name, x, g.ResolvedScope.MEMBER) for x in statements if g.name_matches(x.name, query)] \
-               or [match for xtype, parent in c.find_classes_or_error(self.implements, resolver)
-                         if isinstance(parent, ClassStatement)
-                         for match in parent.find_data(resolver, query)]
-        return matches
+        # The class's own matches, plus every parent match that none of them
+        # overrides. Overriding is per SIGNATURE: an own `g(v)` hides the
+        # inherited `g(v)`, but not an inherited overload `g(v, s)`, which
+        # stays reachable with its default body. Hiding by name alone made
+        # that overload vanish, and trait devirtualisation then bound its calls
+        # to the wrong method. An inherited member stays hidden unless its
+        # signature DEFINITELY differs from every own match's — an undecided
+        # comparison hides it, as name-hiding always did. (The slot table can't
+        # answer this: it goes stale when monomorphisation re-points a class at
+        # a specialised parent.)
+        own = [g.Resolved(x.name, x, g.ResolvedScope.MEMBER) for x in statements if g.name_matches(x.name, query)]
+        inherited = [(xtype, parent, match)
+                     for xtype, parent in c.find_classes_or_error(self.implements, resolver)
+                     if isinstance(parent, ClassStatement)
+                     for match in parent.find_data(resolver, query)]
+        if not own:
+            return [match for _, _, match in inherited]
+        return own + [match for xtype, parent, match in inherited
+                      if not any(c.may_override(resolver, o.statement, match.statement, parent, xtype) for o in own)]
 
 
     def get_fields(self, resolver: g.Resolver) -> list[LetStatement]:
