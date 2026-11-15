@@ -121,7 +121,7 @@ enum PExpr
   # nothing after parseProgram sees it; the formatter reads it before then.
   # pepiLine is the stage's position, the one every lowering of it carries.
   enum PePipe(pipeSubject: PExpr, pipeStage: PExpr, pepiLine: PLine)
-  # `$"text {expr} text {expr:spec}"`, as the parser read it. Like PePipe it
+  # `$"text {expr} text {expr, spec}"`, as the parser read it. Like PePipe it
   # exists only between the parser and fixupProgram, which lowers every one
   # (builders.lowerInterp) to String-typed `show` temporaries joined by ONE
   # str_concat_n; the formatter prints it before then. A literal with no slot
@@ -149,7 +149,7 @@ enum PExpr
 class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr)
 
 # One piece of an interpolated string: decoded text, or a slot — its
-# expression, the decoded spec after the separating colon (None when there is
+# expression, the decoded spec after the separating comma (None when there is
 # none), the expression's source text, and the slot's position (its `{`).
 enum PInterpPart
   enum PipText(ipText: String)

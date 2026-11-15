@@ -1,6 +1,6 @@
-# Interpolated strings: `$"text {expr} text {expr:spec}"` (#126).
+# Interpolated strings: `$"text {expr} text {expr, spec}"` (#126).
 #
-# A slot `{e}` renders `show(e)`, `{e:spec}` renders `show(e, spec)`, and the
+# A slot `{e}` renders `show(e)`, `{e, spec}` renders `show(e, "spec")`, and the
 # pieces join in ONE str_concat_n. `show` is looked up where the string is
 # written, so `$"a{x}b"` is exactly `"a" + show(x) + "b"`, local overloads
 # included. Only `{` needs escaping (`\{`); a `}` outside a slot is text.
@@ -114,10 +114,10 @@ instance [ambient] Show<Temp>
 
 fun program(): String
   let t = Temp(100)
-  ret $"{t} {t:F} {t:K} {27:ignored}"
+  ret $"{t} {t, F} {t,F} {t,   K  } {27, ignored}"
 
-fun [test("a spec calls show(value, spec); the default ignores it")] check(): None|TestFailure
-    ret assertEqStr(program(), "100C 212F 100C 27", "program()")
+fun [test("a spec calls show(value, spec), trimmed; the default ignores it")] check(): None|TestFailure
+    ret assertEqStr(program(), "100C 212F 212F 100C 27", "program()")
 
 
 namespace CompilerTests::StringInterpolation::QualifiedNameAndTernary
@@ -127,10 +127,25 @@ import System::Test
 
 fun program(): String
   let x = 5
-  ret $"{System::length("abc")} {(x > 3 ? "big" : "small")}"
+  ret $"{System::length("abc")} {x > 3 ? "big" : "small"}"
 
-fun [test("`::` is not a spec colon; a ternary is bracketed")] check(): None|TestFailure
+fun [test("`::` and a ternary's `:` need no brackets")] check(): None|TestFailure
     ret assertEqStr(program(), "3 big", "program()")
+
+
+namespace CompilerTests::StringInterpolation::CommaInsideBrackets
+
+import System
+import System::Test
+
+fun pair(a: Int, b: Int): String
+  ret show(a) + "+" + show(b)
+
+fun program(): String
+  ret $"{pair(1, 2)} {pair(3, 4), ignored} {"a,b"} {',', ignored}"
+
+fun [test("a comma inside brackets or a literal is not the spec separator")] check(): None|TestFailure
+    ret assertEqStr(program(), "1+2 3+4 a,b 44", "program()")
 
 
 namespace CompilerTests::StringInterpolation::LocalShowOverload

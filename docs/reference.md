@@ -211,7 +211,7 @@ Type variables are introduced in angle brackets after the function or interface 
 | Integer | `0`, `42`, `1000000` (bigint `Int`); typed suffixes `42i32`, `0xFFi32`, `7i8`, `9i64` |
 | Float | `3.14`, `1e9`, `2.5f32` |
 | String | `"hello"`, `"line\n"`, `"tab\there"` |
-| Interpolated string | `$"x = {x}"`, `$"{t:F}"`, `$"literal \{brace}"` |
+| Interpolated string | `$"x = {x}"`, `$"{t, F}"`, `$"literal \{brace}"` |
 | Char | `'A'`, `'\n'`, `'\\'`, `'\''`, `'é'`, `'🎉'` |
 | Boolean | `true`, `false` |
 | Unit | `None` |
@@ -219,10 +219,10 @@ Type variables are introduced in angle brackets after the function or interface 
 String escape sequences: `\n` (newline), `\r` (return), `\t` (tab), `\0` (NUL), `\\` (backslash), `\"` (quote), `\'` (single quote), `\{` and `\}` (braces), and the codepoint forms `\xNN`, `\uXXXX` and `\u{…}`.
 
 An **interpolated string** is a string literal prefixed with `$`. Each slot
-`{expression}` is replaced by `show(expression)`, and `{expression:spec}` by
+`{expression}` is replaced by `show(expression)`, and `{expression, spec}` by
 `show(expression, "spec")`, from the `Show<T>` trait. The spec is the text after
-the first `:` that is outside brackets and is not part of `::`, so a
-ternary in a slot needs brackets: `$"{(n > 1 ? "many" : "one")}"`. `show(value,
+the first comma outside brackets and literals, with the spaces around it
+removed; a comma inside a call's brackets is the call's own. `show(value,
 spec)` has a default that ignores the spec; an instance with a use for one
 overrides it.
 
@@ -230,8 +230,9 @@ overrides it.
 let x = 27
 $"x = {x}"            # "x = 27"
 $"\{x}"               # "{x}" — only `{` needs escaping; `}` alone is text
-$"{t:F}"              # show(t, "F")
+$"{t, F}"             # show(t, "F")
 $"{lookup(m, "k")}"   # a slot may hold string and char literals
+$"{n > 1 ? "many" : "one"}"   # and any other single expression
 ```
 
 `show` is looked up where the string is written, so `$"a{x}b"` produces the

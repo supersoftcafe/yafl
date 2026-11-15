@@ -226,7 +226,7 @@ def __regex() -> p.Parser[e.Expression]:
 
 
 def __interp() -> p.Parser[e.Expression]:
-    """`$"text {expr} text {expr:spec}"` — an interpolated string. A literal
+    """`$"text {expr} text {expr, spec}"` — an interpolated string. A literal
     with no slot is an ordinary string literal."""
     def _p(tokens: list[p.Token]) -> p.Result[e.Expression]:
         match tokens:
@@ -261,10 +261,10 @@ def _skip_quoted(body: str, i: int) -> int:
     return -1
 
 
-def _spec_colon(slot: str) -> int:
-    """The index of the colon that starts a slot's spec — the first `:`
-    outside brackets and literals that is not part of `::` or `:=` — or -1.
-    A ternary in a slot is therefore bracketed: `{(c ? a : b)}`."""
+def _spec_comma(slot: str) -> int:
+    """The index of the comma that starts a slot's spec — the first `,`
+    outside brackets and literals — or -1. An expression has no unbracketed
+    comma of its own, so nothing in it is ever mistaken for the separator."""
     depth = 0
     i = 0
     while i < len(slot):
@@ -279,17 +279,14 @@ def _spec_colon(slot: str) -> int:
             depth += 1
         elif c in ')]':
             depth -= 1
-        elif c == ':' and depth == 0:
-            if slot[i+1:i+2] in (':', '=') or slot[i-1:i] == ':':
-                i += 2 if slot[i+1:i+2] in (':', '=') else 1
-                continue
+        elif c == ',' and depth == 0:
             return i
         i += 1
     return -1
 
 
-_SPEC_COLON_HINT = ("could not parse the interpolation slot before its `:` — a `:` "
-                    "starts the format spec, so a ternary needs brackets: {(c ? a : b)}")
+# The whitespace trimmed from a slot's expression and spec (System::trim's set).
+_TRIM = " \t\n\r"
 
 
 def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None]:
@@ -347,24 +344,24 @@ def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None
             return parts, p.Error(at(i), "unterminated interpolation slot — "
                                          "write `\\{` for a literal brace")
         slot = body[i+1:j]
-        colon = _spec_colon(slot)
-        text = slot if colon < 0 else slot[:colon]
+        comma = _spec_comma(slot)
+        text = slot if comma < 0 else slot[:comma]
         spec: str | None = None
-        if colon >= 0:
-            spec, err = _unescape_string(slot[colon+1:])
+        if comma >= 0:
+            # The spec is the text after the comma, spaces around it trimmed
+            # before its escapes decode (so a written `\t` survives).
+            spec_text = slot[comma+1:].strip(_TRIM)
+            if not spec_text:
+                return parts, p.Error(at(i + 1 + comma), "empty format spec after `,`")
+            spec, err = _unescape_string(spec_text)
             if err is not None:
-                return parts, p.Error(at(i + 1 + colon + 1), err)
-            if not spec:
-                return parts, p.Error(at(i + 1 + colon), "empty format spec after `:`")
-        if not text.strip():
+                return parts, p.Error(at(i + 1 + comma + 1), err)
+        if not text.strip(_TRIM):
             return parts, p.Error(at(i), "empty interpolation slot")
         expression, err = _parse_slot(text, at(i + 1), head.indent)
-        if err is not None and colon >= 0:
-            # A spec colon took what may have been a ternary's `:`.
-            return parts, p.Error(at(i), _SPEC_COLON_HINT)
         if err is not None:
             return parts, err
-        parts.append(e.InterpolationSlot(at(i), expression, spec, text.strip()))
+        parts.append(e.InterpolationSlot(at(i), expression, spec, text.strip(_TRIM)))
         i = j + 1
     if (err := flush()) is not None:
         return parts, err

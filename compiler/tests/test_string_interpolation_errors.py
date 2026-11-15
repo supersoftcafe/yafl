@@ -42,20 +42,17 @@ class TestStringInterpolationErrors(unittest.TestCase):
         self.assertIn(f"t.yafl[6:{_BODY + 2}] - empty interpolation slot", out)
 
     def test_empty_spec(self):
-        out = _diagnostics('$"a {x:} b"')
-        self.assertIn(f"t.yafl[6:{_BODY + 4}] - empty format spec after `:`", out)
+        out = _diagnostics('$"a {x,} b"')
+        self.assertIn(f"t.yafl[6:{_BODY + 4}] - empty format spec after `,`", out)
+
+    def test_a_spec_of_only_spaces_is_empty(self):
+        out = _diagnostics('$"a {x,   } b"')
+        self.assertIn(f"t.yafl[6:{_BODY + 4}] - empty format spec after `,`", out)
 
     def test_slot_that_is_not_one_expression(self):
         out = _diagnostics('$"a {x +} b"')
         self.assertIn("t.yafl[6:", out)
         self.assertIn("interpolation slot", out)
-
-    def test_an_unbracketed_ternary_splits_at_its_colon(self):
-        # The spec starts at the first top-level `:`, so `{x > 0 ? 1 : 2}`
-        # leaves `x > 0 ? 1 ` as the expression, which does not parse.
-        out = _diagnostics('$"a {x > 0 ? 1 : 2} b"')
-        self.assertIn(f"t.yafl[6:{_BODY + 2}] - could not parse the interpolation slot before its `:`", out)
-        self.assertIn("a ternary needs brackets", out)
 
     def test_nested_interpolated_string(self):
         out = _diagnostics('$"a {$"{x}"} b"')

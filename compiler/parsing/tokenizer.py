@@ -77,7 +77,7 @@ __kinds = [
     # an escaped quote stays inside the token. Must precede IDENTIFIER, which
     # would otherwise eat the `re` prefix.
     (re.compile(r"re\"(\\.|[^\\\"])*\"?"), TokenKind.REGEX),
-    # Interpolated string: `$"text {expr} text {expr:spec}"`. Text is the
+    # Interpolated string: `$"text {expr} text {expr, spec}"`. Text is the
     # string body (an escape, or any char but backslash, quote and `{`); a
     # slot is `{`, then plain string / char literals or any char but quote,
     # apostrophe and braces, then `}`. A slot may hold string literals but no

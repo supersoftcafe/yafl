@@ -755,7 +755,7 @@ fun stringTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)
     : (hardFail(u.uErr, ps), bump(ps))
 
 # ── interpolated strings (parser.py __interp / _split_interpolation) ──────
-# `$"text {expr} text {expr:spec}"`: the body split into decoded text pieces
+# `$"text {expr} text {expr, spec}"`: the body split into decoded text pieces
 # and slots, each slot's expression tokenized and parsed on its own with its
 # tokens placed at their real columns. A literal with no slot is a PeStr.
 
@@ -860,50 +860,44 @@ fun [tail] skipQuotedFrom(s: String, i: Int, quote): Int
     ret skipQuotedFrom(s, i + 2, quote)
   ret c == quote ? i + 1 : skipQuotedFrom(s, i + 1, quote)
 
+# The spec is the text after the separating comma, spaces around it trimmed
+# before its escapes decode, so a written `\t` survives (parser.py).
 fun readSlot(sp: SplitCtx, i: Int, close: Int): SlotRead|PFail
   let slot = slice(sp.scBody, i + 1, close)
-  let colon = specColon(slot, 0, 0)
-  let text = colon < 0 ? slot : slice(slot, 0, colon)
-  let specU = colon < 0 ? Unescaped("", "") : unescape(slice(slot, colon + 1, length(slot)))
-  if colon >= 0 && specU.uErr != ""
-    ret failAtBody(sp, i + 1 + colon + 1, specU.uErr)
-  if colon >= 0 && specU.uText == ""
-    ret failAtBody(sp, i + 1 + colon, "empty format spec after `:`")
+  let comma = specComma(slot, 0, 0)
+  let text = comma < 0 ? slot : slice(slot, 0, comma)
+  let raw = comma < 0 ? "" : trim(slice(slot, comma + 1, length(slot)))
+  if comma >= 0 && raw == ""
+    ret failAtBody(sp, i + 1 + comma, "empty format spec after `,`")
+  let specU = unescape(raw)
+  if specU.uErr != ""
+    ret failAtBody(sp, i + 1 + comma + 1, specU.uErr)
   if trim(text) == ""
     ret failAtBody(sp, i, "empty interpolation slot")
-  let spec: String|None = colon < 0 ? None : specU.uText
+  let spec: String|None = comma < 0 ? None : specU.uText
   ret match(parseSlot(sp, text, i + 1))
-    # A spec colon took what may have been a ternary's `:`.
-    (f: PFail)  => colon >= 0 ? failAtBody(sp, i, specColonHint) : f
+    (f: PFail)  => f
     (x: PExpr)  => SlotRead(PipSlot(x, spec, trim(text),
                                     PLine(sp.scFile, sp.scTok.line, bodyCol(sp, i))),
                             close)
 
-let specColonHint = "could not parse the interpolation slot before its `:` — a `:` "
-                    + "starts the format spec, so a ternary needs brackets: {(c ? a : b)}"
-
-# The index of the colon that starts a slot's spec — the first `:` outside
-# brackets and literals that is not part of `::` or `:=` — or -1. A ternary
-# in a slot is therefore bracketed: `{(c ? a : b)}`.
-fun [tail] specColon(slot: String, i: Int, depth: Int): Int
+# The index of the comma that starts a slot's spec — the first `,` outside
+# brackets and literals — or -1. An expression has no unbracketed comma of
+# its own, so nothing in it is ever mistaken for the separator.
+fun [tail] specComma(slot: String, i: Int, depth: Int): Int
   if i >= length(slot)
     ret -1
   let c = byteAt(slot, i)
   if c == '"' || c == '\''
     let end = skipQuoted(slot, i)
-    ret end < 0 ? -1 : specColon(slot, end, depth)
+    ret end < 0 ? -1 : specComma(slot, end, depth)
   if c == '(' || c == '['
-    ret specColon(slot, i + 1, depth + 1)
+    ret specComma(slot, i + 1, depth + 1)
   if c == ')' || c == ']'
-    ret specColon(slot, i + 1, depth - 1)
-  if c == ':' && depth == 0
-    let nxt = i + 1 < length(slot) ? byteAt(slot, i + 1) : 0i32
-    if nxt == ':' || nxt == '='
-      ret specColon(slot, i + 2, depth)
-    if i > 0 && byteAt(slot, i - 1) == ':'
-      ret specColon(slot, i + 1, depth)
+    ret specComma(slot, i + 1, depth - 1)
+  if c == ',' && depth == 0
     ret i
-  ret specColon(slot, i + 1, depth)
+  ret specComma(slot, i + 1, depth)
 
 # A slot's expression, tokenized and parsed alone; `at` is the body byte its
 # first character sits at, and every token moves there.

@@ -738,28 +738,26 @@ fun count<T>(xs: List<T>): Int => fold(xs, 0, (n, x) => n + 1)
 
 # A string literal for a value with no recorded spelling.
 # An interpolated string as written, on ONE line: its text re-escaped (a `{`
-# that opens no slot is `\{`), each slot's expression in its shortest
-# spelling — rendered without a width limit — and a ternary bracketed, since
-# its `:` would otherwise start the spec.
+# that opens no slot is `\{`; a newline, return or tab is its escape, so the
+# string stays on its line), each slot's expression in its shortest spelling
+# — rendered without a width limit — and its spec after `, `.
 fun interpText(ip: PeInterp): String =>
   "$\"" + join(map(ip.interpParts, interpPartText), "") + "\""
 
 fun interpPartText(part: PInterpPart): String => match(part)
   (t2: PipText) => escapeBraces(escapeBody(t2.ipText), false)
-  (sl: PipSlot) => "{" + slotExprText(sl.ipExpr) + slotSpecText(sl.ipSpec) + "}"
-
-fun slotExprText(x: PExpr): String => match(x)
-  (t3: PeTernary) => "(" + render(exprDoc(x), 1000000) + ")"
-  ()              => render(exprDoc(x), 1000000)
+  (sl: PipSlot) => "{" + render(exprDoc(sl.ipExpr), 1000000) + slotSpecText(sl.ipSpec) + "}"
 
 fun slotSpecText(spec: String|None): String => match(spec)
-  (sp: String) => ":" + escapeBraces(escapeBody(sp), true)
+  (sp: String) => ", " + escapeBraces(escapeBody(sp), true)
   ()           => ""
 
-fun escapeBody(s: String): String => join(split(join(split(s, "\\"), "\\\\"), "\""), "\\\"")
+fun escapeBody(s: String): String =>
+  swap(swap(swap(swap(swap(s, "\\", "\\\\"), "\"", "\\\""), "\n", "\\n"), "\r", "\\r"), "\t", "\\t")
 
-fun escapeBraces(s: String, closing: Bool): String
-  let opened = join(split(s, "{"), "\\{")
-  ret closing ? join(split(opened, "}"), "\\}") : opened
+fun swap(s: String, from: String, to: String): String => join(split(s, from), to)
+
+fun escapeBraces(s: String, closing: Bool): String =>
+  closing ? swap(swap(s, "{", "\\{"), "}", "\\}") : swap(s, "{", "\\{")
 
 fun quoted(s: String): String => "\"" + join(split(join(split(s, "\\"), "\\\\"), "\""), "\\\"") + "\""

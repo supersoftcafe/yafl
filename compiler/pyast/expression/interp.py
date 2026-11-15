@@ -1,4 +1,4 @@
-"""`$"text {expr} text {expr:spec}"` — an interpolated string, as the parser
+"""`$"text {expr} text {expr, spec}"` — an interpolated string, as the parser
 read it.
 
 Like PipeExpression, the node exists only between the parser and the end of
@@ -40,8 +40,9 @@ class InterpolationOrigin:
 
 @dataclass
 class InterpolationSlot:
-    """One `{expression}` or `{expression:spec}`. `text` is the expression as
-    written; `spec` the decoded text after the separating colon, or None."""
+    """One `{expression}` or `{expression, spec}`. `text` is the expression as
+    written; `spec` the decoded text after the separating comma (spaces around
+    it trimmed), or None."""
     line_ref: LineRef
     expression: Expression
     spec: str | None
