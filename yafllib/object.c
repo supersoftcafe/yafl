@@ -1587,7 +1587,22 @@ static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) 
                 return;
             }
         } while (!atomic_compare_exchange_strong(&reprocess_page_tail, &tail, tail+1));
-        atomic_store(&reprocess_page_list[tail % REPROCESS_PAGE_COUNT], page);
+        // Fill the slot only once it is EMPTY. The capacity check above counts
+        // head, and head moves when a pump CLAIMS an index, before it takes
+        // the slot: so index tail - 16, one lap back on this same slot, may be
+        // claimed and still untaken here. A plain store overwrote that entry —
+        // its pump took this one in its place, every later take on the slot
+        // ran a lap ahead, and the cycle's last pump claimed an index whose
+        // entry was already gone and spun on the empty slot for good, in
+        // flight, so marking never retired (issue #132,
+        // test_gc_ring_lap_window). Waiting is safe: a full slot here can only
+        // be a claimed entry whose pump is already on its way to take it, and
+        // that pump waits on nothing of ours.
+        _Atomic(gc_page_t*) *slot = &reprocess_page_list[tail % REPROCESS_PAGE_COUNT];
+        for (gc_page_t *empty = NULL;
+             !atomic_compare_exchange_weak(slot, &empty, page);
+             empty = NULL)
+            cpu_relax();
     }
 }
 
@@ -2444,7 +2459,7 @@ static void gc_fsa_mark_sweep$pump_ring(void) {
             atomic_fetch_sub_explicit(&gc_pages_in_flight, 1, memory_order_seq_cst);
             continue;
         }
-#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_RESET_PROBE)
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_RESET_PROBE) || defined(YAFL_GC_LAP_PROBE)
         // Test-only hook (tests/test_gc_pump_window.c, test_gc_reset_window.c):
         // an entry is between the ring and the lists, where another executor
         // may run the tail.
@@ -2658,7 +2673,7 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
 // it. Every decision here rests on the pool lock and the in-flight counts,
 // never on being alone — see the overflow branch (issue #132).
 static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
-#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_WRITER_PROBE) || defined(YAFL_GC_RESET_PROBE)
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_WRITER_PROBE) || defined(YAFL_GC_RESET_PROBE) || defined(YAFL_GC_LAP_PROBE)
     { extern void gc_test_tail_probe(void); gc_test_tail_probe(); }
 #endif
     // Late ring entries (and any page they requeue) keep the stage alive.
@@ -2741,7 +2756,7 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     }
 #endif
 }
-#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE) || defined(YAFL_GC_WRITER_PROBE) || defined(YAFL_GC_RESET_PROBE)
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE) || defined(YAFL_GC_WRITER_PROBE) || defined(YAFL_GC_RESET_PROBE) || defined(YAFL_GC_LAP_PROBE)
 // tests/test_gc_pump_window.c, test_gc_overflow_window.c, test_gc_writer_window.c: a mutator's
 // mark, a second executor's tail, other executors' marking, and the state the
 // probes wait for, by hand.
