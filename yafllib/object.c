@@ -91,11 +91,11 @@
 //     ratio stretches sweep completion and so grows the garbage backlog per
 //     completed sweep, which is exactly when prune must NOT slow with it.
 //
-// r is the rate while the heap is at most half full. Past half, the scan
-// rate doubles each time the free heap halves (gc_scan_rate: 2r with a
-// quarter free, 4r with an eighth, capped), so the collector works harder the
-// closer the heap gets to OOM, and eases off again as usage falls. That is
-// the one headroom feedback; prune's ratio stays fixed.
+// r and p are the ratios while the heap is at most half full. Past half, BOTH
+// double each time the free heap halves (gc_pace_rate_for: 2x with a quarter
+// free, 4x with an eighth, capped), so the collector as a whole works harder
+// the closer the heap gets to OOM, and eases off again as usage falls. That
+// is the one headroom feedback.
 //
 // The progress guarantee is STRUCTURAL: a cycle over S pages is scanned
 // within S/r allocations — the world is scanned before the young set can grow
@@ -131,7 +131,8 @@
 #define GC_PACE_IDLE_PAGES  1024  // pages allocated between cycles (16 MiB):
                                   // smaller dwells left a growing chain at
                                   // 3-4x the CPU of this one
-#define GC_PACE_PRUNE_PAGES 64    // pages pruned per page allocated (prune is
+#define GC_PACE_PRUNE_PAGES 64    // pages pruned per page allocated, while the
+                                  // heap is at most half full (prune is
                                   // cheap per page); deliberately NOT derived
                                   // from the scan ratio — see pacing comment
 #define GC_PACE_CREDIT_MAX  16    // max allocation-pages consumed per gc_fsa
@@ -663,26 +664,32 @@ static _Atomic(size_t) gc_cycle_survivor_slots = 0; // live SLOTS on young survi
 // one page per step, the same property the serial pacing had).
 static alignas(CACHE_LINE_SIZE) _Atomic(uint64_t) gc_pace_claimed = 0;
 
-// The SCAN RATE: pages scanned per page allocated. It is gc_step_base while
-// the heap is at most half full; past that, it doubles each time the free
-// heap halves — base x (half the heap / free pages): 2x with a quarter free,
-// 4x with an eighth — so the collector works harder the closer the heap gets
+// The PACING RATES: pages scanned (gc_step_base) and pages pruned
+// (gc_prune_base) per page allocated. Each is its base while the heap is at
+// most half full; past that, both double each time the free heap halves —
+// base x (half the heap / free pages): 2x with a quarter free, 4x with an
+// eighth — so the collector as a whole works harder the closer the heap gets
 // to OOM, and eases off again as usage falls. Continuous, not stepped, and
-// capped at GC_PACE_SCAN_MULT_MAX x base (a heap with almost nothing free must
-// not turn one gc_fsa call into an unbounded quantum; the reserve gate in
-// gc_page_alloc is the backstop there). Pure, for test_gc_scan_rate.
-#define GC_PACE_SCAN_MULT_MAX 64
-EXPORT unsigned gc_scan_rate_for(size_t used, size_t total, unsigned base) {
+// capped at GC_PACE_MULT_MAX x base (a heap with almost nothing free must not
+// turn one gc_fsa call into an unbounded quantum; the reserve gate in
+// gc_page_alloc is the backstop there). A full or over-full heap takes the
+// cap before the division; an empty or one-page heap, the base. Pure, for
+// test_gc_pace_rate.
+#define GC_PACE_MULT_MAX 64
+EXPORT unsigned gc_pace_rate_for(size_t used, size_t total, unsigned base) {
     size_t half = total / 2;
     size_t free = used < total ? total - used : 0;
     if (free >= half)
         return base;
-    if (free * GC_PACE_SCAN_MULT_MAX <= half)
-        return base * GC_PACE_SCAN_MULT_MAX;
+    if (free * GC_PACE_MULT_MAX <= half)
+        return base * GC_PACE_MULT_MAX;
     return (unsigned)(((uint64_t)base * half + free - 1) / free);   // rounded up
 }
 static inline unsigned gc_scan_rate(void) {
-    return gc_scan_rate_for(memory_count(), memory_total_pages(), gc_step_base);
+    return gc_pace_rate_for(memory_count(), memory_total_pages(), gc_step_base);
+}
+static inline unsigned gc_prune_rate(void) {
+    return gc_pace_rate_for(memory_count(), memory_total_pages(), gc_prune_base);
 }
 
 // The SCAN CLOCK: cumulative pages of marking owed, each allocation depositing
@@ -2937,7 +2944,10 @@ static bool gc_page_stamp_old(gc_page_t *page) {
 // the prune list looks empty — a hint to attempt the exclusive transition.
 static NOINLINE_DEBUG bool gc_fsa_prune_body() {
     GC_STAT_BUMP(gc_stat_prune_steps);
-    const unsigned step_pages = gc_prune_base * gc_pace_credit();
+    // Prune keeps no cumulative books (the claim pool hands out allocation
+    // credit), so the rate in force at this call applies to the credit it
+    // claims.
+    const unsigned step_pages = gc_prune_rate() * gc_pace_credit();
     // BATCHED claims and publication: one pool-lock hold claims up to
     // PRUNE_CLAIM_BATCH pages, one more publishes the whole batch's
     // survivors and promotions. Per-page holds made the pool lock the

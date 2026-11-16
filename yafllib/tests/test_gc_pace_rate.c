@@ -1,18 +1,19 @@
-// The scan rate's definition (gc_scan_rate_for, object.c): the base rate
-// while the heap is at most half full; past that, double for every halving of
-// the free heap; capped at 64x base. Pure arithmetic, no collector needed.
+// The pacing rates' definition (gc_pace_rate_for, object.c), shared by the
+// scan and prune ratios: the base rate while the heap is at most half full;
+// past that, double for every halving of the free heap; capped at 64x base.
+// Pure arithmetic, no collector needed.
 
 #include "../yafl.h"
 #include <stdio.h>
 #include <stdlib.h>
 
-extern unsigned gc_scan_rate_for(size_t used, size_t total, unsigned base);
+extern unsigned gc_pace_rate_for(size_t used, size_t total, unsigned base);
 
 static int failures = 0;
 static void expect(size_t used, size_t total, unsigned base, unsigned want) {
-    unsigned got = gc_scan_rate_for(used, total, base);
+    unsigned got = gc_pace_rate_for(used, total, base);
     if (got != want) {
-        fprintf(stderr, "test_gc_scan_rate: FAIL rate(used=%zu, total=%zu, base=%u) = %u, want %u\n",
+        fprintf(stderr, "test_gc_pace_rate: FAIL rate(used=%zu, total=%zu, base=%u) = %u, want %u\n",
                 used, total, base, got, want);
         ++failures;
     }
@@ -52,9 +53,9 @@ int main(void) {
     // Monotonic in usage, and never below base, over the whole heap.
     unsigned prev = 0;
     for (size_t used = 0; used <= T; used += 7) {
-        unsigned r = gc_scan_rate_for(used, T, B);
+        unsigned r = gc_pace_rate_for(used, T, B);
         if (r < prev || r < B) {
-            fprintf(stderr, "test_gc_scan_rate: FAIL not monotonic at used=%zu (%u after %u)\n", used, r, prev);
+            fprintf(stderr, "test_gc_pace_rate: FAIL not monotonic at used=%zu (%u after %u)\n", used, r, prev);
             ++failures;
             break;
         }
@@ -66,6 +67,6 @@ int main(void) {
     expect(T / 2, T, B, B);
 
     if (failures) return 1;
-    printf("test_gc_scan_rate: OK\n");
+    printf("test_gc_pace_rate: OK\n");
     return 0;
 }
