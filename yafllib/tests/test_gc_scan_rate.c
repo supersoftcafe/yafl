@@ -40,6 +40,12 @@ int main(void) {
     expect(T, T, B, 64 * B);
     expect(T + 10, T, B, 64 * B);
 
+    // Degenerate heaps never reach the division: none, and a single page.
+    expect(0, 0, B, B);
+    expect(5, 0, B, B);
+    expect(0, 1, B, B);
+    expect(1, 1, B, B);
+
     // Between the doublings it is continuous, rounded up: 3/8 free -> 4/3 x.
     expect(T - 3 * T / 8, T, B, (unsigned)((B * (T / 2) + 3 * T / 8 - 1) / (3 * T / 8)));
 
