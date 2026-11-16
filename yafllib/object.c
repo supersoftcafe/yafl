@@ -91,10 +91,16 @@
 //     ratio stretches sweep completion and so grows the garbage backlog per
 //     completed sweep, which is exactly when prune must NOT slow with it.
 //
-// The progress guarantee is STRUCTURAL, not feedback-driven: a cycle over S
-// pages is scanned within S/r allocations — the world is scanned before the
-// young set can grow by 1/r — and pruned within a further S/(16r). No
-// emergency mode, no headroom feedback; the fixed ratios
+// r is the rate while the heap is at most half full. Past half, the scan
+// rate doubles each time the free heap halves (gc_scan_rate: 2r with a
+// quarter free, 4r with an eighth, capped), so the collector works harder the
+// closer the heap gets to OOM, and eases off again as usage falls. That is
+// the one headroom feedback; prune's ratio stays fixed.
+//
+// The progress guarantee is STRUCTURAL: a cycle over S pages is scanned
+// within S/r allocations — the world is scanned before the young set can grow
+// by 1/r — and pruned within a further S/(16r); a fuller heap only shortens
+// that. No emergency mode; the ratios
 // outrun allocation by construction, and every gc_fsa call costs a similar,
 // predictable quantum (a couple of page scans, or a few dozen page prunes —
 // roughly the same wall time each; [GC LAT] under YAFL_GC_STATS shows the
@@ -113,7 +119,9 @@
 // the prune ratio independently (default 64 = the old 16x-of-4 coupling's
 // effective value): larger = more GC work per allocation = tighter heap,
 // higher GC share of CPU. YAFL_GC_IDLE_PAGES overrides the dwell (0: none).
-#define GC_PACE_SCAN_PAGES  6     // pages scanned per page allocated — THE knob.
+#define GC_PACE_SCAN_PAGES  6     // pages scanned per page allocated, while the
+                                  // heap is at most half full — THE knob; past
+                                  // half it scales up (gc_scan_rate below).
                                   // Peak heap ≈ live x (r+1)/(r-1): r=2 is 3x
                                   // live (measured), r=6 is 1.4x. Higher than
                                   // with no dwell (4): a cycle that starts
@@ -655,9 +663,38 @@ static _Atomic(size_t) gc_cycle_survivor_slots = 0; // live SLOTS on young survi
 // one page per step, the same property the serial pacing had).
 static alignas(CACHE_LINE_SIZE) _Atomic(uint64_t) gc_pace_claimed = 0;
 
+// The SCAN RATE: pages scanned per page allocated. It is gc_step_base while
+// the heap is at most half full; past that, it doubles each time the free
+// heap halves — base x (half the heap / free pages): 2x with a quarter free,
+// 4x with an eighth — so the collector works harder the closer the heap gets
+// to OOM, and eases off again as usage falls. Continuous, not stepped, and
+// capped at GC_PACE_SCAN_MULT_MAX x base (a heap with almost nothing free must
+// not turn one gc_fsa call into an unbounded quantum; the reserve gate in
+// gc_page_alloc is the backstop there). Pure, for test_gc_scan_rate.
+#define GC_PACE_SCAN_MULT_MAX 64
+EXPORT unsigned gc_scan_rate_for(size_t used, size_t total, unsigned base) {
+    size_t half = total / 2;
+    size_t free = used < total ? total - used : 0;
+    if (free >= half)
+        return base;
+    if (free * GC_PACE_SCAN_MULT_MAX <= half)
+        return base * GC_PACE_SCAN_MULT_MAX;
+    return (unsigned)(((uint64_t)base * half + free - 1) / free);   // rounded up
+}
+static inline unsigned gc_scan_rate(void) {
+    return gc_scan_rate_for(memory_count(), memory_total_pages(), gc_step_base);
+}
+
+// The SCAN CLOCK: cumulative pages of marking owed, each allocation depositing
+// its page count times the rate in force when it was made. The mark stage's
+// target. A product of the allocation clock and the CURRENT rate would rescale
+// the whole history every time the rate moved; the deposit charges each page at
+// its own rate, so the books stay exact as the rate rises and falls.
+static alignas(CACHE_LINE_SIZE) _Atomic(uint64_t) gc_scan_clock = 0;
+
 // MARK-stage progress in REAL pages scanned (a multi-page object's pop
 // advances this by its whole span). The mark loop runs while
-// pages_scanned < alloc_clock * step_base — so a 20-page object's scan
+// pages_scanned < gc_scan_clock — so a 20-page object's scan
 // pre-pays the obligation of the next ~10 allocations, whose fsa calls
 // then do no mark work at all. Monotonic, like the clock; the books are
 // cumulative. (Prune keeps the claim pool: its per-pop cost does not
@@ -826,6 +863,8 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
     }
 
     atomic_fetch_add_explicit(&gc_alloc_clock, page_count, memory_order_relaxed);
+    atomic_fetch_add_explicit(&gc_scan_clock, (uint64_t)page_count * gc_scan_rate(),
+                              memory_order_relaxed);
 
     // memory_pages_alloc hands back pages with UNDEFINED contents (see
     // claimed_run): the header must be zeroed here, and object slots are
@@ -2501,23 +2540,24 @@ static bool gc_mark_work_outstanding(void) {
 // looks empty — a HINT to attempt the (exclusive) transition, never a verdict.
 static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
     GC_STAT_BUMP(gc_stat_mark_steps);
-    // Allowance = how far REAL scanning lags the target (alloc pages x
-    // step_base). A big object's span-counted scan runs pages_scanned
+    // Allowance = how far REAL scanning lags the target (the scan clock:
+    // each allocated page at the scan rate in force when it was allocated,
+    // gc_scan_rate). A big object's span-counted scan runs pages_scanned
     // AHEAD of the target and later calls fall through here with the
     // floor only. The floor of 1 is liveness, not pacing: manual-mode
     // stepped tests and end-of-allocation drains must still progress.
-    const uint64_t _target = atomic_load_explicit(&gc_alloc_clock, memory_order_relaxed)
-                             * (uint64_t)gc_step_base;
+    const uint64_t _target = atomic_load_explicit(&gc_scan_clock, memory_order_relaxed);
+    const unsigned _rate = gc_scan_rate();
     const uint64_t _done = atomic_load_explicit(&gc_pages_scanned, memory_order_relaxed);
     uint64_t _lag = _target > _done ? _target - _done : 0;
-    const uint64_t _cap = (uint64_t)gc_step_base * GC_PACE_CREDIT_MAX;
+    const uint64_t _cap = (uint64_t)_rate * GC_PACE_CREDIT_MAX;
     if (_lag > _cap) _lag = _cap;
-    // Floor = one CREDIT's worth (gc_step_base pages), matching the old
+    // Floor = one CREDIT's worth (the current rate's pages), matching the old
     // claim-pool floor exactly: under heap-full synchronous driving the
     // clock freezes while REQUEUED pages (mutator re-marks) refill the
     // queue — work the clock never funded — and a 1-page floor drains it
     // too slowly to outrun the allocator stall (test_gc_pressure OOM).
-    const unsigned step_pages = _lag > 0 ? (unsigned)_lag : gc_step_base;
+    const unsigned step_pages = _lag > 0 ? (unsigned)_lag : _rate;
     uint64_t _t0 = gc_stats_enabled ? gc_tsc() : 0;
 
     // BATCHED claims/publication, same shape as prune (see the comment
@@ -3356,7 +3396,7 @@ static NOINLINE_DEBUG bool gc_fsa_impl() {
                         && memory_count() < memory_total_pages() / 2)
                     break;
                 // Square the books: the dwell's pages owe no scan or prune.
-                uint64_t target = now * (uint64_t)gc_step_base;
+                uint64_t target = atomic_load_explicit(&gc_scan_clock, memory_order_relaxed);
                 if (atomic_load_explicit(&gc_pages_scanned, memory_order_relaxed) < target)
                     atomic_store_explicit(&gc_pages_scanned, target, memory_order_relaxed);
                 if (atomic_load_explicit(&gc_pace_claimed, memory_order_relaxed) < now)
