@@ -146,6 +146,21 @@ static unsigned gc_prune_base = GC_PACE_PRUNE_PAGES;
 static uint64_t gc_idle_pages = GC_PACE_IDLE_PAGES;
 static _Atomic(uint64_t) gc_idle_since = 0;   // the clock when the last cycle ended
 static unsigned gc_compact_percent = COMPACT_THRESHOLD_PERCENT;
+// The per-cycle COMPACTION BUDGET: pages a cycle may allocate as evacuation
+// targets, set at cycle start to this percentage of the heap's free pages
+// (YAFL_GC_COMPACT_FREE_PERCENT). Once the cycle's evacuations have allocated
+// that many, compaction stops for the rest of the cycle and prune only
+// prunes. Evacuation targets bypass the reserve gate, and with the pacing
+// rates scaled up near a full heap a cycle's evacuations arrive faster than
+// the allocation that funds them: unbounded, they ate the free runs that
+// multi-page allocations need, and the heap fragmented into OOM sooner
+// (PR #135). Tied to the free pages, the budget barely binds while the heap
+// is roomy and binds hard as it fills.
+#define GC_COMPACT_FREE_PERCENT_DEFAULT 25
+static unsigned gc_compact_free_percent = GC_COMPACT_FREE_PERCENT_DEFAULT;
+static _Atomic(size_t) gc_cycle_compact_pages = 0;   // evacuation-target pages this cycle
+static size_t          gc_cycle_compact_limit = SIZE_MAX;
+static _Atomic(size_t) gc_cycle_compact_skipped = 0; // candidates passed over at the limit
 
 // Scavenger call-site knobs (the scavenger itself lives in mmap.c, with its
 // own age/hysteresis tuning). The retain floor only smooths intra-cycle
@@ -202,6 +217,10 @@ static void gc_read_config(void) {
     if ((e = getenv("YAFL_GC_COMPACT_PERCENT")) != NULL) {
         int pct = atoi(e);
         if (pct >= 0) gc_compact_percent = (unsigned)(pct > 100 ? 100 : pct);
+    }
+    if ((e = getenv("YAFL_GC_COMPACT_FREE_PERCENT")) != NULL) {
+        int pct = atoi(e);
+        if (pct >= 0) gc_compact_free_percent = (unsigned)(pct > 100 ? 100 : pct);
     }
     if ((e = getenv("YAFL_GC_PROMOTE_FLOOR")) != NULL && atol(e) > 0)
         gc_promote_floor = (size_t)atol(e);
@@ -870,6 +889,8 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
     }
 
     atomic_fetch_add_explicit(&gc_alloc_clock, page_count, memory_order_relaxed);
+    if (gc_thread_info.in_relocation)   // an evacuation target: the compaction budget's count
+        atomic_fetch_add_explicit(&gc_cycle_compact_pages, page_count, memory_order_relaxed);
     atomic_fetch_add_explicit(&gc_scan_clock, (uint64_t)page_count * gc_scan_rate(),
                               memory_order_relaxed);
 
@@ -1340,6 +1361,14 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     const unsigned pct = gc_compact_percent;
     if (pct == 0)
         return;
+
+    // The cycle's compaction budget is spent: prune only. Checked once, before
+    // the page is started — a page is evacuated whole or not at all, so its
+    // own target allocations may carry the count past the limit.
+    if (atomic_load_explicit(&gc_cycle_compact_pages, memory_order_relaxed) >= gc_cycle_compact_limit) {
+        atomic_fetch_add_explicit(&gc_cycle_compact_skipped, 1, memory_order_relaxed);
+        return;
+    }
     const unsigned slots_threshold = SLOTS_PER_PAGE * pct / 100;
 
     // Previously compacted. If we do it again we'll be making redundent copies.
@@ -1878,6 +1907,16 @@ static void gc_collect_cards(void) {
 static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     if (++epoch == 0)
         epoch = 1;
+
+    // This cycle's compaction budget, from the headroom it starts with.
+    {
+        size_t total = memory_total_pages(), used = memory_count();
+        size_t free  = used < total ? total - used : 0;
+        gc_cycle_compact_limit = free / 100 * gc_compact_free_percent
+                               + free % 100 * gc_compact_free_percent / 100;
+        atomic_store_explicit(&gc_cycle_compact_pages, 0, memory_order_relaxed);
+        atomic_store_explicit(&gc_cycle_compact_skipped, 0, memory_order_relaxed);
+    }
 
 #ifdef YAFL_GC_VALIDATE_OLD
     // Diagnostic (test builds only): the old-generation invariant, checked
@@ -3258,11 +3297,13 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
             yafl_heapprof_cycle_end(memory_count() * (size_t)GC_PAGE_SIZE,
                                     memory_total_pages() * (size_t)GC_PAGE_SIZE);
         if (UNLIKELY(gc_stats_enabled))
-            fprintf(stderr, "[GC CYCLE] survivors=%zu old=%zu carded=%zu young=%zu promote_vol=%zu promote_mistakes=%llu in_use=%zu cons_seeds=%llu (pages)\n",
+            fprintf(stderr, "[GC CYCLE] survivors=%zu old=%zu carded=%zu young=%zu promote_vol=%zu promote_mistakes=%llu in_use=%zu cons_seeds=%llu compact=%zu/%zu skipped=%zu (pages)\n",
                     gc_cycle_survivors, gc_old_page_count, gc_carded_page_count,
                     young, gc_promote_volume,
                     (unsigned long long)atomic_load(&gc_promote_mistakes_total),
-                    memory_count(), (unsigned long long)atomic_load(&gc_stat_cons_seeds));
+                    memory_count(), (unsigned long long)atomic_load(&gc_stat_cons_seeds),
+                    atomic_load(&gc_cycle_compact_pages), gc_cycle_compact_limit,
+                    atomic_load(&gc_cycle_compact_skipped));
 
         if (UNLIKELY(gc_stats_enabled)) {
             // Snapshot this cycle's page-occupancy survey for the exit report.
