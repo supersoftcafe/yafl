@@ -295,6 +295,22 @@ set_tests_properties(test_gc_pump_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=
 add_yafl_test(test_gc_overflow_window)
 target_compile_definitions(test_gc_overflow_window PRIVATE YAFL_GC_OVERFLOW_PROBE=1)
 set_tests_properties(test_gc_overflow_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_reset_window: stepped. The overflow re-scan must not empty a
+# reprocess-ring slot a pump has already claimed (issue #132). Builds its own
+# object.c with YAFL_GC_RESET_PROBE, which hooks the re-scan's ring reset.
+add_yafl_test(test_gc_reset_window)
+target_compile_definitions(test_gc_reset_window PRIVATE YAFL_GC_RESET_PROBE=1)
+set_tests_properties(test_gc_reset_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_pace_rate: the pacing rates' definition (scan and prune alike) —
+# base while the heap is at most half full, doubling each time the free heap
+# halves, capped.
+add_yafl_test(test_gc_pace_rate)
+# test_gc_ring_lap_window: stepped. A reprocess-ring push must not overwrite an
+# entry a pump has claimed but not yet taken (issue #132). Builds its own
+# object.c with YAFL_GC_LAP_PROBE, which hooks the pump between claim and take.
+add_yafl_test(test_gc_ring_lap_window)
+target_compile_definitions(test_gc_ring_lap_window PRIVATE YAFL_GC_LAP_PROBE=1)
+set_tests_properties(test_gc_ring_lap_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_writer_window: stepped. A mutator between setting a mark bit and
 # pushing the page on the reprocess ring must keep marking from retiring.
 # Builds its own object.c with YAFL_GC_WRITER_PROBE, which hooks that window.
