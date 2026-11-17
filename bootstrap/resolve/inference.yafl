@@ -56,7 +56,7 @@ fun reinferred(stmt, gens: List<PGen>, supplied,
                want: SCallable, r) => match(stmtType(stmt))
   (declared: SCallable) => match(inferTypeParams(stmt, gens, declared,
                                                  want, r))
-    (mapping: List<Binding>) => mergedParams(gens, supplied, mapping, r)
+    (mapping: List<Binding>) => mergedParams(gens, supplied, mapping, declared, want, r)
     ()                       => supplied
   ()                    => supplied
 
@@ -65,12 +65,28 @@ fun reinferred(stmt, gens: List<PGen>, supplied,
 # binding; types only refine. A param never bound keeps its OWN placeholder,
 # so the use stays generic until a later pass. A contradiction takes the
 # fresh binding.
+#
+# An unbound param is written as its own placeholder, to be read as "not bound
+# yet" next pass. Inside its own declaration (a recursive use) that placeholder
+# RESOLVES — it is the enclosing generic's param — and reads as a complete
+# answer that latches: `depth(Wrap<T>(x), n - 1)` stayed `depth<T>` once an
+# early pass, its second argument still unknown, bound nothing (#136). While an
+# argument is unknown that answer is a guess, so nothing is decided; once every
+# argument is known, a param they still leave unbound IS the caller's own —
+# recursion at the same type — and the placeholder is the answer.
 fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
-                 mapping: List<Binding>, r)
+                 mapping: List<Binding>, declared: SCallable, want: SCallable, r)
   let prior = sameLen(supplied, gens)
     ? priorBindings(gens, supplied, List())
     : List()
+  if !argumentsKnown(declared, want, r)
+       && any(gens, (g2) => unboundReadsComplete(g2, prior, mapping, r))
+    ret supplied
   ret mergeLoop(gens, prior, mapping, r, List())
+
+fun unboundReadsComplete(g2: PGen, prior: List<Binding>, mapping: List<Binding>, r): Bool
+  ret bindingOf(mapping, g2.genName) is None && bindingOf(prior, g2.genName) is None
+    && !hasFreePlaceholders(ownPlaceholder(g2), r)
 
 fun priorBindings(gs: List<PGen>, ss: List<Spec>, acc: List<Binding>) =>
   concat(acc, zipMap(gs, ss, (g, s) => Binding(g.genName, s)))
@@ -168,6 +184,22 @@ fun argKnown(ix: Int, actual: List<SEntry>, r): Bool
       (sp: Spec) => isConcrete(sp) && !hasFreePlaceholders(sp, r) && !hasMissingArguments(sp, r)
       ()         => false
     ()          => false
+
+# _arguments_known: every argument whose type this call's binding does not
+# itself decide is known. A lambda argument's type is derived from the binding,
+# so it never counts; an argument left out (a default, or the checker's arity
+# error) has nothing to wait for.
+fun argumentsKnown(declared: SCallable, want: SCallable, r): Bool => match(declared.scParams2, want.scParams2)
+  (dt: STuple, at: STuple) => match(bindTupleEntries(dt.stEntries, map(at.stEntries, (e) => e.seName)))
+    (b: List<Int>) => zipFold(dt.stEntries, b, true,
+                              (a, d, ix) => a && (ix < 0 || declaresCallable(d) || argKnown(ix, at.stEntries, r)))
+    ()             => true
+  ()                       => true
+
+fun declaresCallable(e: SEntry): Bool => match(e.seType)
+  (c: SCallable) => true
+  (o: Spec)      => false
+  ()             => false
 
 fun entryNamesOf(e: SEntry): List<String> => match(e.seType)
   (sp: Spec) => placeholderNames(sp)

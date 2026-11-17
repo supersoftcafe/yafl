@@ -35,6 +35,55 @@ _PARSE = c.__dict__["__tokenize_and_parse"]
 # boundary for names, overloads, trait providers and member classes.
 _PROGRAMS = ["helloWorld", "findstr", "json_pretty", "raytracer", "ylisp", "yspell"]
 
+# A parameter whose uses disagree: merged, its uses resolve together and the
+# error stands; layered, one use resolved a pass ahead of the other and the
+# parameter kept the type that one alone gave (fixed in inferred_params).
+_DISAGREEING_USES = """namespace Test
+import System
+
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+
+class [final] Rock()
+  fun weight(): System::Int
+    ret 1
+
+fun ring(c: Circle): System::Int
+  ret c.r
+fun heavy(r: Rock): System::Int
+  ret r.weight()
+fun both(x): System::Int
+  ret ring(x) + heavy(x)
+fun main(): System::Int
+  ret both(Circle(1))
+"""
+
+# Calls whose argument types are still unresolved names in the program's first
+# pass, while the stdlib's candidates are already typed: layered, `==` once
+# committed to an overload that (Int, Int32) then failed, and `depth` kept the
+# type arguments it inferred from an unresolved argument (fixed in
+# NamedExpression.compile).
+_NO_OVERLOAD_FITS = """namespace Main
+import System
+fun isSpace(c: System::Int): System::Bool
+  ret c == ' '
+fun main(): System::Int
+  ret isSpace(32) ? 0 : 1
+"""
+
+_POLYMORPHIC_RECURSION = """namespace Main
+import System
+
+class [final] Wrap<T>(v: T)
+
+fun depth<T>(x: T, n: System::Int): System::Int
+  ret n == 0 ? 0 : depth(Wrap<T>(x), n - 1) + 1
+
+fun main(): System::Int
+  ret depth(1, 3)
+"""
+
 
 def _parsed(inputs: list[c.Input]):
     statements, errors = _PARSE(inputs)
@@ -53,10 +102,13 @@ class TestLayeredConverge(TestCase):
         cls.base = g.ResolverRoot(cls.lib_converged)
 
     def test_layered_matches_merged(self):
-        for name in _PROGRAMS:
+        sources = {name: (_REPO / "examples" / f"{name}.yafl").read_text() for name in _PROGRAMS}
+        sources["disagreeing_uses"] = _DISAGREEING_USES
+        sources["no_overload_fits"] = _NO_OVERLOAD_FITS
+        sources["polymorphic_recursion"] = _POLYMORPHIC_RECURSION
+        for name, text in sources.items():
             with self.subTest(program=name):
-                program = c.Input((_REPO / "examples" / f"{name}.yafl").read_text(),
-                                  "prog.yafl")
+                program = c.Input(text, "prog.yafl")
                 merged, _, _ = _CONVERGE(_parsed(self.lib + [program]))
                 app, _, _ = _CONVERGE(_parsed([program]), self.base)
                 # The dump first, for a readable first difference; then the

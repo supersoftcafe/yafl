@@ -477,13 +477,25 @@ class NamedExpression(Expression):
         # generic-inference step below, because the argument types feeding
         # inference may only become known on a later iteration of the
         # compile loop.
+        #
+        # Nothing is DECIDED from an expected type that still holds an
+        # unresolved name (a signature not compiled yet), any more than from
+        # an incomplete candidate set: overload selection would read the name
+        # as "undecided" and could commit to a candidate the resolved type
+        # then rejects, and inference could bind type arguments the resolved
+        # type would not (#136: a program converged above a settled stdlib met
+        # typed candidates while its own argument types were still names).
+        # Only the decisions wait: a sole candidate commits, and the use's own
+        # spelled type arguments compile — they are what resolves the names
+        # its neighbours' expected types are waiting on.
+        uncertain = expected_type is not None and t.contains_named_spec(expected_type)
         datas = resolver.find_data(self.name)
         if '@' not in self.name:
             # Never commit a name against an INCOMPLETE candidate set: the search
             # was blocked (an unresolved `[where]` alias / NamedSpec), so the
             # candidate that should win may not be visible yet. Leave the use
             # unresolved and retry once the blocker clears on a later pass.
-            if not datas.complete:
+            if not datas.complete or (uncertain and len(datas) > 1):
                 return self, [], h.unsettled()
             datas = _resolve_overloads(resolver, expected_type, datas)
             if len(datas) != 1:
@@ -502,6 +514,8 @@ class NamedExpression(Expression):
             # site binds every instance placeholder; until then leave the
             # use unresolved and let a later pass retry (fixpoint style).
             if data.instance_params:
+                if uncertain:
+                    return self, [], h.unsettled()
                 trait_scope = _solve_instance_scope(resolver, data, expected_type)
                 if trait_scope is None:
                     return self, [], {}
@@ -523,7 +537,7 @@ class NamedExpression(Expression):
         # CallExpression's expected type; runs while any supplied argument
         # still carries a hole, keeping a partial result's placeholders for a
         # later pass (see _infer_use_site_type_params for the rules).
-        type_params_to_compile = inference.use_site_type_params(
+        type_params_to_compile = self.type_params if uncertain else inference.use_site_type_params(
             data.statement, self.type_params, expected_type, resolver)
 
         type_params, new_statements = u.flatten_lists(x.compile(resolver) for x in type_params_to_compile)
@@ -533,6 +547,8 @@ class NamedExpression(Expression):
         # SHAPE overload selection above is undisturbed, and a CallableSpec
         # expected (this load is being called) never converts.
         hints = h.of(new_name, expected_type) if h.registers(data, expected_type) else {}
+        if uncertain:
+            hints = h.merge(hints, h.unsettled())
         from pyast.expression.conversion import converted
         return converted(expr, expected_type, resolver), new_statements, hints
 

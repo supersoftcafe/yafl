@@ -24,11 +24,25 @@ import Bootstrap::Types
 # `this.field`; a TRAIT hit records which interface instantiation won (the
 # disambiguation cache — excluded from identity). An unresolved name returns
 # UNTOUCHED: no type-param compile, no conversion.
+#
+# Nothing is DECIDED from an expected type that still holds an unresolved name
+# (a signature not compiled yet), any more than from an incomplete search:
+# overload selection would read the name as "undecided" and could commit to a
+# candidate the resolved type then rejects, and inference could bind type
+# arguments the resolved type would not (#136: a program converged above a
+# settled stdlib met typed candidates while its own argument types were still
+# names). Only the decisions wait: a sole candidate commits, and the use's own
+# spelled type arguments compile — they are what resolves the names its
+# neighbours' expected types are waiting on.
 fun compileName(nm, r, expected: Spec|None)
   let bag = findData(r, nm.refName)
   ret contains(nm.refName, "@")
     ? hashedName(nm, bag, r, expected)
     : unhashedName(nm, bag, r, expected)
+
+fun expectsUnresolved(expected: Spec|None): Bool => match(expected)
+  (sp: Spec) => containsNamedSpec(sp)
+  ()         => false
 
 # Already committed: the ambiguity check is skipped, but the type-param step
 # below still reruns (inference may only ground on a later pass). The search
@@ -44,7 +58,7 @@ fun hashedName(nm, bag: Findings, r, expected: Spec|None)
 
 fun unhashedName(nm, bag: Findings, r,
                  expected: Spec|None)
-  if !bag.bComplete
+  if !bag.bComplete || (expectsUnresolved(expected) && sizeAtLeast(bag.bItems, 2))
     ret ExprOut(nm, List(), unsettled())
   ret match(soleOf(resolveOverloads(r, expected, bag.bItems)))
     (f: Found) => match(f.fScope)
@@ -59,8 +73,10 @@ fun traitCommit(nm, f: Found, r,
                 expected: Spec|None): ExprOut => match(f.fInstanceParams)
   (own: List<String>) => isEmpty(own)
     ? finishName(nm, f, f.fName, wonTraitScope(f), r, expected)
-    : traitCommitSolved(nm, f, solveInstanceScope(f, own, expected, r), r,
-                        expected)
+    : expectsUnresolved(expected)
+      ? ExprOut(nm, List(), unsettled())
+      : traitCommitSolved(nm, f, solveInstanceScope(f, own, expected, r), r,
+                          expected)
   ()                  => finishName(nm, f, f.fName, wonTraitScope(f),
                                     r, expected)
 
@@ -91,11 +107,15 @@ fun classTraitScope(ts): Spec|None => match(ts)
 fun finishName(nm: PeName, f: Found, newName,
                traitScope, r,
                expected: Spec|None)
-  let inferred = useSiteTypeParams(f.fStmt, nm.refTypeParams, expected, r)
+  let uncertain = expectsUnresolved(expected)
+  let inferred = uncertain
+    ? nm.refTypeParams
+    : useSiteTypeParams(f.fStmt, nm.refTypeParams, expected, r)
   let tps = compileParams(inferred, r)
   let out = PeName(newName, tps.psSpecs, nm.penLine, traitScope)
+  let hints = nameHint(f, newName, expected)
   ret ExprOut(converted(out, expected, r), tps.psGlobals,
-              nameHint(f, newName, expected))
+              uncertain ? mergeHints(hints, unsettled()) : hints)
 
 # A field read: the base compiles with NO expectation (it is not the value the
 # receiver wants), then the read owns its own conversion. An ENUM-typed base

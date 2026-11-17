@@ -33,14 +33,27 @@ def inferred_params(prms: DestructureStatement, hints: h.Hints,
                     resolver: g.Resolver) -> DestructureStatement:
     """Type each un-annotated parameter from its hints. The inferred type is
     re-read every pass and may change; nothing is read while a name in the
-    body has not resolved. A declared type always stands."""
+    body has not resolved. A declared type always stands.
+
+    Nor is anything read while a use's type is still a name: that use is
+    evidence not yet known, and deciding from the uses that happen to be
+    known is a guess. `ring(x) + heavy(x)` once typed x a Rock from heavy
+    alone, ring's Circle still a name, and kept it once the two were found to
+    disagree (#136: a program converged above a settled stdlib reached that
+    pass). Decided only on certain evidence, a type stands when a later
+    verdict finds none: the uses that then disagree were shaped by the type
+    itself (a conversion now wraps the argument), and unsetting it would
+    only bring the first answer back next pass."""
     if h.UNSETTLED in hints:
         return prms
 
     def infer(tgt: LetStatement) -> LetStatement:
         if isinstance(tgt, DestructureStatement) or (tgt.declared_type is not None and not tgt.type_inferred):
             return tgt
-        fresh = h.verdict(hints.get(tgt.name, ()), resolver).type
+        uses = hints.get(tgt.name, ())
+        if any(t.contains_named_spec(use.spec) for use in uses):
+            return tgt
+        fresh = h.verdict(uses, resolver).type
         if fresh is None:
             return tgt
         return dataclasses.replace(tgt, declared_type=fresh, type_inferred=True)
