@@ -621,7 +621,8 @@ class TestFutureIO(TestCase):
     def test_future_open_read_close(self):
         """Two calls each open /etc/hostname, read it, close it; genuine async suspension."""
         src = """\
-namespace System
+namespace Main
+import System
 import System::IO
 
 fun close_io(io: IO): Int
@@ -648,7 +649,8 @@ fun main(): Int
     def test_future_three_io(self):
         """Three [future] IO calls."""
         src = """\
-namespace System
+namespace Main
+import System
 import System::IO
 
 fun close_io(io: IO): Int
@@ -697,7 +699,7 @@ class TestGenericMultiMono(TestCase):
         the fix this aborted with `Failed to resolve $lambdas::lambda@…`
         during codegen."""
         src = """\
-namespace System
+namespace Main
 import System
 import System::Containers
 
@@ -728,7 +730,7 @@ class TestListOps(TestCase):
 
     def test_all_list_higher_order_ops(self):
         src = """\
-namespace System
+namespace Main
 import System
 import System::Containers
 
