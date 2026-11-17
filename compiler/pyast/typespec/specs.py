@@ -791,7 +791,19 @@ def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
         if not (isinstance(m, EnumSpec) and '@' in m.root_name):
             return False
         return any(isinstance(o, EnumSpec) and o.strictly_holds(m) for o in flat)
-    return tuple(m for m in flat if not strictly_held(m))
+    return _canonical_order([m for m in flat if not strictly_held(m)])
+
+
+def _canonical_order(members: list[TypeSpec]) -> tuple[TypeSpec, ...]:
+    """A union is a set, so it has ONE spelling: the members with an identity
+    sorted by it, then any whose identity is not ground yet (holes
+    mid-fixpoint) in the order given — the fixpoint re-sorts them once they
+    ground. Without this the spelling was whatever order inference first met
+    the members in, so the converged tree depended on which pass settled what
+    (#136: the stdlib converged beneath a program reordered its unions)."""
+    ground = sorted((m for m in members if m.as_unique_id_str() is not None),
+                    key=lambda m: m.as_unique_id_str())
+    return tuple(ground + [m for m in members if m.as_unique_id_str() is None])
 
 
 class HeldMember(NamedTuple):
