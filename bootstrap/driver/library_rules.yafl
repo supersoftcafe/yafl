@@ -1,0 +1,119 @@
+# bootstrap/driver/library_rules.yafl — compiler/library_rules.py: the rules
+# that let each library converge as a layer of its own (#136).
+#
+# A library is settled before anything above it compiles, so nothing above it
+# may change how it compiles. Two rules are about WHERE code is declared, so
+# they live in the driver, which knows which library each statement came from
+# (a statement alone does not: its file name is relative to its own library's
+# root):
+#
+#   1. NAMESPACE OWNERSHIP — a library declares only into the namespaces its
+#      manifest lists; a program declares into none that a library lists.
+#   2. NO ORPHAN INSTANCES — Rust's rule. An instance of `Iface<T1..Tn>` must
+#      own the interface, or some Ti whose OUTERMOST type it owns, with no
+#      bare type parameter before that Ti. Ownership is by namespace alone:
+#      rule 1 already gives every namespace exactly one owner.
+#
+# The third rule, no cycles between libraries, is in the layer ordering
+# (main.yafl libraryLayers).
+namespace Bootstrap::Driver
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::Types
+
+
+# Who declares a layer. A library owns the namespaces its manifest lists; the
+# program (`owLibrary` None) owns every namespace that no library lists,
+# `owNamespaces` then holding the libraries' ones.
+class [final] Owner(owLibrary: String|None, owNamespaces: Set<String>)
+
+fun owns(o: Owner, ns: String): Bool => match(o.owLibrary)
+  (lib: String) => contains(o.owNamespaces, ns)
+  ()            => !contains(o.owNamespaces, ns)
+
+fun described(o: Owner): String => match(o.owLibrary)
+  (lib: String) => "library '" + lib + "'"
+  ()            => "the program"
+
+# Everything before the last `::` of a name, its `@` hash dropped.
+fun namespaceOf(name: String): String => namespacePart(simpleName(name))
+
+
+# ── rule 1: namespace ownership ──────────────────────────────────────────────
+
+# A library's statements outside its manifest's namespaces: one error per
+# namespace, at its first statement.
+fun libraryNamespaceErrors(library: String, namespaces: Set<String>,
+                           statements: List<PStmt>): Set<PErr>
+  ret firstPerNamespace(statements)
+    |> (firsts) => fold(firsts, Set<PErr>(), (acc, f) => contains(namespaces, f.fnNs)
+         ? acc
+         : add(acc, PErr(stmtLine(f.fnStmt), "'" + f.fnNs + "' is not a namespace of library '"
+                                             + library + "'")))
+
+# The program's statements in a namespace a library lists (`listed`:
+# namespace -> library name): one error per namespace, at its first.
+fun programNamespaceErrors(listed: Dict<String, String>,
+                           statements: List<PStmt>): Set<PErr>
+  ret firstPerNamespace(statements)
+    |> (firsts) => fold(firsts, Set<PErr>(), (acc, f) => listedError(acc, f, get(listed, f.fnNs)))
+
+fun listedError(acc: Set<PErr>, f: FirstInNs, library: String|None): Set<PErr> => match(library)
+  (lib: String) => add(acc, PErr(stmtLine(f.fnStmt), "namespace '" + f.fnNs + "' belongs to library '"
+                                                      + lib + "'"))
+  ()            => acc
+
+class [final] FirstInNs(fnNs: String, fnStmt: PStmt)
+
+# In statement order; a namespace's entry is its FIRST named statement.
+fun firstPerNamespace(statements: List<PStmt>): List<FirstInNs>
+  ret fold(statements, (seen = Set<String>(), out = List<FirstInNs>()),
+           (st, x) => firstStep(st, x, stmtName(x))).out
+
+fun firstStep(st: (seen: Set<String>, out: List<FirstInNs>), x: PStmt, name: String)
+  if name == "" || contains(st.seen, namespaceOf(name))
+    ret st
+  ret (seen = add(st.seen, namespaceOf(name)), out = append(st.out, FirstInNs(namespaceOf(name), x)))
+
+
+# ── rule 2: no orphan instances ──────────────────────────────────────────────
+
+# Every converged instance in a layer that owns neither its interface nor an
+# uncovered type argument. An interface still unresolved is check()'s to
+# report.
+fun orphanErrors(owner: Owner, statements: List<PStmt>): Set<PErr> =>
+  fold(statements, Set<PErr>(), (acc, x) => orphanStep(acc, owner, x))
+
+fun orphanStep(acc: Set<PErr>, owner: Owner, x: PStmt): Set<PErr> => match(x)
+  (ti: PsTraitInstance) => match(ti.tiPattern)
+    (c: SClass) => ownedInstance(owner, c)
+      ? acc
+      : add(acc, PErr(ti.pstiLine, "orphan instance of '" + simpleName(c.scName) + "': "
+                                   + described(owner)
+                                   + " owns neither the interface nor the type it is implemented for"))
+    (o: Spec)   => acc
+  (o: PStmt)            => acc
+
+fun ownedInstance(owner: Owner, pattern: SClass): Bool
+  ret owns(owner, namespaceOf(pattern.scName)) || ownedArgument(owner, pattern.scParams)
+
+# The first argument that decides: a bare type parameter is uncovered (anyone's
+# type could fill it), so it refuses; an owned outermost type accepts.
+fun ownedArgument(owner: Owner, args: List<Spec>): Bool => match(head(args))
+  (g: SGeneric) => false
+  (a: Spec)     => match(outermostName(a))
+    (n: String) => owns(owner, namespaceOf(n)) || ownedArgument(owner, dropOne(args))
+    ()          => ownedArgument(owner, dropOne(args))
+  ()            => false
+
+# The declaration a type is, at its outermost: `List<Mine>` is `List`. A
+# builtin, tuple, union or function type is nobody's to own.
+fun outermostName(spec: Spec): String|None => match(spec)
+  (c: SClass) => c.scName
+  (e: SEnum)  => e.seRoot
+  (o: Spec)   => None

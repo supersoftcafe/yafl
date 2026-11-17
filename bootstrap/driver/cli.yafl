@@ -108,7 +108,7 @@ fun setThreshold(s: CliScan, v: String): CliScan|String => match(pyInt(v))
 fun cliCompile(s: CliScan, enabled: Set<String>): Int => match(gatherInputs(s.csFiles))
   (why: String)          => exitWithErr("error: " + why + "\n", 1)
   (srcs: List<LibSource>) => match(parseUnits(srcs))
-    (pe: ParseErrors)    => exitWithOut(printedDiagnostics(pe.peErrs), 1)
+    (pe: LoadErrors)    => exitWithOut(printedDiagnostics(pe.peErrs), 1)
     (user: List<PStmt>)  => cliBuild(s, enabled, user)
 
 fun cliBuild(s: CliScan, enabled: Set<String>, parsed: List<PStmt>): Int

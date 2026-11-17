@@ -14,6 +14,7 @@ import sys
 sys.setrecursionlimit(5000)
 
 import langtools
+import library_rules
 import lowering.ast_inline
 import lowering.hoist_nested
 import lowering.block_exits
@@ -611,18 +612,17 @@ def __converge(statements: list[s.Statement], base: g.ResolverRoot | None = None
         "This is a compiler bug — a compile() pass is not idempotent."))
 
 
-def __converge_layers(layers: list[list[s.Statement]]) -> tuple[list[s.Statement], g.Resolver]:
+def __converge_layers(layers: list[list[s.Statement]]) -> list[list[s.Statement]]:
     """Converge each layer on the root of the layers beneath it (#136): a
     library is settled before anything above it compiles, and is never
-    compiled again. Returns every layer's statements, in order, and a root
-    over all of them."""
+    compiled again. Returns each layer's converged statements."""
     base: g.ResolverRoot | None = None
-    statements: list[s.Statement] = []
+    out: list[list[s.Statement]] = []
     for layer in layers:
         converged, _resolver, _passes = __converge(layer, base)
         base = g.ResolverRoot(converged, base)
-        statements += converged
-    return statements, g.ResolverRoot(statements)
+        out.append(converged)
+    return out
 
 
 @dataclasses.dataclass(frozen=True)
@@ -635,12 +635,16 @@ class _Failed:
     warnings: list[Error]
 
 
-def __iterate_and_compile(layers: list[list[s.Statement]], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
+def __iterate_and_compile(layers: list[list[s.Statement]],
+                          owners: "list[library_rules.Owner] | None" = None, just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
                           enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([]),
                           inline: "InlineOptions" = None) -> tuple[str, list[Error]] | _Failed:
     """`layers`: the program's statements, one list per library in
-    dependency order and the program's own last (#136). Returns (c_code,
+    dependency order and the program's own last (#136); `owners`, who
+    declares each (None: one program and no libraries). Returns (c_code,
     warnings) on success, or _Failed on failure."""
+    if owners is None:
+        owners = [library_rules.Owner(None, frozenset())] * len(layers)
     # Regex literals: validate at compile time and intern each distinct
     # pattern as one shared `$regexes::` global. Before convergence — the
     # created globals need typing like any other statement. They lead the
@@ -648,7 +652,15 @@ def __iterate_and_compile(layers: list[list[s.Statement]], just_testing = False,
     layers, regex_errors = lowering.regexes.fix_global_regexes(layers)
     if regex_errors:
         return _Failed(regex_errors, [])
-    new_statements, resolver = __converge_layers(layers)
+    converged = __converge_layers(layers)
+    # Rule 2 (#136): no orphan instances. On the converged layers, where
+    # every instance's interface and types have resolved.
+    orphans = [err for owner, layer in zip(owners, converged)
+               for err in library_rules.orphan_errors(owner, layer)]
+    if orphans:
+        return _Failed(orphans, [])
+    new_statements = [st for layer in converged for st in layer]
+    resolver = g.ResolverRoot(new_statements)
 
     # A global `let` holding a lambda is a function by another name — rewrite
     # it to one now that inference is done (every lambda is fully typed), so
@@ -880,7 +892,8 @@ def _referenced_namespaces_only(libs: list[list[s.Statement]],
 
 
 def _library_layers(loaded: "list[tuple[libraries.Library, list[s.Statement]]]",
-                    index: "dict[str, libraries.Library]") -> list[list[s.Statement]]:
+                    index: "dict[str, libraries.Library]"
+                    ) -> "list[tuple[libraries.Library, list[s.Statement]]]":
     """The loaded libraries' statements as convergence layers (#136), every
     library after the libraries it references. A library depends on each
     library owning a namespace its statements reference. Among libraries
@@ -907,7 +920,7 @@ def _library_layers(loaded: "list[tuple[libraries.Library, list[s.Statement]]]",
         ordered.append(ready)
         placed.add(id(ready[0]))
         remaining.remove(ready)
-    return [stmts for _, stmts in ordered]
+    return ordered
 
 
 def _gather_libraries(use_stdlib: bool, lib_paths: list[str] | None):
@@ -1051,9 +1064,21 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     loaded_libs = [lib for lib in index.values()
                    if id(lib) in loaded_ids and not (id(lib) in seen or seen.add(id(lib)))]
     owned = {ns for lib in loaded_libs for ns in lib.namespaces}
+    # Rule 1 (#136): each library declares only into its own namespaces, and
+    # the program into none a library lists. Before pruning, so a misplaced
+    # statement is reported whether or not anything reaches it.
+    misplaced = [err for lib, stmts in loaded
+                 for err in library_rules.library_namespace_errors(
+                     lib.manifest.name, frozenset(lib.namespaces), stmts)]
+    misplaced += library_rules.program_namespace_errors(
+        {ns: lib.manifest.name for ns, lib in index.items()}, user_statements)
+    if misplaced:
+        return __print_errors(misplaced), None, []
     pruned = _referenced_namespaces_only([stmts for _, stmts in loaded], user_statements, owned)
-    layers = _library_layers([(lib, stmts) for (lib, _), stmts in zip(loaded, pruned)],
-                             index) + [list(user_statements)]
+    ordered = _library_layers([(lib, stmts) for (lib, _), stmts in zip(loaded, pruned)], index)
+    layers = [stmts for _, stmts in ordered] + [list(user_statements)]
+    owners = ([library_rules.Owner(lib.manifest.name, frozenset(lib.namespaces)) for lib, _ in ordered]
+              + [library_rules.Owner(None, frozenset(index))])
     link_spec = libraries.link_spec_for(loaded_libs)
 
     # yafl.h is the runtime ABI baseline (the entrypoint references it), so it is
@@ -1061,7 +1086,7 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     headers = ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h")
 
     try:
-        compiled_result = __iterate_and_compile(layers, just_testing=just_testing,
+        compiled_result = __iterate_and_compile(layers, owners, just_testing=just_testing,
             optimization_level=optimization_level, headers=headers, profile=profile,
             enabled_warnings=enabled_warnings, inline=inline)
     except ConvergenceError as unsettled:

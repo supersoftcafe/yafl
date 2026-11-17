@@ -135,7 +135,7 @@ fun libsFrontier(frontier: List<PStmt>, idx: List<NsEntry>,
   ret isEmpty(step.stepLibs)
     ? found
     : match(parseLibraries(step.stepLibs, List()))
-      (pe: ParseErrors)          => printedDiagnostics(pe.peErrs)
+      (pe: LoadErrors)          => printedDiagnostics(pe.peErrs)
       (next: List<List<PStmt>>) => libsFrontier(flatMap(next, (l) => l), idx,
           concat(already, map(step.stepLibs, (l) => l.libRoot)),
           concat(found, step.stepLibs))
@@ -647,10 +647,10 @@ fun baseHeaders() => prepend("yafl.h", List())
 # __iterate_and_compile — to C text, or the printed diagnostics.
 # `layers`: the program's statements, one list per library in dependency
 # order and the program's own last (#136; __iterate_and_compile).
-fun cModeConverge(layers: List<List<PStmt>>, optLevel, profile,
+fun cModeConverge(layers: List<List<PStmt>>, owners: List<Owner>, optLevel, profile,
                   headers: List<System::String>,
                   enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::InlineOpts): (outs: List<String>, code: Int, warns: String)
-  let gr = timed("compile", "converge+mono", () => convergeToPostmono(layers, enabledWarnings))
+  let gr = timed("compile", "converge+mono", () => convergeToPostmono(layers, owners, enabledWarnings))
   let warnsText = printedDiagnostics(gr.grWarns)
   ret match(gr.grRes)
     (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers, inl)
@@ -659,14 +659,14 @@ fun cModeConverge(layers: List<List<PStmt>>, optLevel, profile,
 
 # Each layer converges on the root of the layers beneath it (#136;
 # __converge_layers): a library is settled before anything above it compiles,
-# and is never compiled again. Every layer's statements, in order.
+# and is never compiled again. Each layer's converged statements.
 fun [tail] convergeLayers(layers: List<List<PStmt>>, base: RRoot|None,
-                          acc: List<PStmt>): Converged => match(head(layers))
+                          acc: List<List<PStmt>>): List<List<PStmt>>|CvDiverged => match(head(layers))
   (layer: List<PStmt>) => match(converge(layer, base))
     (ok: CvOk)      => convergeLayers(dropOne(layers), rootResolver(ok.cvStatements, base),
-                                      concat(acc, ok.cvStatements))
+                                      append(acc, ok.cvStatements))
     (d: CvDiverged) => d
-  ()                   => CvOk(acc, 0)
+  ()                   => acc
 
 # A compile that ends in diagnostics produced no program, so it fails whatever
 # code the stage dumps give the same text: they compare it with compiler.py's
@@ -677,13 +677,23 @@ fun noProgramCode(code: Int) => code == 0 ? 1 : code
 # Regex literals are validated and interned BEFORE convergence (__iterate_and_compile):
 # the globals they become need typing like any other statement. They lead the
 # program, so they join the lowest layer, where every layer can see them.
-fun convergeToPostmono(layers: List<List<PStmt>>, enabledWarnings: Set<String>): GatedResult
+fun convergeToPostmono(layers: List<List<PStmt>>, owners: List<Owner>,
+                       enabledWarnings: Set<String>): GatedResult
   let rx = fixGlobalRegexes(layers)
   if !isEmpty(rx.rlErrs)
     ret GatedResult(PmText(printedDiagnostics(rx.rlErrs), 1), noErrs())
   ret match(convergeLayers(rx.rlLayers, None, List()))
-    (ok: CvOk)      => postmonoRes2Gated(ok.cvStatements, enabledWarnings)
-    (d: CvDiverged) => GatedResult(PmText(printedDiagnostics(d.cvErrs), 2), noErrs())
+    (converged: List<List<PStmt>>) => orphanGate(converged, owners, enabledWarnings)
+    (d: CvDiverged)                => GatedResult(PmText(printedDiagnostics(d.cvErrs), 2), noErrs())
+
+# Rule 2 (#136): no orphan instances. On the converged layers, where every
+# instance's interface and types have resolved.
+fun orphanGate(converged: List<List<PStmt>>, owners: List<Owner>,
+               enabledWarnings: Set<String>): GatedResult
+  let orphans = zipFold(owners, converged, Set<PErr>(), (acc, o, l) => union(acc, orphanErrors(o, l)))
+  if !isEmpty(orphans)
+    ret GatedResult(PmText(printedDiagnostics(orphans), 1), noErrs())
+  ret postmonoRes2Gated(flatMap(converged, (l) => l), enabledWarnings)
 
 # Parts are parsed in CANONICAL ORDER — sorted by file name — so the emitted C
 # cannot depend on the order the caller happened to feed them in. Python
@@ -726,14 +736,14 @@ fun projectBuild(user, extra: List<String>, optLevel, profile,
                  enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::InlineOpts): ProjectBuild
   ret match(timed("compile", "libraries", () => loadProject(user, extra)))
     (why: String)      => ProjectBuild(list1("error:" + why + "\n"), 1, "", None)
-    (pe: ParseErrors)  => ProjectBuild(list1(printedDiagnostics(pe.peErrs)), 1, "", None)
+    (pe: LoadErrors)  => ProjectBuild(list1(printedDiagnostics(pe.peErrs)), 1, "", None)
     (pr: ProjectLoad) => match(linkSpecFor(pr.plLibs))
       (why2: String)   => ProjectBuild(list1("error:" + why2 + "\n"), 1, "", None)
       (spec: LinkSpec) =>
         # The libraries' layers, then the user's statements as the top one:
         # statement order is emission order, so the libraries come first
         # exactly as they do in compile_project.
-        cModeConverge(append(pr.plLayers, user), optLevel, profile,
+        cModeConverge(append(pr.plLayers, user), pr.plOwners, optLevel, profile,
                       projectHeaders(spec), enabledWarnings, inl)
           |> (outs, code, warns) => ProjectBuild(outs, code, warns, spec)
 
@@ -754,7 +764,7 @@ fun linkSpecMode(text): (out: String, code: Int) => match(parseMulti(text))
 
 fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int) => match(loadProject(user, List()))
   (why: String)     => ("error:" + why + "\n", 1)
-  (pe: ParseErrors) => (printedDiagnostics(pe.peErrs), 1)
+  (pe: LoadErrors) => (printedDiagnostics(pe.peErrs), 1)
   (pr: ProjectLoad) => match(linkSpecFor(pr.plLibs))
     (why2: String)   => ("error:" + why2 + "\n", 1)
     (spec: LinkSpec) => (
@@ -765,21 +775,44 @@ fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int) => match(loadProje
 # plLayers: each loaded library's statements, one list per library — in load
 # order from the worklist, in dependency order once loadProject has pruned and
 # layered them (#136).
-class [final] ProjectLoad(plLayers: List<List<PStmt>>, plLibs: List<Library>)
+# plOwners: who declares each layer, once loadProject has layered them — the
+# libraries', then the program's for the layer the caller adds on top.
+class [final] ProjectLoad(plLayers: List<List<PStmt>>, plLibs: List<Library>,
+                          plOwners: List<Owner>)
 
-fun loadProject(user: List<PStmt>, extra: List<String>): ProjectLoad|String|ParseErrors => match(availableLibraries(extra))
+fun loadProject(user: List<PStmt>, extra: List<String>): ProjectLoad|String|LoadErrors => match(availableLibraries(extra))
   (e: LibsErr) => e.libsWhy
   (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
     (why: String)        => why
     (idx: List<NsEntry>) => match(projectRounds(user, idx, List(), List(), List()))
       (why2: String)      => why2
-      (pe: ParseErrors)   => pe
-      (pr: ProjectLoad)   => match(libraryLayers(pr.plLibs,
-                                                 referencedNamespacesOnly(pr.plLayers, user,
-                                                   flatMap(pr.plLibs, (l) => l.libManifest.libNamespaces)),
-                                                 idx))
-        (why3: String)               => why3
-        (layers: List<List<PStmt>>) => ProjectLoad(layers, pr.plLibs)
+      (pe: LoadErrors)   => pe
+      (pr: ProjectLoad)   => placedProject(pr, user, idx)
+
+# Rule 1 (#136): each library declares only into its own namespaces, and the
+# program into none a library lists. Before pruning, so a misplaced statement
+# is reported whether or not anything reaches it.
+fun placedProject(pr: ProjectLoad, user: List<PStmt>,
+                  idx: List<NsEntry>): ProjectLoad|String|LoadErrors
+  let misplaced = zipFold(pr.plLibs, pr.plLayers, Set<PErr>(),
+                          (acc, l, st) => union(acc, libraryNamespaceErrors(l.libManifest.libName,
+                                                                           Set(l.libManifest.libNamespaces), st)))
+    |> (errs) => union(errs, programNamespaceErrors(listedNamespaces(idx), user))
+  if !isEmpty(misplaced)
+    ret LoadErrors(misplaced)
+  ret match(libraryLayers(pr.plLibs,
+                          referencedNamespacesOnly(pr.plLayers, user,
+                            flatMap(pr.plLibs, (l) => l.libManifest.libNamespaces)),
+                          idx))
+    (why: String)           => why
+    (ordered: List<Loaded>) => ProjectLoad(map(ordered, (x) => x.ldStmts), map(ordered, (x) => x.ldLib),
+                                           append(map(ordered, (x) => libraryOwner(x.ldLib)),
+                                                  Owner(None, Set(map(idx, (e) => e.nsName)))))
+
+fun listedNamespaces(idx: List<NsEntry>): Dict<String, String> =>
+  fold(idx, Dict<String, String>(), (d, e) => put(d, e.nsName, e.nsLib.libManifest.libName))
+
+fun libraryOwner(l: Library) => Owner(l.libManifest.libName, Set(l.libManifest.libNamespaces))
 
 # ── namespace pruning ────────────────────────────────────────────────────────
 # Ported from compiler.py `_referenced_namespaces_only`: the library statements
@@ -830,7 +863,7 @@ fun reachNamespaces(frontier: List<PStmt>, homed: List<Homed>,
 class [final] Loaded(ldLib: Library, ldStmts: List<PStmt>)
 
 fun libraryLayers(libs: List<Library>, layers: List<List<PStmt>>,
-                  idx: List<NsEntry>): List<List<PStmt>>|String
+                  idx: List<NsEntry>): List<Loaded>|String
   let loaded = zipMap(libs, layers, (l, st) => Loaded(l, st))
   let deps = fold(loaded, Dict<String, List<String>>(),
                   (d, x) => put(d, x.ldLib.libRoot, libDeps(x, idx)))
@@ -848,12 +881,12 @@ fun libDepAdd(acc: Set<String>, owner: Library|None, self: Library) => match(own
 fun depsOf(deps: Dict<String, List<String>>, x: Loaded) => get(deps, x.ldLib.libRoot) ?? List()
 
 fun [tail] orderLayers(remaining: List<Loaded>, deps: Dict<String, List<String>>,
-                       placed: Set<String>, out: List<List<PStmt>>): List<List<PStmt>>|String
+                       placed: Set<String>, out: List<Loaded>): List<Loaded>|String
   if isEmpty(remaining)
     ret out
   ret match(firstWhere(remaining, (x) => all(depsOf(deps, x), (d) => contains(placed, d))))
     (ready: Loaded) => orderLayers(filter(remaining, (x) => x.ldLib.libRoot != ready.ldLib.libRoot),
-                                   deps, add(placed, ready.ldLib.libRoot), append(out, ready.ldStmts))
+                                   deps, add(placed, ready.ldLib.libRoot), append(out, ready))
     ()              => cycleError(remaining, deps)
 
 # The first cycle among the libraries left, its members named in sorted order.
@@ -876,15 +909,15 @@ fun nameOfRoot(remaining: List<Loaded>, root: String): String => match(firstWher
 # loadReferenced tests, so each library is taken exactly once.
 fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
                   already: List<String>, acc: List<List<PStmt>>,
-                  libs: List<Library>): ProjectLoad|String|ParseErrors
+                  libs: List<Library>): ProjectLoad|String|LoadErrors
   let step = loadReferenced(idx,
                             candidateNamespaces(declaredImports(frontier),
                                                 qualifiedRefs(frontier)),
                             already)
   ret isEmpty(step.stepLibs)
-    ? ProjectLoad(acc, libs)
+    ? ProjectLoad(acc, libs, List())
     : match(parseLibraries(step.stepLibs, List()))
-      (pe: ParseErrors)           => pe
+      (pe: LoadErrors)           => pe
       (next: List<List<PStmt>>) => projectRounds(flatMap(next, (l) => l), idx,
           concat(already, map(step.stepLibs, (l) => l.libRoot)),
           concat(acc, next), concat(libs, step.stepLibs))
@@ -893,14 +926,14 @@ fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
 # FILENAME. Sorting the round's sources as one flat list instead would
 # interleave two libraries' files, and statement order is emission order.
 # One statement list per library: each converges as a layer of its own (#136).
-fun parseLibraries(ls: List<Library>, acc: List<List<PStmt>>): List<List<PStmt>>|ParseErrors =>
-  foldWhile<Library, List<List<PStmt>>|ParseErrors>(ls, acc, parseLibrary, (a) => a !is ParseErrors)
+fun parseLibraries(ls: List<Library>, acc: List<List<PStmt>>): List<List<PStmt>>|LoadErrors =>
+  foldWhile<Library, List<List<PStmt>>|LoadErrors>(ls, acc, parseLibrary, (a) => a !is LoadErrors)
 
-fun parseLibrary(acc: List<List<PStmt>>|ParseErrors, l: Library) => match(acc)
+fun parseLibrary(acc: List<List<PStmt>>|LoadErrors, l: Library) => match(acc)
   (done: List<List<PStmt>>) => match(parseUnits(l.libSources))
-    (pe: ParseErrors)    => pe
+    (pe: LoadErrors)    => pe
     (stmts: List<PStmt>) => append(done, stmts)
-  (pe: ParseErrors)   => pe
+  (pe: LoadErrors)   => pe
 
 # ── __tokenize_and_parse ─────────────────────────────────────────────────────
 # Units parse in UNIT-NAME order — the path relative to the root, which is what
@@ -908,14 +941,16 @@ fun parseLibrary(acc: List<List<PStmt>>|ParseErrors, l: Library) => match(acc)
 # order is emission order. EVERY unit is parsed and EVERY failure kept: one
 # broken file does not hide another's errors.
 
-class [final] ParseErrors(peErrs: Set<PErr>)
+# Diagnostics from loading a program and its libraries: parse errors, and
+# declarations in a namespace their library does not own (#136, rule 1).
+class [final] LoadErrors(peErrs: Set<PErr>)
 
-fun parseUnits(srcs: List<LibSource>): List<PStmt>|ParseErrors
+fun parseUnits(srcs: List<LibSource>): List<PStmt>|LoadErrors
   ret unitsLoop(sortBy(srcs, (a, b) => a.libFileName < b.libFileName), List(), Set())
 
-fun unitsLoop(ss: List<LibSource>, acc: List<PStmt>, errs: Set<PErr>): List<PStmt>|ParseErrors =>
+fun unitsLoop(ss: List<LibSource>, acc: List<PStmt>, errs: Set<PErr>): List<PStmt>|LoadErrors =>
   fold(ss, (acc = acc, errs = errs), unitsLoopStep)
-    |> (r) => isEmpty(r.errs) ? r.acc : ParseErrors(r.errs)
+    |> (r) => isEmpty(r.errs) ? r.acc : LoadErrors(r.errs)
 
 fun unitsLoopStep(st: (acc: List<PStmt>, errs: Set<PErr>), x: LibSource) => match(parseProgram(x.libText, x.libFileName))
   (f: PFail) => (acc = st.acc,
