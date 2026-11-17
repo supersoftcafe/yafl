@@ -135,8 +135,8 @@ fun libsFrontier(frontier: List<PStmt>, idx: List<NsEntry>,
   ret isEmpty(step.stepLibs)
     ? found
     : match(parseLibraries(step.stepLibs, List()))
-      (pe: ParseErrors)      => printedDiagnostics(pe.peErrs)
-      (next: List<PStmt>)    => libsFrontier(next, idx,
+      (pe: ParseErrors)          => printedDiagnostics(pe.peErrs)
+      (next: List<List<PStmt>>) => libsFrontier(flatMap(next, (l) => l), idx,
           concat(already, map(step.stepLibs, (l) => l.libRoot)),
           concat(found, step.stepLibs))
 
@@ -645,15 +645,28 @@ fun baseHeaders() => prepend("yafl.h", List())
 
 # The pipeline over an assembled statement set — compile_project's
 # __iterate_and_compile — to C text, or the printed diagnostics.
-fun cModeConverge(stmts, optLevel, profile,
+# `layers`: the program's statements, one list per library in dependency
+# order and the program's own last (#136; __iterate_and_compile).
+fun cModeConverge(layers: List<List<PStmt>>, optLevel, profile,
                   headers: List<System::String>,
                   enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::InlineOpts): (outs: List<String>, code: Int, warns: String)
-  let gr = timed("compile", "converge+mono", () => convergeToPostmono(stmts, enabledWarnings))
+  let gr = timed("compile", "converge+mono", () => convergeToPostmono(layers, enabledWarnings))
   let warnsText = printedDiagnostics(gr.grWarns)
   ret match(gr.grRes)
     (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers, inl)
                     |> (outs, code) => (outs, code, warnsText)
     (tx: PmText) => (prepend(tx.pmOut, List()), noProgramCode(tx.pmCode), warnsText)
+
+# Each layer converges on the root of the layers beneath it (#136;
+# __converge_layers): a library is settled before anything above it compiles,
+# and is never compiled again. Every layer's statements, in order.
+fun [tail] convergeLayers(layers: List<List<PStmt>>, base: RRoot|None,
+                          acc: List<PStmt>): Converged => match(head(layers))
+  (layer: List<PStmt>) => match(converge(layer, base))
+    (ok: CvOk)      => convergeLayers(dropOne(layers), rootResolver(ok.cvStatements, base),
+                                      concat(acc, ok.cvStatements))
+    (d: CvDiverged) => d
+  ()                   => CvOk(acc, 0)
 
 # A compile that ends in diagnostics produced no program, so it fails whatever
 # code the stage dumps give the same text: they compare it with compiler.py's
@@ -662,12 +675,13 @@ fun cModeConverge(stmts, optLevel, profile,
 fun noProgramCode(code: Int) => code == 0 ? 1 : code
 
 # Regex literals are validated and interned BEFORE convergence (__iterate_and_compile):
-# the globals they become need typing like any other statement.
-fun convergeToPostmono(stmts, enabledWarnings: Set<String>): GatedResult
-  let rx = fixGlobalRegexes(stmts)
+# the globals they become need typing like any other statement. They lead the
+# program, so they join the lowest layer, where every layer can see them.
+fun convergeToPostmono(layers: List<List<PStmt>>, enabledWarnings: Set<String>): GatedResult
+  let rx = fixGlobalRegexes(layers)
   if !isEmpty(rx.rlErrs)
     ret GatedResult(PmText(printedDiagnostics(rx.rlErrs), 1), noErrs())
-  ret match(converge(rx.rlStmts))
+  ret match(convergeLayers(rx.rlLayers, None, List()))
     (ok: CvOk)      => postmonoRes2Gated(ok.cvStatements, enabledWarnings)
     (d: CvDiverged) => GatedResult(PmText(printedDiagnostics(d.cvErrs), 2), noErrs())
 
@@ -716,10 +730,10 @@ fun projectBuild(user, extra: List<String>, optLevel, profile,
     (pr: ProjectLoad) => match(linkSpecFor(pr.plLibs))
       (why2: String)   => ProjectBuild(list1("error:" + why2 + "\n"), 1, "", None)
       (spec: LinkSpec) =>
-        # `lib_statements + user_statements`, in that order: statement order is
-        # emission order, so the libraries come first exactly as they do in
-        # compile_project.
-        cModeConverge(concat(pr.plStmts, user), optLevel, profile,
+        # The libraries' layers, then the user's statements as the top one:
+        # statement order is emission order, so the libraries come first
+        # exactly as they do in compile_project.
+        cModeConverge(append(pr.plLayers, user), optLevel, profile,
                       projectHeaders(spec), enabledWarnings, inl)
           |> (outs, code, warns) => ProjectBuild(outs, code, warns, spec)
 
@@ -748,7 +762,10 @@ fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int) => match(loadProje
         + "includes=" + join(spec.specIncludeDirs, ",") + "\n"
         + "statics=" + join(spec.specStaticLibs, ",") + "\n", 0)
 
-class [final] ProjectLoad(plStmts: List<PStmt>, plLibs: List<Library>)
+# plLayers: each loaded library's statements, one list per library — in load
+# order from the worklist, in dependency order once loadProject has pruned and
+# layered them (#136).
+class [final] ProjectLoad(plLayers: List<List<PStmt>>, plLibs: List<Library>)
 
 fun loadProject(user: List<PStmt>, extra: List<String>): ProjectLoad|String|ParseErrors => match(availableLibraries(extra))
   (e: LibsErr) => e.libsWhy
@@ -757,9 +774,12 @@ fun loadProject(user: List<PStmt>, extra: List<String>): ProjectLoad|String|Pars
     (idx: List<NsEntry>) => match(projectRounds(user, idx, List(), List(), List()))
       (why2: String)      => why2
       (pe: ParseErrors)   => pe
-      (pr: ProjectLoad)   => ProjectLoad(referencedNamespacesOnly(pr.plStmts, user,
-                                           flatMap(pr.plLibs, (l) => l.libManifest.libNamespaces)),
-                                         pr.plLibs)
+      (pr: ProjectLoad)   => match(libraryLayers(pr.plLibs,
+                                                 referencedNamespacesOnly(pr.plLayers, user,
+                                                   flatMap(pr.plLibs, (l) => l.libManifest.libNamespaces)),
+                                                 idx))
+        (why3: String)               => why3
+        (layers: List<List<PStmt>>) => ProjectLoad(layers, pr.plLibs)
 
 # ── namespace pruning ────────────────────────────────────────────────────────
 # Ported from compiler.py `_referenced_namespaces_only`: the library statements
@@ -772,13 +792,15 @@ fun loadProject(user: List<PStmt>, extra: List<String>): ProjectLoad|String|Pars
 
 class [final] Homed(hStmt: PStmt, hNs: String)
 
-fun referencedNamespacesOnly(lib: List<PStmt>, user: List<PStmt>,
-                             owned: List<String>): List<PStmt>
-  let homed = map(lib, (st) => Homed(st, homeOf(stmtName(st), owned)))
+# One list per library, as given: each converges as a layer of its own (#136).
+fun referencedNamespacesOnly(libs: List<List<PStmt>>, user: List<PStmt>,
+                             owned: List<String>): List<List<PStmt>>
+  let homed = map(flatMap(libs, (l) => l), (st) => Homed(st, homeOf(stmtName(st), owned)))
   let homeless = filter(homed, (h) => h.hNs == "") |> (hs) => map(hs, (h) => h.hStmt)
   let reached = reachNamespaces(concat(user, homeless), homed, Set(owned), Set())
-  ret filter(homed, (h) => h.hNs == "" || contains(reached, h.hNs))
-    |> (hs) => map(hs, (h) => h.hStmt)
+  ret map(libs, (lib) => filter(lib, (st) => isReachedHome(homeOf(stmtName(st), owned), reached)))
+
+fun isReachedHome(ns: String, reached: Set<String>) => ns == "" || contains(reached, ns)
 
 # Of two owned namespaces both prefixing a name, one prefixes the other: the
 # longer is the one that starts with the shorter.
@@ -796,12 +818,64 @@ fun reachNamespaces(frontier: List<PStmt>, homed: List<Homed>,
     : reachNamespaces(filter(homed, (h) => contains(fresh, h.hNs)) |> (hs) => map(hs, (h) => h.hStmt),
                       homed, owned, union(reached, fresh))
 
+# ── library layers ───────────────────────────────────────────────────────────
+# compiler.py `_library_layers` (#136): the loaded libraries' statements as
+# convergence layers, every library after the libraries it references. A
+# library depends on each library owning a namespace its statements reference.
+# Among libraries free to go next, load order decides, so a load order that
+# already puts dependencies first is kept as it is. Libraries that depend on
+# each other are an error: neither could converge before the other. A library
+# is keyed by its root — unique per library, and stable from run to run.
+
+class [final] Loaded(ldLib: Library, ldStmts: List<PStmt>)
+
+fun libraryLayers(libs: List<Library>, layers: List<List<PStmt>>,
+                  idx: List<NsEntry>): List<List<PStmt>>|String
+  let loaded = zipMap(libs, layers, (l, st) => Loaded(l, st))
+  let deps = fold(loaded, Dict<String, List<String>>(),
+                  (d, x) => put(d, x.ldLib.libRoot, libDeps(x, idx)))
+  ret orderLayers(loaded, deps, Set(), List())
+
+fun libDeps(x: Loaded, idx: List<NsEntry>): List<String>
+  ret candidateNamespaces(declaredImports(x.ldStmts), qualifiedRefs(x.ldStmts))
+    |> (ns) => fold(ns, Set<String>(), (acc, n) => libDepAdd(acc, nsLookup(idx, n), x.ldLib))
+    |> (roots) => sort(roots)
+
+fun libDepAdd(acc: Set<String>, owner: Library|None, self: Library) => match(owner)
+  (lib: Library) => lib.libRoot == self.libRoot ? acc : add(acc, lib.libRoot)
+  ()             => acc
+
+fun depsOf(deps: Dict<String, List<String>>, x: Loaded) => get(deps, x.ldLib.libRoot) ?? List()
+
+fun [tail] orderLayers(remaining: List<Loaded>, deps: Dict<String, List<String>>,
+                       placed: Set<String>, out: List<List<PStmt>>): List<List<PStmt>>|String
+  if isEmpty(remaining)
+    ret out
+  ret match(firstWhere(remaining, (x) => all(depsOf(deps, x), (d) => contains(placed, d))))
+    (ready: Loaded) => orderLayers(filter(remaining, (x) => x.ldLib.libRoot != ready.ldLib.libRoot),
+                                   deps, add(placed, ready.ldLib.libRoot), append(out, ready.ldStmts))
+    ()              => cycleError(remaining, deps)
+
+# The first cycle among the libraries left, its members named in sorted order.
+fun cycleError(remaining: List<Loaded>, deps: Dict<String, List<String>>): String
+  let roots = Set(map(remaining, (x) => x.ldLib.libRoot))
+  let edges = EEdges(fold(remaining, Dict<String, List<String>>(),
+                          (d, x) => put(d, x.ldLib.libRoot,
+                                        filter(depsOf(deps, x), (r) => contains(roots, r)))))
+  let cycle = firstWhere(aiSccs(sort(roots), edges), (scc) => sizeAtLeast(scc, 2)) ?? List<String>()
+  ret "libraries depend on each other: "
+    + join(sort(map(cycle, (r) => nameOfRoot(remaining, r))), ", ")
+
+fun nameOfRoot(remaining: List<Loaded>, root: String): String => match(firstWhere(remaining, (x) => x.ldLib.libRoot == root))
+  (x: Loaded) => x.ldLib.libManifest.libName
+  ()          => root
+
 # `while frontier:` — each round loads the libraries the CURRENT statements
 # reference, and what was just loaded becomes the next frontier, so a library
 # pulled in by another is found too. `already` holds libRoots, the same key
 # loadReferenced tests, so each library is taken exactly once.
 fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
-                  already: List<String>, acc: List<PStmt>,
+                  already: List<String>, acc: List<List<PStmt>>,
                   libs: List<Library>): ProjectLoad|String|ParseErrors
   let step = loadReferenced(idx,
                             candidateNamespaces(declaredImports(frontier),
@@ -810,21 +884,22 @@ fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
   ret isEmpty(step.stepLibs)
     ? ProjectLoad(acc, libs)
     : match(parseLibraries(step.stepLibs, List()))
-      (pe: ParseErrors)   => pe
-      (next: List<PStmt>) => projectRounds(next, idx,
+      (pe: ParseErrors)           => pe
+      (next: List<List<PStmt>>) => projectRounds(flatMap(next, (l) => l), idx,
           concat(already, map(step.stepLibs, (l) => l.libRoot)),
           concat(acc, next), concat(libs, step.stepLibs))
 
 # ONE __tokenize_and_parse call PER LIBRARY, and that call SORTS ITS INPUTS BY
 # FILENAME. Sorting the round's sources as one flat list instead would
 # interleave two libraries' files, and statement order is emission order.
-fun parseLibraries(ls: List<Library>, acc: List<PStmt>): List<PStmt>|ParseErrors =>
-  foldWhile<Library, List<PStmt>|ParseErrors>(ls, acc, parseLibrary, (a) => a !is ParseErrors)
+# One statement list per library: each converges as a layer of its own (#136).
+fun parseLibraries(ls: List<Library>, acc: List<List<PStmt>>): List<List<PStmt>>|ParseErrors =>
+  foldWhile<Library, List<List<PStmt>>|ParseErrors>(ls, acc, parseLibrary, (a) => a !is ParseErrors)
 
-fun parseLibrary(acc: List<PStmt>|ParseErrors, l: Library) => match(acc)
-  (done: List<PStmt>) => match(parseUnits(l.libSources))
+fun parseLibrary(acc: List<List<PStmt>>|ParseErrors, l: Library) => match(acc)
+  (done: List<List<PStmt>>) => match(parseUnits(l.libSources))
     (pe: ParseErrors)    => pe
-    (stmts: List<PStmt>) => concat(done, stmts)
+    (stmts: List<PStmt>) => append(done, stmts)
   (pe: ParseErrors)   => pe
 
 # ── __tokenize_and_parse ─────────────────────────────────────────────────────

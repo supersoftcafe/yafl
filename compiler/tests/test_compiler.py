@@ -289,7 +289,7 @@ fun main(): System::Int
         # The fixed code must raise RuntimeError with a message that includes the iteration
         # count (not RecursionError from unbounded recursion).
         with self.assertRaises(RuntimeError) as ctx:
-            iterate_fn([stmt])
+            iterate_fn([[stmt]])
         self.assertIn("iteration", str(ctx.exception).lower())
 
 

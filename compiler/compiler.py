@@ -13,6 +13,7 @@ import sys
 # the full bootstrap compile at -O1 completes under a 4000 limit.
 sys.setrecursionlimit(5000)
 
+import langtools
 import lowering.ast_inline
 import lowering.hoist_nested
 import lowering.block_exits
@@ -610,6 +611,20 @@ def __converge(statements: list[s.Statement], base: g.ResolverRoot | None = None
         "This is a compiler bug — a compile() pass is not idempotent."))
 
 
+def __converge_layers(layers: list[list[s.Statement]]) -> tuple[list[s.Statement], g.Resolver]:
+    """Converge each layer on the root of the layers beneath it (#136): a
+    library is settled before anything above it compiles, and is never
+    compiled again. Returns every layer's statements, in order, and a root
+    over all of them."""
+    base: g.ResolverRoot | None = None
+    statements: list[s.Statement] = []
+    for layer in layers:
+        converged, _resolver, _passes = __converge(layer, base)
+        base = g.ResolverRoot(converged, base)
+        statements += converged
+    return statements, g.ResolverRoot(statements)
+
+
 @dataclasses.dataclass(frozen=True)
 class _Failed:
     """A compile that ended in errors. `warnings` are those the diagnostics
@@ -620,17 +635,20 @@ class _Failed:
     warnings: list[Error]
 
 
-def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
+def __iterate_and_compile(layers: list[list[s.Statement]], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
                           enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([]),
                           inline: "InlineOptions" = None) -> tuple[str, list[Error]] | _Failed:
-    """Returns (c_code, warnings) on success, or _Failed on failure."""
+    """`layers`: the program's statements, one list per library in
+    dependency order and the program's own last (#136). Returns (c_code,
+    warnings) on success, or _Failed on failure."""
     # Regex literals: validate at compile time and intern each distinct
     # pattern as one shared `$regexes::` global. Before convergence — the
-    # created globals need typing like any other statement.
-    statements, regex_errors = lowering.regexes.fix_global_regexes(statements)
+    # created globals need typing like any other statement. They lead the
+    # program, so they join the lowest layer, where every layer can see them.
+    layers, regex_errors = lowering.regexes.fix_global_regexes(layers)
     if regex_errors:
         return _Failed(regex_errors, [])
-    new_statements, resolver, _passes = __converge(statements)
+    new_statements, resolver = __converge_layers(layers)
 
     # A global `let` holding a lambda is a function by another name — rewrite
     # it to one now that inference is done (every lambda is fully typed), so
@@ -822,11 +840,12 @@ def _candidate_namespaces(statements: list[s.Statement]) -> set[str]:
     return candidates
 
 
-def _referenced_namespaces_only(lib_statements: list[s.Statement],
+def _referenced_namespaces_only(libs: list[list[s.Statement]],
                                 user_statements: list[s.Statement],
-                                owned: set[str]) -> list[s.Statement]:
-    """The library statements whose namespace the program reaches, in their
-    original order (statement order is emission order).
+                                owned: set[str]) -> list[list[s.Statement]]:
+    """Each library's statements whose namespace the program reaches, in their
+    original order (statement order is emission order); one list per library,
+    as given, since each converges as a layer of its own (#136).
 
     The library worklist loads WHOLE libraries, but most of a library is
     usually unreferenced, and every statement loaded costs every pass of the
@@ -844,6 +863,7 @@ def _referenced_namespaces_only(lib_statements: list[s.Statement],
         name = getattr(st, "name", "")
         return max((ns for ns in owned if name.startswith(f"{ns}::")), key=len, default=None)
 
+    lib_statements = [st for lib in libs for st in lib]
     homes = [namespace_of(st) for st in lib_statements]
     members: dict[str, list[s.Statement]] = {}
     for st, ns in zip(lib_statements, homes):
@@ -856,7 +876,38 @@ def _referenced_namespaces_only(lib_statements: list[s.Statement],
         new = (_candidate_namespaces(frontier) & members.keys()) - reached
         reached |= new
         frontier = [st for ns in sorted(new) for st in members[ns]]
-    return [st for st, ns in zip(lib_statements, homes) if ns is None or ns in reached]
+    return [[st for st in lib if (ns := namespace_of(st)) is None or ns in reached] for lib in libs]
+
+
+def _library_layers(loaded: "list[tuple[libraries.Library, list[s.Statement]]]",
+                    index: "dict[str, libraries.Library]") -> list[list[s.Statement]]:
+    """The loaded libraries' statements as convergence layers (#136), every
+    library after the libraries it references. A library depends on each
+    library owning a namespace its statements reference. Among libraries
+    free to go next, load order decides, so a load order that already puts
+    dependencies first is kept as it is. Libraries that depend on each other
+    are an error: neither could converge before the other."""
+    deps = {id(lib): {id(index[ns]) for ns in _candidate_namespaces(stmts) if ns in index} - {id(lib)}
+            for lib, stmts in loaded}
+    ordered: list[tuple[libraries.Library, list[s.Statement]]] = []
+    placed: set[int] = set()
+    remaining = list(loaded)
+    while remaining:
+        ready = next((entry for entry in remaining if deps[id(entry[0])] <= placed), None)
+        if ready is None:
+            # Keyed by root: unique per library, and stable from run to run.
+            roots = {id(lib): str(lib.root) for lib, _ in remaining}
+            names = {str(lib.root): lib.manifest.name for lib, _ in remaining}
+            edges = {roots[id(lib)]: [roots[d] for d in deps[id(lib)] if d in roots]
+                     for lib, _ in remaining}
+            cycle = next(scc for scc in langtools.strongly_connected_components(sorted(names), edges)
+                         if len(scc) > 1)
+            raise libraries.LibraryError(
+                "libraries depend on each other: " + ", ".join(sorted(names[n] for n in cycle)))
+        ordered.append(ready)
+        placed.add(id(ready[0]))
+        remaining.remove(ready)
+    return [stmts for _, stmts in ordered]
 
 
 def _gather_libraries(use_stdlib: bool, lib_paths: list[str] | None):
@@ -976,8 +1027,10 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     # Permissive worklist: load every referenced library to a fixpoint, following
     # the references of each newly-loaded library. Libraries are loaded as source
     # and join the whole-program set; `trim` later drops anything unused.
-    lib_statements: list[s.Statement] = []
     loaded_ids: set[int] = set()
+    # Each library's own statements, in load order: they converge as a layer
+    # of their own (#136).
+    loaded: list[tuple[libraries.Library, list[s.Statement]]] = []
     frontier = list(user_statements)
     while frontier:
         next_frontier: list[s.Statement] = []
@@ -990,7 +1043,7 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
                 [Input(src.content, src.filename) for src in lib.yafl_sources()])
             if lib_errors:
                 return __print_errors(lib_errors), None, []
-            lib_statements += stmts
+            loaded.append((lib, stmts))
             next_frontier += stmts
         frontier = next_frontier
 
@@ -998,7 +1051,9 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     loaded_libs = [lib for lib in index.values()
                    if id(lib) in loaded_ids and not (id(lib) in seen or seen.add(id(lib)))]
     owned = {ns for lib in loaded_libs for ns in lib.namespaces}
-    statements = _referenced_namespaces_only(lib_statements, user_statements, owned) + list(user_statements)
+    pruned = _referenced_namespaces_only([stmts for _, stmts in loaded], user_statements, owned)
+    layers = _library_layers([(lib, stmts) for (lib, _), stmts in zip(loaded, pruned)],
+                             index) + [list(user_statements)]
     link_spec = libraries.link_spec_for(loaded_libs)
 
     # yafl.h is the runtime ABI baseline (the entrypoint references it), so it is
@@ -1006,7 +1061,7 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     headers = ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h")
 
     try:
-        compiled_result = __iterate_and_compile(statements, just_testing=just_testing,
+        compiled_result = __iterate_and_compile(layers, just_testing=just_testing,
             optimization_level=optimization_level, headers=headers, profile=profile,
             enabled_warnings=enabled_warnings, inline=inline)
     except ConvergenceError as unsettled:
