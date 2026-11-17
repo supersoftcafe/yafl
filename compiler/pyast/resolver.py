@@ -485,6 +485,16 @@ def _under(by_ns: "dict[str, Findings] | None", scopes: tuple) -> "Findings":
     return result
 
 
+def _join(a: "Findings", b: "Findings") -> "Findings":
+    """`a + b`, returning a side unchanged when the other is a complete empty
+    — the overwhelmingly common shape when combining layers."""
+    if a is EMPTY:
+        return b
+    if b is EMPTY:
+        return a
+    return a + b
+
+
 def as_statements(statements: "Iterable[s.Statement] | Statements") -> Statements:
     """Wrap a plain iterable in `Statements`, or pass a `Statements` through —
     so a collection is indexed at most once as it flows through the pipeline."""
@@ -492,10 +502,23 @@ def as_statements(statements: "Iterable[s.Statement] | Statements") -> Statement
 
 
 class ResolverRoot(Resolver):
-    def __init__(self, statements: "Iterable[s.Statement] | Statements") -> None:
+    """The global scope: every top-level statement of the program.
+
+    A root may sit on a BASE root (#136): the base holds the libraries
+    beneath this layer, already converged, and is never rebuilt. Every answer
+    is the base's answer followed by this layer's own — exactly the order one
+    root over `base statements + own statements` gives, because a merged
+    index bucket lists declarations in statement order and the libraries
+    come first. Whole-program analyses read `all_statements()`, the same
+    combined list. With no base, every query takes the single-layer path it
+    always did."""
+
+    def __init__(self, statements: "Iterable[s.Statement] | Statements",
+                 base: "ResolverRoot | None" = None) -> None:
         # The collection carries its own index; wrapping a `Statements` reuses
         # it, wrapping a list builds it once here.
         self.__statements = as_statements(statements)
+        self.__base = base
         # Lazy per-pass memo for get_ambient_patterns (roots are per-pass).
         self.__ambient = None
         # Lazy per-pass memo for get_enum_fields, keyed by statement name —
@@ -521,22 +544,22 @@ class ResolverRoot(Resolver):
     def is_complex_root(self, root_name: str) -> bool:
         if self.__breakers is None:
             from lowering.complex_enums import compute_breakers
-            self.__breakers = compute_breakers(list(self.__statements))
+            self.__breakers = compute_breakers(self.all_statements())
         return root_name in self.__breakers
 
     def derives_equality(self, enum_name: str) -> bool:
         if self.__derivable is None:
             from lowering.derive_eq import derivable_enums
-            self.__derivable = derivable_enums(list(self.__statements), self)
+            self.__derivable = derivable_enums(self.all_statements(), self)
         return enum_name in self.__derivable
 
     def is_boxed_leaf(self, root_name: str, leaf_name: str) -> bool:
         if self.__boxed_leaves is None:
             from lowering.complex_enums import compute_boxed_leaves, compute_breakers
             if self.__breakers is None:
-                self.__breakers = compute_breakers(list(self.__statements))
+                self.__breakers = compute_breakers(self.all_statements())
             self.__boxed_leaves = compute_boxed_leaves(
-                list(self.__statements), self.__breakers)
+                self.all_statements(), self.__breakers)
         return (root_name, leaf_name) in self.__boxed_leaves
 
     def merged_members(self, class_name: str):
@@ -626,23 +649,50 @@ class ResolverRoot(Resolver):
         visiting.discard(class_name)
         return (rows, absent_incomplete, len(cls.type_params))
 
+    def all_statements(self) -> list[s.Statement]:
+        """Every layer's statements, the base's first: the program a single
+        root over the whole would hold."""
+        own = list(self.__statements)
+        return own if self.__base is None else self.__base.all_statements() + own
+
     def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
-        return self.__statements.find_type_global(name)
+        own = self.__statements.find_type_global(name)
+        return own if self.__base is None else _join(self.__base.find_type(name), own)
 
     def find_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
-        return self.__statements.find_data_global(name)
+        own = self.__statements.find_data_global(name)
+        return own if self.__base is None else _join(self.__base.find_data(name), own)
 
+    # Scope order outranks layer order: the merged answer lists namespace by
+    # namespace, and within each the base's declarations precede this
+    # layer's.
     def find_type_under(self, bare: str, scopes: tuple) -> "Findings":
-        return self.__statements.find_type_under(bare, scopes)
+        if self.__base is None:
+            return self.__statements.find_type_under(bare, scopes)
+        result = EMPTY
+        for scope in scopes:
+            one = (scope,)
+            result = _join(result, _join(self.__base.find_type_under(bare, one),
+                                         self.__statements.find_type_under(bare, one)))
+        return result
 
     def find_data_under(self, bare: str, scopes: tuple) -> "Findings":
-        return self.__statements.find_data_under(bare, scopes)
+        if self.__base is None:
+            return self.__statements.find_data_under(bare, scopes)
+        result = EMPTY
+        for scope in scopes:
+            one = (scope,)
+            result = _join(result, _join(self.__base.find_data_under(bare, one),
+                                         self.__statements.find_data_under(bare, one)))
+        return result
 
     def get_traits(self) -> list[s.LetStatement]:
-        return list(self.__statements.traits)
+        own = list(self.__statements.traits)
+        return own if self.__base is None else self.__base.get_traits() + own
 
     def get_trait_instances(self) -> "list[s.TraitInstanceStatement]":
-        return list(self.__statements.instances)
+        own = list(self.__statements.instances)
+        return own if self.__base is None else self.__base.get_trait_instances() + own
 
     def get_enum_fields(self, stmt) -> tuple:
         cached = self.__enum_fields.get(stmt.name)
@@ -668,7 +718,7 @@ class ResolverRoot(Resolver):
         lookup, no parent substitution."""
         entries: list[tuple[str, t.ClassSpec, tuple[str, ...]]] = []
         blocked = False
-        for inst in self.__statements.instances:
+        for inst in self.get_trait_instances():
             if not inst.ambient:
                 continue
             ns = inst.name.rpartition('::')[0]

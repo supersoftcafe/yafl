@@ -564,12 +564,16 @@ class ConvergenceError(RuntimeError):
         self.errors = errors
 
 
-def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Resolver, int]:
+def __converge(statements: list[s.Statement], base: g.ResolverRoot | None = None
+               ) -> tuple[list[s.Statement], g.Resolver, int]:
     """Run the compile fixpoint: rewrite every statement until a whole pass
-    changes nothing. Returns the converged statements, the final resolver and
-    the number of passes taken (the bootstrap contract pins the port to the
-    same count — a port that reached the same answer in a different number of
-    passes is doing more or less per pass than this compiler).
+    changes nothing. `base`, when given, is the root of the libraries beneath
+    these statements, converged already (#136): each pass's root sits on it,
+    and only `statements` compile and are compared. Returns the converged
+    statements, the final resolver and the number of passes taken (the
+    bootstrap contract pins the port to the same count — a port that reached
+    the same answer in a different number of passes is doing more or less per
+    pass than this compiler).
 
     Inference can also CYCLE: two parameters each narrow to what the other's
     previous answer allows, then both widen when those answers disagree, for
@@ -580,7 +584,7 @@ def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Reso
     snapshot, window, distance = statements, 1, 0
     previous = statements
     for passes in range(1, _MAX_COMPILE_ITERATIONS + 1):
-        resolver = g.ResolverRoot(statements)
+        resolver = g.ResolverRoot(statements, base)
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
         if new_statements == statements:
             return new_statements, resolver, passes

@@ -157,8 +157,13 @@ class [final] Statements(stOrdered: List<PStmt>,
                          stBareData: Dict<String, Dict<String, Findings>>,
                          stMembers: Dict<String, MemberIdx>)
 
-fun buildStatements(stmts)
-  ret withKindIndexes(withAmbient(indexLoop(stmts,
+fun buildStatements(stmts) => buildStatements(stmts, None)
+
+# A layer's index (#136): everything is this layer's own, except the ambient
+# patterns, which continue the base's — the deduplicated list one index over
+# the combined statements would hold.
+fun buildStatements(stmts, base: RRoot|None)
+  ret withKindIndexes(withAmbient(base, indexLoop(stmts,
                             Statements(stmts, Dict(),
                                        List(), List(),
                                        List(), false,
@@ -218,7 +223,7 @@ fun memberKeys(ms: List<PStmt>, acc: Dict<String, List<PStmt>>) =>
 # builder, or a class spelling the canonical key does not cover) derives per
 # query as before.
 fun [tail] memberIdxHook(r, className) => match(r)
-  (root: RRoot)    => get(root.rrStmts.stMembers, className)
+  (root: RRoot)    => rootMemberIdx(root, className)
   (sc: RScopes)    => memberIdxHook(sc.rsParent, className)
   (d: RData)       => memberIdxHook(d.rdParent, className)
   (t2: RTypes)     => memberIdxHook(t2.rtParent, className)
@@ -241,13 +246,16 @@ fun kindPut(acc, key: String,
     ()               => List()
   ret isEmpty(found) ? acc : put(acc, key, Findings(found, true))
 
-fun withAmbient(base: Statements)
+fun withAmbient(below: RRoot|None, base: Statements)
+  let seed = match(below)
+    (b: RRoot) => AmbBuilt(b.rrStmts.stAmbient, b.rrStmts.stAmbientBlocked)
+    ()         => AmbBuilt(List(), false)
   let amb = buildAmbient(base.stInstances,
                          List(), false)
   ret Statements(base.stOrdered, base.stIndex, base.stTraits,
                  base.stInstances,
-                 dedupeAmb(amb.abEntries, List()),
-                 amb.abBlocked, base.stTypesIdx, base.stDataIdx,
+                 dedupeAmb(amb.abEntries, seed.abEntries),
+                 amb.abBlocked || seed.abBlocked, base.stTypesIdx, base.stDataIdx,
                  base.stBareTypes, base.stBareData, base.stMembers)
 
 # (spec, own) dedupe, once per pass — two identical instances collapse to
@@ -371,6 +379,11 @@ enum Resolver
   # rrMerged: the per-pass merged member tables (mergedMembersTable) —
   # membersOf's one-probe fast path; None on direct builders (the old
   # per-query derivation serves).
+  # rrBase: the root of the libraries beneath this layer, converged already
+  # and never rebuilt (#136; Python ResolverRoot's `base`). Every answer is
+  # the base's followed by this layer's own — the order one root over the
+  # combined statements gives, since the libraries come first. None: a
+  # single-layer root, answering exactly as it always did.
   # rrDerivesEq: the per-pass derived-equality analysis (Python
   # ResolverRoot.derives_equality's lazy set) — which top-level enums bring a
   # derived BasicEquality instance on this pass. Like rrComplex, a closure over
@@ -381,7 +394,8 @@ enum Resolver
              rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0,
              rrEnumFields: Dict<String, List<SField>>|None = None,
              rrBoxedLeaves: Dict<String, Bool>|None = None,
-             rrMerged: Dict<String, MergedOut>|None = None)
+             rrMerged: Dict<String, MergedOut>|None = None,
+             rrBase: RRoot|None = None)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   # A declaration's generic params, and the `where` constraints it states
   # over them: inside the declaration — its signature as much as its body —
@@ -415,7 +429,7 @@ enum Resolver
   enum RGen(rgFrame: GenFrame, rgParent: Resolver)
 
 fun findData(r, query): Findings => match(r)
-  (root: RRoot) => globalFindings(root.rrStmts, query, false)
+  (root: RRoot) => rootFindings(root, query, false)
   (rg: RGen)    => findData(rg.rgParent, query)
   # Lexical SHADOWING (ResolverData): a name bound at this scope hides the
   # same name in every enclosing scope — the parent is consulted only on a
@@ -437,7 +451,7 @@ fun emptyResolver() => RRoot((root) => false, (name) => false, buildStatements(L
 let emptyResolverGlobal: Resolver = emptyResolver()
 
 fun findType(r, query): Findings => match(r)
-  (root: RRoot) => globalFindings(root.rrStmts, query, true)
+  (root: RRoot) => rootFindings(root, query, true)
   (rg: RGen)    => findType(rg.rgParent, query)
   (d: RData)    => findType(d.rdParent, query)
   (t2: RTypes)  => addFindings(matchingFound(t2.rtNames, query),
@@ -459,7 +473,7 @@ fun findType(r, query): Findings => match(r)
 # get_trait_instances: pre-lowering first-class instances (constraint
 # discharge and droppability read these before lower_instances runs).
 fun [tail] traitInstanceStmts(r) => match(r)
-  (root: RRoot)    => root.rrStmts.stInstances
+  (root: RRoot)    => rootInstances(root)
   (sc: RScopes)    => traitInstanceStmts(sc.rsParent)
   (d: RData)       => traitInstanceStmts(d.rdParent)
   (t2: RTypes)     => traitInstanceStmts(t2.rtParent)
@@ -541,7 +555,7 @@ fun namespacePart(name)
 # table MISS is a pruned root, whose fields are empty either way.
 fun [tail] enumFieldsHook(r, root: String) => match(r)
   (rt2: RRoot)     => match(rt2.rrEnumFields)
-    (d: Dict<String, List<SField>>) => enumFieldsAt(d, root)
+    (d: Dict<String, List<SField>>) => enumFieldsAt(d, root, rt2.rrBase)
     ()                                => None
   (sc: RScopes)    => enumFieldsHook(sc.rsParent, root)
   (d: RData)       => enumFieldsHook(d.rdParent, root)
@@ -550,14 +564,19 @@ fun [tail] enumFieldsHook(r, root: String) => match(r)
   (cb: RClassBody) => enumFieldsHook(cb.rcbParent, root)
   (rg: RGen)       => enumFieldsHook(rg.rgParent, root)
 
-fun enumFieldsAt(d: Dict<String, List<SField>>, root: String) => match(get(d, root))
+# A miss in this layer's table is the base's enum, or a pruned root (no
+# fields to resolve against).
+fun enumFieldsAt(d: Dict<String, List<SField>>, root: String,
+                 base: RRoot|None): List<SField> => match(get(d, root))
   (fs: List<SField>) => fs
-  ()                 => List()   # pruned root: no fields to resolve against
+  ()                 => match(base)
+    (b: RRoot) => enumFieldsHook(b, root) ?? List()
+    ()         => List()
 
 # get_traits: every `[trait]` let in the statement set (precomputed by the
 # index) — no scope filter, exactly like Python's root.
 fun [tail] traitLets(r) => match(r)
-  (root: RRoot)    => root.rrStmts.stTraits
+  (root: RRoot)    => rootTraits(root)
   (sc: RScopes)    => traitLets(sc.rsParent)
   (d: RData)       => traitLets(d.rdParent)
   (t2: RTypes)     => traitLets(t2.rtParent)
@@ -621,7 +640,17 @@ fun [tail] bareScoped(r, bare: String, wantType,
   (rg: RGen)       => bareScoped(rg.rgParent, bare, wantType, namespaces)
 
 fun bareAtRoot(root: RRoot, bare: String, wantType,
-               namespaces: List<String>)
+               namespaces: List<String>): Findings => match(root.rrBase)
+  (b: RRoot) => fold(namespaces, emptyFindingsGlobal,
+                     (a, n) => joinFindings(a, joinFindings(bareAtRoot(b, bare, wantType, List(n)),
+                                                            bareOwn(root, bare, wantType, List(n)))))
+  ()         => bareOwn(root, bare, wantType, namespaces)
+
+# Scope order outranks layer order (bareAtRoot): the merged answer lists
+# namespace by namespace, and within each the base's declarations precede
+# this layer's.
+fun bareOwn(root: RRoot, bare: String, wantType,
+            namespaces: List<String>)
   ret match(get(wantType ? root.rrStmts.stBareTypes : root.rrStmts.stBareData,
                 bare))
     (inner: Dict<String, Findings>) => underScopes(namespaces, inner,
@@ -645,6 +674,32 @@ let emptyFindingsGlobal = Findings(List(), true)
 # it declares a TYPE (class/interface/enum/typealias) or DATA (fun/let) —
 # PREBUILT per key at index build (withKindIndexes), so a query is one dict
 # hit returning a shared Findings.
+fun rootFindings(root: RRoot, query: String, wantType: Bool): Findings
+  let own = globalFindings(root.rrStmts, query, wantType)
+  ret match(root.rrBase)
+    (b: RRoot) => joinFindings(rootFindings(b, query, wantType), own)
+    ()         => own
+
+fun [tail] rootMemberIdx(root: RRoot, className): MemberIdx|None => match(get(root.rrStmts.stMembers, className))
+  (mi: MemberIdx) => mi
+  ()              => match(root.rrBase)
+    (b: RRoot) => rootMemberIdx(b, className)
+    ()         => None
+
+fun rootInstances(root: RRoot): List<PStmt> => match(root.rrBase)
+  (b: RRoot) => concat(rootInstances(b), root.rrStmts.stInstances)
+  ()         => root.rrStmts.stInstances
+
+fun rootTraits(root: RRoot): List<PStmt> => match(root.rrBase)
+  (b: RRoot) => concat(rootTraits(b), root.rrStmts.stTraits)
+  ()         => root.rrStmts.stTraits
+
+# Every layer's statements, the base's first: the program a single root over
+# the whole would hold (Python ResolverRoot.all_statements).
+fun allStatements(root: RRoot): List<PStmt> => match(root.rrBase)
+  (b: RRoot) => concat(allStatements(b), root.rrStmts.stOrdered)
+  ()         => root.rrStmts.stOrdered
+
 fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
   ret match(get(wantType ? idx.stTypesIdx : idx.stDataIdx, query))
     (f: Findings) => f
@@ -720,28 +775,35 @@ enum MergedOut
   enum MTable(mtoTable: MergedTable)
   enum MMissing()
 
-fun mergedMembersTable(st: Statements): Dict<String, MergedOut>
+class [final] MMSource(msStmts: Statements, msBase: RRoot|None)
+
+fun mergedMembersTable(st: Statements) => mergedMembersTable(st, None)
+
+# A layer's table (#136): this layer's classes; a parent from beneath reuses
+# the base's row, built once when the base was.
+fun mergedMembersTable(st: Statements, base: RRoot|None): Dict<String, MergedOut>
+  let src = MMSource(st, base)
   ret fold(sort(keys(st.stMembers)), Dict(),
            (acc, name) =>
-             mmEnsure(name, st, List(), acc))
+             mmEnsure(name, src, List(), acc))
 
-fun mmEnsure(name, st: Statements, visiting: List<String>,
+fun mmEnsure(name, st: MMSource, visiting: List<String>,
              acc) => match(get(acc, name))
   (done: MergedOut) => acc
   ()                 => mmBuild(name, st, visiting, acc)
 
-fun mmBuild(name, st: Statements, visiting: List<String>,
+fun mmBuild(name, st: MMSource, visiting: List<String>,
             acc)
   if contains(visiting, name)
     ret put(acc, name, MMissing())   # defensive: cyclic implements
-  ret match(get(st.stMembers, name))
+  ret match(get(st.msStmts.stMembers, name))
     (mi: MemberIdx) => mmBuildClass(name, mi, st, visiting, acc)
-    ()               => put(acc, name, MMissing())
+    ()               => put(acc, name, baseMerged(st.msBase, name) ?? MMissing())
 
 class [final] MMState(mmRows: Dict<String, MergedRow>, mmAbsent: Bool,
                       mmBroken: Bool, mmAcc: Dict<String, MergedOut>)
 
-fun mmBuildClass(name: String, mi: MemberIdx, st: Statements,
+fun mmBuildClass(name: String, mi: MemberIdx, st: MMSource,
                  visiting: List<String>, acc)
   let ownRows = mmOwnRows(sort(keys(mi.miByKey)), mi, Dict())
   let stt = fold(mi.miClass.cImplements,
@@ -769,7 +831,7 @@ fun mmMarkOne(rows, k: String): Dict<String, MergedRow> => match(get(rows, k))
   (row: MergedRow) => put(rows, k, MergedRow(row.mrEntries, false))
   ()                => rows
 
-fun mmParent(s2, parent, mi: MemberIdx, st: Statements,
+fun mmParent(s2, parent, mi: MemberIdx, st: MMSource,
              visiting: List<String>) => match(parent)
   (n: SNamed) => MMState(s2.mmRows, s2.mmAbsent, true, s2.mmAcc)
   (c: SClass) => anyNamed(c.scParams)
@@ -777,7 +839,7 @@ fun mmParent(s2, parent, mi: MemberIdx, st: Statements,
     : mmParentClass(s2, c, mi, st, visiting)
   (o: Spec)   => s2   # unreachable: implements entries are class or named
 
-fun mmParentClass(s2: MMState, parent: SClass, mi: MemberIdx, st: Statements,
+fun mmParentClass(s2: MMState, parent: SClass, mi: MemberIdx, st: MMSource,
                   visiting: List<String>)
   let acc2 = mmEnsure(parent.scName, st, visiting, s2.mmAcc)
   ret match(get(acc2, parent.scName))
@@ -816,10 +878,14 @@ fun mmAppendRow(acc: Dict<String, MergedRow>, k: String,
                                              prev.mrComplete && comp))
   ()                 => put(acc, k, MergedRow(entries, comp))
 
+fun baseMerged(base: RRoot|None, className): MergedOut|None => match(base)
+  (b: RRoot) => mergedHook(b, className)
+  ()         => None
+
 # The per-pass merged table, when the root carries one.
 fun [tail] mergedHook(r, className) => match(r)
   (root: RRoot)    => match(root.rrMerged)
-    (d2: Dict<String, MergedOut>) => get(d2, className)
+    (d2: Dict<String, MergedOut>) => get(d2, className) ?? baseMerged(root.rrBase, className)
     ()                             => None
   (sc: RScopes)    => mergedHook(sc.rsParent, className)
   (d: RData)       => mergedHook(d.rdParent, className)

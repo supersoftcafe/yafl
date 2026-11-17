@@ -414,18 +414,27 @@ fun ceListAmbig(ss: List<Spec>, map: NameMap, acc: Set<PErr>) =>
 # same lifetime as every per-pass cache. Mirror of Python
 # ResolverRoot.is_complex_root. The breaker list is small; membership is a
 # linear scan.
-fun rootResolver(statements)
-  let breakers: List<String> = computeBreakers(statements)
-  let st = buildStatements(statements)
+fun rootResolver(statements) => rootResolver(statements, None)
+
+# A root on a BASE root (#136; Python ResolverRoot(statements, base)): the
+# libraries beneath, converged already and never rebuilt. The per-statement
+# tables hold this layer's own and fall back to the base; the whole-program
+# analyses (breakers, derived equality) read every layer's statements, the
+# program a single root would see.
+fun rootResolver(statements, base: RRoot|None)
+  let st = buildStatements(statements, base)
   # The derived-equality analysis reads only type lookups, so a plain root
   # over the same index serves it (the full root cannot name itself here).
-  let derivable: List<String> = derivableEnums(statements,
-      RRoot((root) => false, (name) => false, st))
+  let plain = RRoot((root) => false, (name) => false, st,
+                    None, 0, None, None, None, base)
+  let program = allStatements(plain)
+  let breakers: List<String> = computeBreakers(program)
+  let derivable: List<String> = derivableEnums(program, plain)
   ret RRoot((root) => contains(breakers, root),
             (name) => contains(derivable, name),
             st, None, 0,
             enumFieldsTable(statements), None,
-            mergedMembersTable(st))
+            mergedMembersTable(st, base), base)
 
 # Every root enum's derived fields, once per pass (the stAmbient pattern —
 # resolver-path readers asked ~938k times per self-compile otherwise).
