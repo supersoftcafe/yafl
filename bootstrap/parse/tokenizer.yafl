@@ -28,9 +28,16 @@ enum TokKind
   enum KEof()
   enum KChar()
   enum KRegex()
+  enum KInterp()
 
 class [final] Token(kind: TokKind, text: System::String,
                     indent: System::Int, line: System::Int, col: System::Int)
+
+# A `#` comment, which the parser never sees: the formatter puts it back by
+# position. `cmText` runs from the `#` to the end of the line; `cmTrailing`
+# says code precedes it on its line.
+class [final] Comment(cmLine: System::Int, cmCol: System::Int, cmText: System::String,
+                      cmTrailing: System::Bool)
 
 fun kindName(k) => match(k)
   (a: KString) => "STRING"
@@ -41,6 +48,7 @@ fun kindName(k) => match(k)
   (f: KEof)    => "EOF"
   (g: KChar)   => "CHAR"
   (h: KRegex)  => "REGEX"
+  (i: KInterp) => "INTERP"
 
 fun isKeyword(s: System::String) => match(s)
   ("ret" | "let" | "fun" | "typealias" | "where" | "class" | "interface"
@@ -95,6 +103,46 @@ fun quotedEnd(ln, pos, quote)
       ret i + 2 <= System::length(ln) ? body(i + 2) : i
     ret c == quote ? i + 1 : body(i + 1)
   ret body(pos + 1)
+
+# `$"…"` from the first byte after its quote: the end of the lexeme, closing
+# quote included when present — the Python INTERP pattern, greedily. Text is an
+# escape (two bytes), or any byte but backslash, quote and `{`; a slot is `{`,
+# then plain string / char literals (each needing its closing quote) or any
+# byte but quote, apostrophe and braces, then an optional `}`. A lone
+# trailing backslash ends the lexeme before it.
+fun [tail] interpEnd(ln, i): System::Int
+  if i >= System::length(ln)
+    ret i
+  let c = System::byteAt(ln, i)
+  if c == '\\'
+    ret i + 2 <= System::length(ln) ? interpEnd(ln, i + 2) : i
+  if c == '"'
+    ret i + 1
+  ret c == '{' ? interpEnd(ln, slotEnd(ln, i + 1)) : interpEnd(ln, i + 1)
+
+# Past a slot's body from `j`: its `}` included when present.
+fun [tail] slotEnd(ln, j): System::Int
+  if j >= System::length(ln)
+    ret j
+  let c = System::byteAt(ln, j)
+  if c == '}'
+    ret j + 1
+  if c == '{'
+    ret j
+  if c == '"' || c == '\''
+    let close = closedQuoteEnd(ln, j + 1, c)
+    ret close < 0 ? j : slotEnd(ln, close)
+  ret slotEnd(ln, j + 1)
+
+# A literal's end past its closing `quote`, scanning from `i`; -1 when it has
+# none on this line (the Python `"(?:\\.|[^\\"])*"` cannot match).
+fun [tail] closedQuoteEnd(ln, i, quote): System::Int
+  if i >= System::length(ln)
+    ret -1
+  let c = System::byteAt(ln, i)
+  if c == '\\'
+    ret i + 2 <= System::length(ln) ? closedQuoteEnd(ln, i + 2, quote) : -1
+  ret c == quote ? i + 1 : closedQuoteEnd(ln, i + 1, quote)
 
 # A `backtick quoted` identifier, or -1 when the closing backtick is missing
 # on this line (the Python rule then fails and the backtick byte falls through
@@ -179,6 +227,8 @@ fun nextToken(ln, pos): (kind: TokKind, stop: System::Int)
     ret (KString(), quotedEnd(ln, pos, '"'))
   if c == '\''
     ret (KChar(), quotedEnd(ln, pos, '\''))
+  if c == '$' && pos + 1 < System::length(ln) && System::byteAt(ln, pos + 1) == '"'
+    ret (KInterp(), interpEnd(ln, pos + 2))
   if isIdentStart(c)
     let stop = wordEnd(ln, pos + 1)
     # re"..." — only when the identifier scan stopped exactly at `re` and a
@@ -199,33 +249,43 @@ fun nextToken(ln, pos): (kind: TokKind, stop: System::Int)
     ret (KNumber(), numberEnd(ln, pos))
   ret (KCrap(), pos + 1)
 
+# What the scan has produced: the tokens, and the comments beside them.
+class [final] Scanned(scToks: List<Token>, scComments: List<Comment>)
+
+# `coded`: a token has been taken from this line already.
 fun [tail] scanLine(ln, lineNo, indent,
-                    pos, acc: List<Token>): List<Token>
+                    pos, coded: System::Bool, acc: Scanned): Scanned
   let at = wsEnd(ln, pos)
-  if at >= System::length(ln) || System::byteAt(ln, at) == '#'
+  if at >= System::length(ln)
     ret acc
+  if System::byteAt(ln, at) == '#'
+    let c = Comment(lineNo, charCol(ln, at), System::slice(ln, at, System::length(ln)), coded)
+    ret Scanned(acc.scToks, append(acc.scComments, c))
   let t = nextToken(ln, at)
   let text = System::slice(ln, at, t.stop)
   let kind = match(t.kind)
     (i: KIdent) => isKeyword(text) ? KSymbol() : t.kind
     (other)     => t.kind
-  ret scanLine(ln, lineNo, indent, t.stop,
-               append(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
+  ret scanLine(ln, lineNo, indent, t.stop, true,
+               Scanned(append(acc.scToks, Token(kind, text, indent, lineNo, charCol(ln, at))),
+                       acc.scComments))
 
 # The line number travels in the accumulator beside the tokens.
-fun scanLines(lines: List<System::String>, lineNo, acc: List<Token>)
-  ret fold(lines, (toks = acc, n = lineNo),
+fun scanLines(lines: List<System::String>, lineNo, acc: Scanned): Scanned
+  ret fold(lines, (sc = acc, n = lineNo),
            (st, line) =>
-             (toks = scanLine(line, st.n, wsEnd(line, 0), 0, st.toks), n = st.n + 1)).toks
+             (sc = scanLine(line, st.n, wsEnd(line, 0), 0, false, st.sc), n = st.n + 1)).sc
 
 fun eofToken(toks: List<Token>) => match(head(takeLastOne(toks)))
   (t: Token) => Token(KEof(), "", 0, t.line,
                       t.col + countChars(t.text, 0, System::length(t.text), 0))
   ()         => Token(KEof(), "", 0, 1, 1)
 
-fun tokenize(src)
+fun tokenize(src) => tokenizeWithComments(src).scToks
+
+# The tokens, EOF-terminated, and every comment in source order.
+fun tokenizeWithComments(src): Scanned
   # The EOF token is derived from the LAST real token, so the stream is built
   # first and the terminator pushed onto a builder seeded from it.
-  let toks = scanLines(splitLines(src), 1, List())
-  ret append(toks,
-                 eofToken(toks))
+  let sc = scanLines(splitLines(src), 1, Scanned(List(), List()))
+  ret Scanned(append(sc.scToks, eofToken(sc.scToks)), sc.scComments)

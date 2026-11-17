@@ -49,6 +49,30 @@ def override_inherited_slots(
     return base_enhanced + parent_filtered
 
 
+def parent_mapping(
+        resolver: g.Resolver,
+        parent: s.ClassStatement,
+        parent_type: t.TypeSpec,
+        mapping: dict[str, t.TypeSpec]
+) -> dict[str, t.TypeSpec]:
+    """`parent`'s type parameters bound to the arguments of `parent_type` (how
+    a class names it in its implements list), those arguments rewritten by
+    `mapping` into the terms of the class a member lookup started from."""
+    if not (isinstance(parent_type, t.ClassSpec) and parent.type_params and parent_type.type_params):
+        return {}
+    return {p.name: t.substitute_placeholders(a, mapping, resolver)
+            for p, a in zip(parent.type_params, parent_type.type_params)}
+
+
+def may_override(resolver: g.Resolver, own_type: t.TypeSpec | None, inherited_type: t.TypeSpec | None) -> bool:
+    """Whether a class member of `own_type` may override an inherited member of
+    `inherited_type`, both written in the class's terms. False only when both
+    are typed and the types definitely differ — an overload, not an override."""
+    if own_type is None or inherited_type is None:
+        return True
+    return t.trivially_assignable_equals(resolver, inherited_type, own_type) is not False
+
+
 def fragile_base_captures(
         resolver: g.Resolver,
         base_slots: list[s.ClassFunctionSlot],

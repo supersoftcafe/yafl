@@ -142,12 +142,18 @@ fun compileArrayRead(ar: PeArrayRead, r, expected: Spec|None)
               concat(obj.eoGlobals, idx.eoGlobals),
               mergeHints(obj.eoHints, idx.eoHints))
 
+# A written name that resolved to nothing: private to a namespace the code
+# cannot see (#17), or not there at all.
+fun unresolvedNameErr(nm: PeName, r: Resolver): Set<PErr> => match(head(findHiddenData(r, nm.refName)))
+  (f: Found) => oneErr(nm.penLine, privateMessage(nm.refName, namespaceOf(f.fName)))
+  ()         => oneErr(nm.penLine, "Failed to resolve " + nm.refName)
+
 fun checkName(nm: PeName, r)
   let tpErrs = checkSpecs(nm.refTypeParams, r, noErrs())
   let datas = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
                             nm.penTrait, r)
   if isEmpty(datas)
-    ret union(oneErr(nm.penLine, "Failed to resolve " + nm.refName), tpErrs)
+    ret union(unresolvedNameErr(nm, r), tpErrs)
   ret match(soleOf(Bag(datas)))
     # A generic AMBIENT instance member that never committed a solved scope:
     # the use site could not bind the instance's placeholders — ambience

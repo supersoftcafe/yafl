@@ -10,6 +10,7 @@ import codegen.ops as cg_o
 
 import pyast.statement as s
 import pyast.typespec as t
+from parsing.parselib import Error
 
 
 @dataclass(frozen=True)
@@ -254,6 +255,20 @@ class Resolver:
     def get_block_frame(self) -> object | None:
         return None
 
+    # The namespace whose code is being resolved, or None where no statement's
+    # scope is in force. Private names (#17) are seen from here.
+    def viewer_namespace(self) -> str | None:
+        return None
+
+    # The private candidates for a WRITTEN name that the viewer cannot see:
+    # what find_type/find_data left out. Only a diagnostic reads these, to say
+    # why a name did not resolve.
+    def find_hidden_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
+        return EMPTY
+
+    def find_hidden_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
+        return EMPTY
+
 
 class DelegatingResolver(Resolver):
     """A resolver layered over a `parent`, forwarding every query to it by
@@ -319,6 +334,15 @@ class DelegatingResolver(Resolver):
     def get_block_frame(self) -> object | None:
         return self._parent.get_block_frame()
 
+    def viewer_namespace(self) -> str | None:
+        return self._parent.viewer_namespace()
+
+    def find_hidden_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
+        return self._parent.find_hidden_type(name)
+
+    def find_hidden_data(self, name: str) -> "Findings[Resolved[s.DataStatement]]":
+        return self._parent.find_hidden_data(name)
+
 
 def simple_name(name: str) -> str:
     return name.rpartition('@')[0] or name
@@ -347,6 +371,36 @@ def match_member_name(left: str, right: str) -> bool:
 # variant of `query` (i.e. starts with `query@`).
 def name_matches(candidate: str, query: str) -> bool:
     return candidate == query or candidate.startswith(query + '@')
+
+
+def namespace_of(name: str) -> str:
+    """"Lib::Inner" from "Lib::Inner::_deep@3TivX6"; "" for a name in no
+    namespace."""
+    return simple_name(name).rpartition("::")[0]
+
+
+def is_private(name: str) -> bool:
+    """A name that starts with `_` is private to its namespace (#17)."""
+    return bare_name(name).startswith("_")
+
+
+def namespaces_related(a: str, b: str) -> bool:
+    """The same namespace, or one inside the other: `Lib` and `Lib::Inner`,
+    never `Lib` and `Library`."""
+    return a == b or a.startswith(b + "::") or b.startswith(a + "::")
+
+
+def can_see(viewer: str | None, owner_namespace: str, name: str) -> bool:
+    """Whether code in `viewer` may name `name`, declared in `owner_namespace`:
+    a public name always, a private one from its own namespace, the ones
+    inside it and the ones it is inside. Every statement has a namespace
+    (`Main` by default); no viewer means no statement's scope is in force —
+    a lookup of already-resolved names — and sees everything."""
+    return viewer is None or not is_private(name) or namespaces_related(viewer, owner_namespace)
+
+
+def private_error(line_ref, name: str, owner_namespace: str) -> Error:
+    return Error(line_ref, f"'{bare_name(name)}' is private to namespace {owner_namespace}")
 
 
 def _name_prefixes(name: str) -> list[str]:
@@ -740,8 +794,10 @@ class AddScopeResolution(DelegatingResolver):
     __type_cache: dict[str, list[Resolved[s.TypeStatement]]]
     __data_cache: dict[str, list[Resolved[s.DataStatement]]]
 
-    def __init__(self, parent: Resolver, scopes: set[str] | s.ImportGroup | None):
+    def __init__(self, parent: Resolver, scopes: set[str] | s.ImportGroup | None,
+                 viewer: str | None = None):
         super().__init__(parent)
+        self.__viewer = viewer
         if scopes is None:
             self.__scopes = ()
         elif isinstance(scopes, s.ImportGroup):
@@ -755,12 +811,7 @@ class AddScopeResolution(DelegatingResolver):
         cached = self.__type_cache.get(name)
         if cached is not None:
             return cached
-        result = self._parent.find_type(name)
-        if "::" not in name and "@" not in name:
-            # One filtered bare-index lookup at the root replaces the
-            # per-namespace "scope::name" root round trips; same bags, same
-            # namespace-then-declaration order (Statements._bare_*).
-            result = result + self._parent.find_type_under(name, self.__scopes)
+        result = self.__visible(name, self.__all_types(name))
         self.__type_cache[name] = result
         return result
 
@@ -768,11 +819,47 @@ class AddScopeResolution(DelegatingResolver):
         cached = self.__data_cache.get(name)
         if cached is not None:
             return cached
+        result = self.__visible(name, self.__all_data(name))
+        self.__data_cache[name] = result
+        return result
+
+    def __all_types(self, name: str) -> "Findings":
+        result = self._parent.find_type(name)
+        if "::" not in name and "@" not in name:
+            # One filtered bare-index lookup at the root replaces the
+            # per-namespace "scope::name" root round trips; same bags, same
+            # namespace-then-declaration order (Statements._bare_*).
+            result = result + self._parent.find_type_under(name, self.__scopes)
+        return result
+
+    def __all_data(self, name: str) -> "Findings":
         result = self._parent.find_data(name)
         if "::" not in name and "@" not in name:
             result = result + self._parent.find_data_under(name, self.__scopes)
-        self.__data_cache[name] = result
         return result
+
+    def __visible(self, name: str, found: "Findings") -> "Findings":
+        """Only a name AS WRITTEN is subject to privacy: a resolved unique name
+        (it carries `@`) is an identity already checked where it was written."""
+        if "@" in name or not any(not self.__sees(x) for x in found):
+            return found
+        return Findings(tuple(x for x in found if self.__sees(x)), found.complete)
+
+    def __sees(self, x: "Resolved") -> bool:
+        return can_see(self.__viewer, namespace_of(x.unique_name), x.unique_name)
+
+    def viewer_namespace(self) -> str | None:
+        return self.__viewer if self.__viewer is not None else self._parent.viewer_namespace()
+
+    def find_hidden_type(self, name: str) -> "Findings":
+        if "@" in name:
+            return EMPTY
+        return Findings(tuple(x for x in self.__all_types(name) if not self.__sees(x)))
+
+    def find_hidden_data(self, name: str) -> "Findings":
+        if "@" in name:
+            return EMPTY
+        return Findings(tuple(x for x in self.__all_data(name) if not self.__sees(x)))
 
     def get_ambient_patterns(self, scopes: set[str] | None = None
                              ) -> "tuple[list[tuple[t.ClassSpec, tuple[str, ...]]], bool]":

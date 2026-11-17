@@ -22,7 +22,7 @@ fun oneEntryTuple(x, lr) => PeTuple(prepend(PTupEnt("", false, x), List()), lr)
 fun twoEntryTuple(a, b, lr)
   ret PeTuple(append(append(List(), PTupEnt("", false, a)), PTupEnt("", false, b)), lr)
 
-fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr)
+fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr, None)
 
 # ── __to_call_operators / __fold_binary: `a op b` → `op`(a, b), andNot fold ──
 
@@ -37,7 +37,7 @@ fun foldBinary(op, lhs, rhs, lr)
 
 fun opCall(op, lhs, rhs, lr) => callNamed("`" + op + "`", twoEntryTuple(lhs, rhs, lr), lr)
 
-fun andNot(a, b, lr) => callNamed("andNot", twoEntryTuple(a, b, lr), lr)
+fun andNot(a, b, lr) => opCall("&~", a, b, lr)
 
 # A `~x` operand's inner expression, when the expression is exactly the
 # complement call the unary parser built (`` `~` ``(x)).
@@ -53,18 +53,88 @@ fun innerOfUnary(param: PExpr) => match(param)
     ()            => None
   ()            => None
 
-# ── __to_pipeline: beta-reduction and the `_` placeholder ───────────────────
+# ── pipelines: beta-reduction and the `_` placeholder ───────────────────────
+# The parser keeps `l |> stage` as a PePipe; fixupProgram lowers it here
+# (parser.py lower_pipe / __lower_pipes).
+
+# The forms that exist only as the parser read them, lowered: every PePipe
+# (lowerPipe) and PeInterp (lowerInterp), innermost first — the order the
+# parser itself once lowered pipes in. A pipe inside a slot is lowered before
+# the string that holds it (parser.py __lower_parse_forms).
+fun lowerParseForms(ss: List<PStmt>): List<PStmt> => rwStmts(ss, rwOnExpr(lowerParseForm))
+
+fun lowerParseForm(x: PExpr): PExpr|None => match(x)
+  (pp: PePipe)   => lowerPipe(pp.pipeSubject, pp.pipeStage)
+  (ip: PeInterp) => lowerInterp(ip)
+  ()             => None
+
+# ── interpolated strings (parser.py lower_interpolation) ────────────────────
+# `$"a{x}b{y:s}"` lowers to `str_concat_n("a", show(x), "b", show(y, "s"))`:
+# ONE exact-size join, grouped by the runtime's operand cap. `show` resolves
+# where the string is written, as `"a" + show(x)` would. str_concat_n checks
+# its operands are Strings (checkBuiltinOp), so a `show` answering something
+# else is an error, phrased through the call's origin as the slot written.
+
+let concatCap = 16   # str_concat_n's fixed operand arrays (yafllib/str.c)
+
+fun lowerInterp(ip: PeInterp): PExpr
+  # The operand count rides the walk that builds the operands (no-length ruling).
+  let ops = fold(ip.interpParts, (xs = List<PExpr>(), n = 0),
+                 (acc, part) => (xs = append(acc.xs, interpOperand(part, ip.peipLine)), n = acc.n + 1))
+  ret concatOf(ops.xs, ops.n, ip.peipLine)
+
+fun interpOperand(part: PInterpPart, lr: PLine): PExpr => match(part)
+  (t2: PipText) => PeStr(t2.ipText, lr, "")
+  (sl: PipSlot) => PeCall(PeName("show", List(), sl.ipLine), slotArgs(sl), sl.ipLine,
+                          PoInterpolation(sl.ipText))
+
+# `show`'s arguments for a slot: its expression, and its spec when it has one.
+fun slotArgs(sl: PipSlot): PExpr => match(sl.ipSpec)
+  (sp: String) => twoEntryTuple(sl.ipExpr, PeStr(sp, sl.ipLine, ""), sl.ipLine)
+  ()           => oneEntryTuple(sl.ipExpr, sl.ipLine)
+
+# `n` operands joined: one of them is itself; past the runtime's cap, the
+# first `cap` are joined first and that join leads the rest, until what is
+# left fits one call (parser.py _concat_of).
+fun [tail] concatOf(ops: List<PExpr>, n: Int, lr: PLine): PExpr
+  if n > concatCap
+    let parts = splitOps(ops, concatCap, List())
+    ret concatOf(prepend(joinOps(parts.first, concatCap, lr), parts.rest), n - concatCap + 1, lr)
+  if n == 1
+    ret match(head(ops))
+      (only: PExpr) => only
+      ()            => PeStr("", lr, "")   # unreachable: n counts ops
+  ret joinOps(ops, n, lr)
+
+# The first `k` operands, and the rest.
+fun [tail] splitOps(ops: List<PExpr>, k: Int, first: List<PExpr>): (first: List<PExpr>, rest: List<PExpr>)
+  if k == 0
+    ret (first = first, rest = ops)
+  ret match(head(ops))
+    (o: PExpr) => splitOps(dropOne(ops), k - 1, append(first, o))
+    ()         => (first = first, rest = ops)
+
+# One str_concat_n over `n` operands.
+fun joinOps(ops: List<PExpr>, n: Int, lr: PLine): PExpr =>
+  PeBuiltinOp(SBuiltin("str", lr), PeStr("str_concat_n", lr, ""),
+              PeTuple(map(prepend(PeInt(n, 32, lr, ""), ops), (o) => PTupEnt("", false, o)), lr), lr)
 
 # `l |> stage`: a lambda stage beta-reduces to a Block binding its params
 # from l; a call stage with one `_` placeholder binds l to $pipe@hash and
 # substitutes; any other stage becomes stage(l).
-fun pipeStage(last, stage)
+fun lowerPipe(last, stage)
   let holes = placeholderCount(stage)
   if holes == 1
     ret pipePlaceholder(last, stage)
   ret match(stage)
     (lm: PeLambda) => pipeBeta(last, lm)
-    ()             => PeCall(stage, pipeArgs(last), exprLine(stage))
+    ()             => PeCall(stage, pipeArgs(last), exprLine(stage), None)
+
+# Whether a stage lowers to blocks that bind the piped value (a lambda, or a
+# call with one `_` placeholder) rather than to a call of the stage.
+fun pipeBindsSubject(stage: PExpr) => match(stage)
+  (lm: PeLambda) => true
+  ()             => placeholderCount(stage) == 1
 
 # `l |> f` wraps l in a tuple UNLESS it already is one (Python __to_pipeline).
 fun pipeArgs(last) => match(last)
@@ -84,15 +154,15 @@ fun isHole(x: PExpr) => match(x)
   ()          => false
 
 # The name of a pipeline's intermediate: `$pipe@<position hash>`, which no
-# source can spell; blockStart recognises a pipeline's block by it
-# (parser.py's _PIPE_TEMP_PREFIX).
+# source can spell, so nothing in the piped value can resolve to it (parser.py's
+# _PIPE_TEMP_PREFIX).
 fun pipeTempPrefix() => "$pipe@"
 
 fun pipePlaceholder(last, stage): PExpr
   let lr = exprLine(stage)
   let tmp = pipeTempPrefix() + hash6(lr.plFile, lr.plLine, lr.plCol)
   let filled = match(stage)
-    (c: PeCall) => PeCall(c.function, fillHole(c.parameter, tmp, lr), c.pecLine)
+    (c: PeCall) => PeCall(c.function, fillHole(c.parameter, tmp, lr), c.pecLine, c.pecOrigin)
     (other)     => stage
   let bind = PsLet(tmp, List(), List(), None, last, "", List(), lr)
   ret PeBlock(prepend(bind, List()), filled, "", lr)
@@ -296,8 +366,9 @@ fun letName(p) => match(p)
   (o: PStmt) => "_"
 
 # Where an expression starts, read from its shape: a call at its callee, a
-# dot/ternary at its left/condition, a pipeline's block at the piped value, a
-# match at its subject; anything else at its own position. parser.py's
+# dot/ternary at its left/condition, a match at its subject, a pipeline where
+# its lowering starts — at the piped value when the stage binds it, else at the
+# stage it calls; anything else at its own position. parser.py's
 # __expression_start is the same rule. (It used to be modelled on the first
 # token Python's combinators keep, which is NOT the same where a bracketed
 # group leads a binary expression — `(a) == b`: the combinators drop the `(`
@@ -306,24 +377,13 @@ fun [tail] startLine(x) => match(x)
   (c: PeCall)     => startLine(c.function)
   (d: PeDot)      => startLine(d.base)
   (t3: PeTernary) => startLine(t3.condition)
-  (bk: PeBlock)   => blockStart(bk)
+  (pp: PePipe)    => startLine(pipeBindsSubject(pp.pipeStage) ? pp.pipeSubject : pp.pipeStage)
   # The `is`/`!is` sugar lowers to a match over the LEFT operand, so the
   # expression's parse start is the subject's start (`g2.f is None` starts
   # at `g2`, not at the match node's own line — which is the left's line,
   # a dot's MEMBER position).
   (m2: PeMatch)   => startLine(m2.subject)
   (other)         => exprLine(x)
-
-# A pipe stage beta-reduces to `{ let $pipe = <piped value>; ... }` — the
-# expression's PARSE start is still the piped value's, not the lambda's, so
-# see through the block the pipeline built.
-fun blockStart(bk: PeBlock) => match(head(bk.blockStmts))
-  (l: PsLet) => startsWith(l.lName, pipeTempPrefix()) ? letStart(l, bk) : bk.pebkLine
-  ()         => bk.pebkLine
-
-fun letStart(l: PsLet, bk: PeBlock) => match(l.lDefault)
-  (v: PExpr) => startLine(v)
-  ()         => bk.pebkLine
 
 fun exprLine(x) => match(x)
   (i: PeInt) => i.peiLine
@@ -351,6 +411,8 @@ fun exprLine(x) => match(x)
   (ar: PeArrayRead) => ar.pearLine
   (cv: PeConvert) => cv.pecvLine
   (qq: PeCoalesce) => qq.peqqLine
+  (pp: PePipe) => pp.pepiLine
+  (ip: PeInterp) => ip.peipLine
 
 # ── parse() fixups: namespace qualification, import removal ─────────────────
 # Mirrors parser.py parse()'s tail: imports and namespaces vanish from the
@@ -361,7 +423,7 @@ fun exprLine(x) => match(x)
 fun fixupProgram(stmts: List<PStmt>)
   let groups = blockGroupsOf(stmts)
   ret match(head(groups))
-    (g2: List<PStmt>) => fixupLoop(stmts, Fixup("Main::", dropOne(groups), g2, List()))
+    (g2: List<PStmt>) => lowerParseForms(fixupLoop(stmts, Fixup("Main::", dropOne(groups), g2, List())))
     ()                => List()   # unreachable: the default block always exists
 
 # Block-scoped ImportGroups (USER RULING 2026-08-23; parser.py mirror): one

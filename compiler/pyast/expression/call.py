@@ -88,6 +88,10 @@ def _parameters_of(ftype: t.TypeSpec | None) -> t.TypeSpec | None:
 class CallExpression(Expression):
     function: Expression
     parameter: Expression
+    # What the call was lowered FROM, when the user never wrote it (an
+    # interpolation slot's `show` call): its errors are phrased in terms of
+    # what they did write. Not identity: a lowered call is the same call.
+    origin: "InterpolationOrigin | None" = field(default=None, compare=False)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any],Any]) -> Expression:
         return rw.rewrite(self, replace, resolver,
@@ -148,6 +152,20 @@ class CallExpression(Expression):
         return converted(expr, expected_type, resolver), fglb+pglb, h.merge(fhints, phints)
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        errors = self.__check(resolver, expected_type)
+        if self.origin is None:
+            return errors
+        # The call's OWN errors are about a call the user never wrote: say what
+        # they did write. An argument's errors are already about their code —
+        # and when there are any, they are the cause: an argument of unknown
+        # type makes every `show` a candidate, so the call's own complaint
+        # would only be noise.
+        own = [err for err in errors if err.line_ref == self.line_ref]
+        if len(own) < len(errors):
+            return [err for err in errors if err.line_ref != self.line_ref]
+        return [dataclasses.replace(err, message=self.origin.reword(err.message)) for err in own]
+
+    def __check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         # The argument tuple checks against the resolved parameter shape, so an
         # explicit `name = value` naming no parameter is reported by the tuple
         # itself (the binding is otherwise lenient about incidental names).

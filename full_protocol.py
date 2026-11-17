@@ -90,11 +90,14 @@ def parse_self_compiles(log_path: Path) -> list[tuple[str, float]]:
 
 
 def parse_ctest_summary(log_path: Path) -> tuple[int, int] | None:
-    """(failed, total) from a ctest run; None if the summary line never printed."""
+    """(failed, total) from a ctest run; None if the summary line never printed.
+
+    ctest 4 leaves out the failures when there are none: `100% tests passed out
+    of 65`, where ctest 3 printed `100% tests passed, 0 tests failed out of 65`."""
     for line in log_path.read_text().splitlines():
-        m = re.match(r"(\d+)% tests passed, (\d+) tests failed out of (\d+)", line)
+        m = re.match(r"\d+% tests passed(?:, (\d+) tests? failed)? out of (\d+)", line)
         if m:
-            return int(m.group(2)), int(m.group(3))
+            return int(m.group(1) or 0), int(m.group(2))
     return None
 
 
@@ -202,16 +205,16 @@ def _build_example_specs(run_dir: Path) -> list[Example]:
         Example("linenumbers", stdin="a\nb\nc\n"),
         Example("findstr", args=["hello", str(findroot)]),
         Example("raytracer", stdin=(EXAMPLES / "scenes" / "spheres.scene").read_text()),
-        Example("yaflc", stdin="fun main() => 6 * 7"),
         Example("ylisp", stdin="(print (+ 2 3))"),
         Example("yspell", args=["-d", str(dict_path), str(text_path)]),
     ]
 
 
 def _example_compiler(compiler: str) -> Path:
-    """The INSTALLABLE compiler of each kind: the port binary, or the
-    PyInstaller `yafl` — each finds System on YAFL_PATH as an install would."""
-    return BUILD / "ybootstrap" if compiler == "port" else COMPILER / "dist" / "yafl"
+    """The compiler as one executable: yaflc, the one that is installed, or
+    the Python compiler packaged by PyInstaller (local use only) — each finds
+    System on YAFL_PATH as an install would."""
+    return BUILD / "yaflc" if compiler == "port" else COMPILER / "dist" / "yafl"
 
 
 def stage_examples(run_dir: Path, run: Run) -> Result:

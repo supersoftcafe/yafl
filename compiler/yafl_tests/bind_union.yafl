@@ -6,7 +6,7 @@
 # collapse the duplicates, so chains of `X|Err` stages stay `…|Err`. This is
 # the union analogue of the (io, v: T|IOError) overload; it exists so error
 # threading reads as a pipeline instead of a ladder of match expressions
-# (found writing the yaflc self-hosting prototype).
+# (found writing an early self-hosting prototype).
 #
 # One namespace per test: each program as written, its `main` renamed
 # `program`, checked by the [test] beside it.

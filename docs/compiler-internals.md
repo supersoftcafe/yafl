@@ -24,6 +24,24 @@ immutable dataclasses, `dataclasses.replace` for every change, read-only
 context flowing down, results flowing up. There is no global mutable state.
 Learn that discipline once and every module reads the same way.
 
+A pipeline `x |> f` (`PipeExpression`, lowered by `lower_pipe`) and an
+interpolated string `$"a{x}b"` (`InterpolatedStringExpression`, lowered by
+`lower_interpolation` to a `str_concat_n` over the text pieces and one `show`
+call per slot) exist only between the parser and the end of `parse()`
+(`__lower_parse_forms`). The port mirrors both (`PePipe` / `PeInterp`, lowered
+by `lowerParseForms` in `fixupProgram`), and the port's formatter prints them
+from the tree before that lowering. `str_concat_n` checks that its operands
+are Strings, which is what type-checks a slot's `show`.
+
+A lowered call the user never wrote carries an **origin record**
+(`CallExpression.origin`, the port's `PeCall.pecOrigin`): what it was lowered
+from — today an interpolation slot's source text. Type checking runs after
+lowering and sees only the call (and the join it feeds); `check()` reads the
+origin to phrase the errors about that call in the user's terms (`cannot interpolate `x`: …`) at the
+slot's position. The origin is not part of a call's identity. In the port the
+field has no default, so every site that builds or rebuilds a call has to
+state what becomes of it.
+
 
 ## 1. The node protocol
 

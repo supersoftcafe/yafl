@@ -33,6 +33,27 @@ fun compileBuiltinOp(op: PeBuiltinOp, r, expected: Spec|None)
     ()         => ExprOut(converted(out, expected, r), concat(ps.eoGlobals, ty.soGlobals),
                           ps.eoHints)
 
+fun checkBuiltinOp(op: PeBuiltinOp, r) => union(checkExpr(op.opParams, r, None), concatErrs(op, r))
+
+# str_concat_n joins Strings: every operand after the count must be one. An
+# interpolated string lowers straight to it, so this is what type-checks each
+# slot's `show`; a lowered call speaks through its origin, as the slot the user
+# wrote (Python BuiltinOpExpression.__concat_errors).
+fun concatErrs(op: PeBuiltinOp, r): Set<PErr> => match(op.opName, op.opParams)
+  (n: PeStr, tp: PeTuple) => n.strValue != "str_concat_n" ? noErrs()
+    : fold(dropOne(tp.exprs), noErrs(), (errs, en) => match(exprType(en.tupValue, r))
+        (ts: Spec) => triFalse(assignableEq(r, SBuiltin("str", op.peboLine), ts))
+          ? add(errs, PErr(exprLine(en.tupValue), concatOperandMsg(en.tupValue, ts)))
+          : errs
+        ()         => errs)
+  ()                      => noErrs()
+
+fun concatOperandMsg(x: PExpr, ts: Spec): String => match(x)
+  (c: PeCall) => match(c.pecOrigin)
+    (o: POrigin) => originReword(o, "`show` returns " + typeStr2(ts) + ", not String")
+    ()           => "str_concat_n joins Strings, not " + typeStr2(ts)
+  ()          => "str_concat_n joins Strings, not " + typeStr2(ts)
+
 # The value is received by the FIELD's type, as `:=` receives it (a Node into a
 # `Node|None`); the answer converts to what the caller expects.
 fun compilePinSet(ps: PePinSet, r, expected: Spec|None)

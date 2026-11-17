@@ -2,7 +2,7 @@
 
 A call like `head(l)` with `l: List<String>` must bind T=String by unifying
 the declared `List<T>` parameter against the argument type — the same way
-`contains(l, x)` binds T from the bare `x: T` argument. Found by the yaflc
+`contains(l, x)` binds T from the bare `x: T` argument. Found by an early
 self-hosting prototype: every such call (head, tail, isEmpty, chain, ...)
 failed to monomorphise and CRASHED codegen instead of erroring.
 

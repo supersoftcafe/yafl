@@ -41,7 +41,7 @@ import Bootstrap::Types
 # own-namespace and the import coincide.)
 fun scopeResolver(st, r)
   let scopes = stmtScopes(st)
-  let scoped = isEmpty(scopes) ? r : RScopes(scopes, r)
+  let scoped = isEmpty(scopes) ? r : RScopes(scopes, ownNamespace(stmtName2(st)), r)
   # A TOP-LEVEL let's initialiser resolves like a function body (Python:
   # __stmt_scope_resolver calls _initialiser_resolver on a LetStatement): its
   # generic type params plus the trait/operator scope. A block-scoped let gets

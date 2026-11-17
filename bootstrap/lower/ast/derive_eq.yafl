@@ -298,9 +298,9 @@ fun deOp(rtype, name, args, lr)
 
 fun deEnt(x) => PTupEnt("", false, x)
 
-fun deCall2(fn, a, b, lr) => PeCall(deRef(fn, lr), PeTuple(list2(deEnt(a), deEnt(b)), lr), lr)
+fun deCall2(fn, a, b, lr) => PeCall(deRef(fn, lr), PeTuple(list2(deEnt(a), deEnt(b)), lr), lr, None)
 
-fun deCall1(fn, a, lr) => PeCall(deRef(fn, lr), PeTuple(list1(deEnt(a)), lr), lr)
+fun deCall1(fn, a, lr) => PeCall(deRef(fn, lr), PeTuple(list1(deEnt(a)), lr), lr, None)
 
 fun deParam(name, typeName, lr) => PsLet(hashName(name, lr), List(), List(),
                                          SNamed(typeName, List(), lr), None, "", List(), lr)

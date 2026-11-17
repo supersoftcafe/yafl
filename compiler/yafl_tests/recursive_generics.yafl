@@ -1,6 +1,6 @@
 # Self-referential generics that a compiler-sized AST needs, pinned green.
 #
-# These are the shapes the yaflc self-hosting assessment identified as
+# These are the shapes an early self-hosting assessment identified as
 # load-bearing: a generic enum containing collections of itself (the AST
 # shape), mutually recursive generic enums, a recursive generic class, and a
 # self-recursive generic function. Divergent POLYMORPHIC recursion is the one

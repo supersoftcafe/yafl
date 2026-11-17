@@ -91,10 +91,16 @@
 //     ratio stretches sweep completion and so grows the garbage backlog per
 //     completed sweep, which is exactly when prune must NOT slow with it.
 //
-// The progress guarantee is STRUCTURAL, not feedback-driven: a cycle over S
-// pages is scanned within S/r allocations — the world is scanned before the
-// young set can grow by 1/r — and pruned within a further S/(16r). No
-// emergency mode, no headroom feedback; the fixed ratios
+// r and p are the ratios while the heap is at most half full. Past half, BOTH
+// double each time the free heap halves (gc_pace_rate_for: 2x with a quarter
+// free, 4x with an eighth, capped), so the collector as a whole works harder
+// the closer the heap gets to OOM, and eases off again as usage falls. That
+// is the one headroom feedback.
+//
+// The progress guarantee is STRUCTURAL: a cycle over S pages is scanned
+// within S/r allocations — the world is scanned before the young set can grow
+// by 1/r — and pruned within a further S/(16r); a fuller heap only shortens
+// that. No emergency mode; the ratios
 // outrun allocation by construction, and every gc_fsa call costs a similar,
 // predictable quantum (a couple of page scans, or a few dozen page prunes —
 // roughly the same wall time each; [GC LAT] under YAFL_GC_STATS shows the
@@ -113,7 +119,9 @@
 // the prune ratio independently (default 64 = the old 16x-of-4 coupling's
 // effective value): larger = more GC work per allocation = tighter heap,
 // higher GC share of CPU. YAFL_GC_IDLE_PAGES overrides the dwell (0: none).
-#define GC_PACE_SCAN_PAGES  6     // pages scanned per page allocated — THE knob.
+#define GC_PACE_SCAN_PAGES  6     // pages scanned per page allocated, while the
+                                  // heap is at most half full — THE knob; past
+                                  // half it scales up (gc_scan_rate below).
                                   // Peak heap ≈ live x (r+1)/(r-1): r=2 is 3x
                                   // live (measured), r=6 is 1.4x. Higher than
                                   // with no dwell (4): a cycle that starts
@@ -123,7 +131,8 @@
 #define GC_PACE_IDLE_PAGES  1024  // pages allocated between cycles (16 MiB):
                                   // smaller dwells left a growing chain at
                                   // 3-4x the CPU of this one
-#define GC_PACE_PRUNE_PAGES 64    // pages pruned per page allocated (prune is
+#define GC_PACE_PRUNE_PAGES 64    // pages pruned per page allocated, while the
+                                  // heap is at most half full (prune is
                                   // cheap per page); deliberately NOT derived
                                   // from the scan ratio — see pacing comment
 #define GC_PACE_CREDIT_MAX  16    // max allocation-pages consumed per gc_fsa
@@ -137,6 +146,21 @@ static unsigned gc_prune_base = GC_PACE_PRUNE_PAGES;
 static uint64_t gc_idle_pages = GC_PACE_IDLE_PAGES;
 static _Atomic(uint64_t) gc_idle_since = 0;   // the clock when the last cycle ended
 static unsigned gc_compact_percent = COMPACT_THRESHOLD_PERCENT;
+// The per-cycle COMPACTION BUDGET: pages a cycle may allocate as evacuation
+// targets, set at cycle start to this percentage of the heap's free pages
+// (YAFL_GC_COMPACT_FREE_PERCENT). Once the cycle's evacuations have allocated
+// that many, compaction stops for the rest of the cycle and prune only
+// prunes. Evacuation targets bypass the reserve gate, and with the pacing
+// rates scaled up near a full heap a cycle's evacuations arrive faster than
+// the allocation that funds them: unbounded, they ate the free runs that
+// multi-page allocations need, and the heap fragmented into OOM sooner
+// (PR #135). Tied to the free pages, the budget barely binds while the heap
+// is roomy and binds hard as it fills.
+#define GC_COMPACT_FREE_PERCENT_DEFAULT 25
+static unsigned gc_compact_free_percent = GC_COMPACT_FREE_PERCENT_DEFAULT;
+static _Atomic(size_t) gc_cycle_compact_pages = 0;   // evacuation-target pages this cycle
+static size_t          gc_cycle_compact_limit = SIZE_MAX;
+static _Atomic(size_t) gc_cycle_compact_skipped = 0; // candidates passed over at the limit
 
 // Scavenger call-site knobs (the scavenger itself lives in mmap.c, with its
 // own age/hysteresis tuning). The retain floor only smooths intra-cycle
@@ -193,6 +217,10 @@ static void gc_read_config(void) {
     if ((e = getenv("YAFL_GC_COMPACT_PERCENT")) != NULL) {
         int pct = atoi(e);
         if (pct >= 0) gc_compact_percent = (unsigned)(pct > 100 ? 100 : pct);
+    }
+    if ((e = getenv("YAFL_GC_COMPACT_FREE_PERCENT")) != NULL) {
+        int pct = atoi(e);
+        if (pct >= 0) gc_compact_free_percent = (unsigned)(pct > 100 ? 100 : pct);
     }
     if ((e = getenv("YAFL_GC_PROMOTE_FLOOR")) != NULL && atol(e) > 0)
         gc_promote_floor = (size_t)atol(e);
@@ -655,9 +683,44 @@ static _Atomic(size_t) gc_cycle_survivor_slots = 0; // live SLOTS on young survi
 // one page per step, the same property the serial pacing had).
 static alignas(CACHE_LINE_SIZE) _Atomic(uint64_t) gc_pace_claimed = 0;
 
+// The PACING RATES: pages scanned (gc_step_base) and pages pruned
+// (gc_prune_base) per page allocated. Each is its base while the heap is at
+// most half full; past that, both double each time the free heap halves —
+// base x (half the heap / free pages): 2x with a quarter free, 4x with an
+// eighth — so the collector as a whole works harder the closer the heap gets
+// to OOM, and eases off again as usage falls. Continuous, not stepped, and
+// capped at GC_PACE_MULT_MAX x base (a heap with almost nothing free must not
+// turn one gc_fsa call into an unbounded quantum; the reserve gate in
+// gc_page_alloc is the backstop there). A full or over-full heap takes the
+// cap before the division; an empty or one-page heap, the base. Pure, for
+// test_gc_pace_rate.
+#define GC_PACE_MULT_MAX 64
+EXPORT unsigned gc_pace_rate_for(size_t used, size_t total, unsigned base) {
+    size_t half = total / 2;
+    size_t free = used < total ? total - used : 0;
+    if (free >= half)
+        return base;
+    if (free * GC_PACE_MULT_MAX <= half)
+        return base * GC_PACE_MULT_MAX;
+    return (unsigned)(((uint64_t)base * half + free - 1) / free);   // rounded up
+}
+static inline unsigned gc_scan_rate(void) {
+    return gc_pace_rate_for(memory_count(), memory_total_pages(), gc_step_base);
+}
+static inline unsigned gc_prune_rate(void) {
+    return gc_pace_rate_for(memory_count(), memory_total_pages(), gc_prune_base);
+}
+
+// The SCAN CLOCK: cumulative pages of marking owed, each allocation depositing
+// its page count times the rate in force when it was made. The mark stage's
+// target. A product of the allocation clock and the CURRENT rate would rescale
+// the whole history every time the rate moved; the deposit charges each page at
+// its own rate, so the books stay exact as the rate rises and falls.
+static alignas(CACHE_LINE_SIZE) _Atomic(uint64_t) gc_scan_clock = 0;
+
 // MARK-stage progress in REAL pages scanned (a multi-page object's pop
 // advances this by its whole span). The mark loop runs while
-// pages_scanned < alloc_clock * step_base — so a 20-page object's scan
+// pages_scanned < gc_scan_clock — so a 20-page object's scan
 // pre-pays the obligation of the next ~10 allocations, whose fsa calls
 // then do no mark work at all. Monotonic, like the clock; the books are
 // cumulative. (Prune keeps the claim pool: its per-pop cost does not
@@ -826,6 +889,10 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
     }
 
     atomic_fetch_add_explicit(&gc_alloc_clock, page_count, memory_order_relaxed);
+    if (gc_thread_info.in_relocation)   // an evacuation target: the compaction budget's count
+        atomic_fetch_add_explicit(&gc_cycle_compact_pages, page_count, memory_order_relaxed);
+    atomic_fetch_add_explicit(&gc_scan_clock, (uint64_t)page_count * gc_scan_rate(),
+                              memory_order_relaxed);
 
     // memory_pages_alloc hands back pages with UNDEFINED contents (see
     // claimed_run): the header must be zeroed here, and object slots are
@@ -1294,6 +1361,14 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     const unsigned pct = gc_compact_percent;
     if (pct == 0)
         return;
+
+    // The cycle's compaction budget is spent: prune only. Checked once, before
+    // the page is started — a page is evacuated whole or not at all, so its
+    // own target allocations may carry the count past the limit.
+    if (atomic_load_explicit(&gc_cycle_compact_pages, memory_order_relaxed) >= gc_cycle_compact_limit) {
+        atomic_fetch_add_explicit(&gc_cycle_compact_skipped, 1, memory_order_relaxed);
+        return;
+    }
     const unsigned slots_threshold = SLOTS_PER_PAGE * pct / 100;
 
     // Previously compacted. If we do it again we'll be making redundent copies.
@@ -1587,7 +1662,22 @@ static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) 
                 return;
             }
         } while (!atomic_compare_exchange_strong(&reprocess_page_tail, &tail, tail+1));
-        atomic_store(&reprocess_page_list[tail % REPROCESS_PAGE_COUNT], page);
+        // Fill the slot only once it is EMPTY. The capacity check above counts
+        // head, and head moves when a pump CLAIMS an index, before it takes
+        // the slot: so index tail - 16, one lap back on this same slot, may be
+        // claimed and still untaken here. A plain store overwrote that entry —
+        // its pump took this one in its place, every later take on the slot
+        // ran a lap ahead, and the cycle's last pump claimed an index whose
+        // entry was already gone and spun on the empty slot for good, in
+        // flight, so marking never retired (issue #132,
+        // test_gc_ring_lap_window). Waiting is safe: a full slot here can only
+        // be a claimed entry whose pump is already on its way to take it, and
+        // that pump waits on nothing of ours.
+        _Atomic(gc_page_t*) *slot = &reprocess_page_list[tail % REPROCESS_PAGE_COUNT];
+        for (gc_page_t *empty = NULL;
+             !atomic_compare_exchange_weak(slot, &empty, page);
+             empty = NULL)
+            cpu_relax();
     }
 }
 
@@ -1817,6 +1907,16 @@ static void gc_collect_cards(void) {
 static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     if (++epoch == 0)
         epoch = 1;
+
+    // This cycle's compaction budget, from the headroom it starts with.
+    {
+        size_t total = memory_total_pages(), used = memory_count();
+        size_t free  = used < total ? total - used : 0;
+        gc_cycle_compact_limit = free / 100 * gc_compact_free_percent
+                               + free % 100 * gc_compact_free_percent / 100;
+        atomic_store_explicit(&gc_cycle_compact_pages, 0, memory_order_relaxed);
+        atomic_store_explicit(&gc_cycle_compact_skipped, 0, memory_order_relaxed);
+    }
 
 #ifdef YAFL_GC_VALIDATE_OLD
     // Diagnostic (test builds only): the old-generation invariant, checked
@@ -2444,9 +2544,10 @@ static void gc_fsa_mark_sweep$pump_ring(void) {
             atomic_fetch_sub_explicit(&gc_pages_in_flight, 1, memory_order_seq_cst);
             continue;
         }
-#ifdef YAFL_GC_PUMP_PROBE
-        // Test-only hook (tests/test_gc_pump_window.c): an entry is between
-        // the ring and the lists, where another executor may run the tail.
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_RESET_PROBE) || defined(YAFL_GC_LAP_PROBE)
+        // Test-only hook (tests/test_gc_pump_window.c, test_gc_reset_window.c):
+        // an entry is between the ring and the lists, where another executor
+        // may run the tail.
         { extern void gc_test_pump_probe(void); gc_test_pump_probe(); }
 #endif
         gc_page_t *page;
@@ -2485,23 +2586,24 @@ static bool gc_mark_work_outstanding(void) {
 // looks empty — a HINT to attempt the (exclusive) transition, never a verdict.
 static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
     GC_STAT_BUMP(gc_stat_mark_steps);
-    // Allowance = how far REAL scanning lags the target (alloc pages x
-    // step_base). A big object's span-counted scan runs pages_scanned
+    // Allowance = how far REAL scanning lags the target (the scan clock:
+    // each allocated page at the scan rate in force when it was allocated,
+    // gc_scan_rate). A big object's span-counted scan runs pages_scanned
     // AHEAD of the target and later calls fall through here with the
     // floor only. The floor of 1 is liveness, not pacing: manual-mode
     // stepped tests and end-of-allocation drains must still progress.
-    const uint64_t _target = atomic_load_explicit(&gc_alloc_clock, memory_order_relaxed)
-                             * (uint64_t)gc_step_base;
+    const uint64_t _target = atomic_load_explicit(&gc_scan_clock, memory_order_relaxed);
+    const unsigned _rate = gc_scan_rate();
     const uint64_t _done = atomic_load_explicit(&gc_pages_scanned, memory_order_relaxed);
     uint64_t _lag = _target > _done ? _target - _done : 0;
-    const uint64_t _cap = (uint64_t)gc_step_base * GC_PACE_CREDIT_MAX;
+    const uint64_t _cap = (uint64_t)_rate * GC_PACE_CREDIT_MAX;
     if (_lag > _cap) _lag = _cap;
-    // Floor = one CREDIT's worth (gc_step_base pages), matching the old
+    // Floor = one CREDIT's worth (the current rate's pages), matching the old
     // claim-pool floor exactly: under heap-full synchronous driving the
     // clock freezes while REQUEUED pages (mutator re-marks) refill the
     // queue — work the clock never funded — and a 1-page floor drains it
     // too slowly to outrun the allocator stall (test_gc_pressure OOM).
-    const unsigned step_pages = _lag > 0 ? (unsigned)_lag : gc_step_base;
+    const unsigned step_pages = _lag > 0 ? (unsigned)_lag : _rate;
     uint64_t _t0 = gc_stats_enabled ? gc_tsc() : 0;
 
     // BATCHED claims/publication, same shape as prune (see the comment
@@ -2649,11 +2751,15 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
     return maybe_done;
 }
 
-// The EXCLUSIVE transition tail of the mark stage: runs under fsa_lock with
-// zero concurrent executors, re-verifies completion, and either requeues work
-// (overflow re-scan) or retires the stage. Returns the stage to store.
+// The EXCLUSIVE transition tail of the mark stage: runs under fsa_lock, so no
+// other TAIL runs beside it, re-verifies completion, and either requeues work
+// (overflow re-scan) or retires the stage. Exclusive among tails only: nothing
+// waits for gc_stage_executors to drain, so body executors (pumping the ring,
+// claiming pages) and mutators' barriers (pushing on the ring) run on beside
+// it. Every decision here rests on the pool lock and the in-flight counts,
+// never on being alone — see the overflow branch (issue #132).
 static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
-#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_WRITER_PROBE)
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_WRITER_PROBE) || defined(YAFL_GC_RESET_PROBE) || defined(YAFL_GC_LAP_PROBE)
     { extern void gc_test_tail_probe(void); gc_test_tail_probe(); }
 #endif
     // Late ring entries (and any page they requeue) keep the stage alive.
@@ -2677,8 +2783,24 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     bool rp_flag = atomic_exchange(&reprocess_overflow_flag, false);
     if (rp_flag) {
         GC_STAT_BUMP(gc_stat_overflows);
-        memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
-        reprocess_page_head = reprocess_page_tail = 0;
+#ifdef YAFL_GC_RESET_PROBE
+        // Test-only hook (tests/test_gc_reset_window.c): the overflow re-scan
+        // has been decided, its emptiness check made and the pool lock let go,
+        // where a mutator may push and another executor claim the entry.
+        { extern void gc_test_reset_probe(void); gc_test_reset_probe(); }
+#endif
+        // The ring is NOT reset here. The emptiness check above was made
+        // under the pool lock, but mutators' barriers and other executors'
+        // pumps run on after it, lock-free: a push can reserve an index and
+        // fill its slot, and a pump claim that index (counting itself in
+        // flight), at any moment. Clearing the slots and rewinding head and
+        // tail could empty a slot after its pump claimed it, and the pump
+        // would spin on it forever, in flight, so marking never retired —
+        // every allocator then stalled in the reserve gate with the heap
+        // full (issue #132, test_gc_reset_window). Nor does the ring need it:
+        // head and tail are monotonic and slots are addressed modulo the
+        // ring, so the ring is simply empty, and entries pushed from here on
+        // are delivered as usual (page_needs_scan, during the re-scan).
         gc_pool_lock();
         // Epoch bumps BEFORE the pages become poppable: a concurrent body's
         // claim (serialised by this same lock) must never see a freshly
@@ -2720,7 +2842,7 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     }
 #endif
 }
-#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE) || defined(YAFL_GC_WRITER_PROBE)
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE) || defined(YAFL_GC_WRITER_PROBE) || defined(YAFL_GC_RESET_PROBE) || defined(YAFL_GC_LAP_PROBE)
 // tests/test_gc_pump_window.c, test_gc_overflow_window.c, test_gc_writer_window.c: a mutator's
 // mark, a second executor's tail, other executors' marking, and the state the
 // probes wait for, by hand.
@@ -2739,6 +2861,8 @@ void gc_test_mutator_mark(object_t *object);
 void gc_test_mutator_mark(object_t *object) { atomic_gc_object_mark_as_seen(object); }
 void gc_test_mark_tail(void);
 void gc_test_mark_tail(void) { gc_fsa_mark_sweep_tail(); }
+void gc_test_pump_ring(void);
+void gc_test_pump_ring(void) { gc_fsa_mark_sweep$pump_ring(); }   // one executor's pump, alone
 bool gc_test_object_seen(object_t *object);
 bool gc_test_object_seen(object_t *object) {
     gc_page_t* page; ptrdiff_t slot;
@@ -2859,7 +2983,10 @@ static bool gc_page_stamp_old(gc_page_t *page) {
 // the prune list looks empty — a hint to attempt the exclusive transition.
 static NOINLINE_DEBUG bool gc_fsa_prune_body() {
     GC_STAT_BUMP(gc_stat_prune_steps);
-    const unsigned step_pages = gc_prune_base * gc_pace_credit();
+    // Prune keeps no cumulative books (the claim pool hands out allocation
+    // credit), so the rate in force at this call applies to the credit it
+    // claims.
+    const unsigned step_pages = gc_prune_rate() * gc_pace_credit();
     // BATCHED claims and publication: one pool-lock hold claims up to
     // PRUNE_CLAIM_BATCH pages, one more publishes the whole batch's
     // survivors and promotions. Per-page holds made the pool lock the
@@ -3170,11 +3297,13 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
             yafl_heapprof_cycle_end(memory_count() * (size_t)GC_PAGE_SIZE,
                                     memory_total_pages() * (size_t)GC_PAGE_SIZE);
         if (UNLIKELY(gc_stats_enabled))
-            fprintf(stderr, "[GC CYCLE] survivors=%zu old=%zu carded=%zu young=%zu promote_vol=%zu promote_mistakes=%llu in_use=%zu cons_seeds=%llu (pages)\n",
+            fprintf(stderr, "[GC CYCLE] survivors=%zu old=%zu carded=%zu young=%zu promote_vol=%zu promote_mistakes=%llu in_use=%zu cons_seeds=%llu compact=%zu/%zu skipped=%zu (pages)\n",
                     gc_cycle_survivors, gc_old_page_count, gc_carded_page_count,
                     young, gc_promote_volume,
                     (unsigned long long)atomic_load(&gc_promote_mistakes_total),
-                    memory_count(), (unsigned long long)atomic_load(&gc_stat_cons_seeds));
+                    memory_count(), (unsigned long long)atomic_load(&gc_stat_cons_seeds),
+                    atomic_load(&gc_cycle_compact_pages), gc_cycle_compact_limit,
+                    atomic_load(&gc_cycle_compact_skipped));
 
         if (UNLIKELY(gc_stats_enabled)) {
             // Snapshot this cycle's page-occupancy survey for the exit report.
@@ -3318,7 +3447,7 @@ static NOINLINE_DEBUG bool gc_fsa_impl() {
                         && memory_count() < memory_total_pages() / 2)
                     break;
                 // Square the books: the dwell's pages owe no scan or prune.
-                uint64_t target = now * (uint64_t)gc_step_base;
+                uint64_t target = atomic_load_explicit(&gc_scan_clock, memory_order_relaxed);
                 if (atomic_load_explicit(&gc_pages_scanned, memory_order_relaxed) < target)
                     atomic_store_explicit(&gc_pages_scanned, target, memory_order_relaxed);
                 if (atomic_load_explicit(&gc_pace_claimed, memory_order_relaxed) < now)

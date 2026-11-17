@@ -51,7 +51,7 @@ fun collectDiagnostics(statements: List<PStmt>, r, enabledWarnings: Set<String>)
   # means and stops at the first counter-example.
   if !all(diagnostics, (e2) => e2.errWarn)
     ret Diag(diagnostics, warnings)          # some real error: fail with all
-  let named = namedSpecErrors(statements)
+  let named = namedSpecErrors(statements, r)
   ret isEmpty(named) ? Diag(noErrs(), warnings) : Diag(named, warnings)
 
 fun stmtChecks(ss: List<PStmt>, r: Resolver, acc: Set<PErr>): Set<PErr> =>
@@ -156,16 +156,23 @@ fun checkExprOpt(x: PExpr|None, r, expected: Spec|None) => match(x)
 
 # ── phase 5: the unresolved-NamedSpec scan ──────────────────────────────────
 # _find_named_specs: every SNamed the walk reaches is a type the compile loop
-# failed to resolve, its type arguments included.
+# failed to resolve, its type arguments included. Each statement is walked
+# under its own scope, so a type that is there but private to another
+# namespace (#17) says so.
 
-fun namedSpecErrors(statements: List<PStmt>): Set<PErr> =>
-  walkStmts(statements, emptyResolverGlobal, noErrs(),
-            Walk<Set<PErr>>(wkNoExpr<Set<PErr>>, wkNoStmt<Set<PErr>>,
-                            (a, _r, sp) => (s = nsSpec(sp, a), r = None))).s
+fun namedSpecErrors(statements: List<PStmt>, r: Resolver): Set<PErr> =>
+  fold(statements, noErrs(), (acc, st) =>
+    walkStmt(st, scopeResolver(st, r), acc,
+             Walk<Set<PErr>>(wkNoExpr<Set<PErr>>, wkNoStmt<Set<PErr>>,
+                             (a, r2, sp) => (s = nsSpec(sp, a, r2), r = None))).s)
 
-fun nsSpec(sp: Spec, acc: Set<PErr>): Set<PErr> => match(sp)
-  (n: SNamed) => add(acc, PErr(n.snLine, "Failed to resolve type '" + n.snName + "'"))
+fun nsSpec(sp: Spec, acc: Set<PErr>, r: Resolver): Set<PErr> => match(sp)
+  (n: SNamed) => add(acc, PErr(n.snLine, unresolvedTypeMessage(n, r)))
   (o: Spec)   => acc
+
+fun unresolvedTypeMessage(n: SNamed, r: Resolver): String => match(head(findHiddenType(r, n.snName)))
+  (f: Found) => privateMessage(n.snName, namespaceOf(f.fName))
+  ()         => "Failed to resolve type '" + n.snName + "'"
 
 # ── printing: sorted(set(errors)) ───────────────────────────────────────────
 

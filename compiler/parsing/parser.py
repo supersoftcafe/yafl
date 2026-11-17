@@ -4,9 +4,11 @@ import dataclasses
 import re
 from functools import reduce
 
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 import pyast.expression as e
+import pyast.resolver as g
+import pyast.rewrite as rw
 import pyast.match as m
 import pyast.statement as s
 import pyast.typespec as t
@@ -48,7 +50,7 @@ def __integer() -> p.Parser[e.Expression]:
                 value, size, err = _decode_int(head.value)
                 if err is not None:
                     return p.Result.error(err, tail, head.line_ref)
-                return p.Result.ok(e.IntegerExpression(head.line_ref, value, size), tail, head.line_ref)
+                return p.Result.ok(e.IntegerExpression(head.line_ref, value, size, head.value), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
@@ -83,7 +85,8 @@ def __float() -> p.Parser[e.Expression]:
                 if not _FLOAT_LEXEME.fullmatch(num_str):
                     return p.Result.error("invalid float literal", tail, head.line_ref)
                 return p.Result.ok(
-                    e.FloatExpression(head.line_ref, float(num_str.replace("_", "")), precision),
+                    e.FloatExpression(head.line_ref, float(num_str.replace("_", "")), precision,
+                                      head.value),
                     tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
@@ -91,6 +94,10 @@ def __float() -> p.Parser[e.Expression]:
 _STRING_ESCAPES = {
     'n': '\n', 'r': '\r', 't': '\t', '0': '\0',
     '\\': '\\', '"': '"', "'": "'",
+    # `\{` opens no slot in an interpolated string; `\}` is accepted though a
+    # `}` outside a slot is plain text anyway. Both decode in plain strings
+    # too, so a literal means the same with or without its `$`.
+    '{': '{', '}': '}',
 }
 
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
@@ -170,7 +177,7 @@ def __string() -> p.Parser[e.Expression]:
                 decoded, err = _unescape_string(value[1:len(value)-1])
                 if err is not None:
                     return p.Result.error(err, tail, head.line_ref)
-                return p.Result.ok(e.StringExpression(head.line_ref, decoded), tail, head.line_ref)
+                return p.Result.ok(e.StringExpression(head.line_ref, decoded, head.value), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
@@ -196,7 +203,7 @@ def __char() -> p.Parser[e.Expression]:
                 # direction): a char literal IS an Int32 literal — 'a' is
                 # 97i32, exactly. No literal converts to anything: 37 is Int,
                 # 37i32 is Int32, 12.5 is Float64. Type what you mean.
-                return p.Result.ok(e.IntegerExpression(head.line_ref, ord(decoded), 32),
+                return p.Result.ok(e.IntegerExpression(head.line_ref, ord(decoded), 32, head.value),
                                    tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
@@ -216,6 +223,169 @@ def __regex() -> p.Parser[e.Expression]:
                 return p.Result.ok(e.RegexExpression(head.line_ref, value[3:-1]), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
+
+
+def __interp() -> p.Parser[e.Expression]:
+    """`$"text {expr} text {expr, spec}"` — an interpolated string. A literal
+    with no slot is an ordinary string literal."""
+    def _p(tokens: list[p.Token]) -> p.Result[e.Expression]:
+        match tokens:
+            case[head, *tail] if head.kind == p.TokenKind.INTERP:
+                value = head.value
+                if len(value) < 3 or not value.endswith('"'):
+                    return p.Result.error("interpolated string missing quote", tail, head.line_ref)
+                parts, err = _split_interpolation(value[2:-1], head)
+                if err is not None:
+                    return p.Result(None, tail, head.line_ref, [err])
+                if not any(isinstance(part, e.InterpolationSlot) for part in parts):
+                    return p.Result.ok(e.StringExpression(head.line_ref, "".join(parts), value),
+                                       tail, head.line_ref)
+                return p.Result.ok(e.InterpolatedStringExpression(head.line_ref, parts, value),
+                                   tail, head.line_ref)
+        return p.Result.none(tokens, tokens[0].line_ref)
+    return p.Parser(_p)
+
+
+def _skip_quoted(body: str, i: int) -> int:
+    """`body[i]` opens a string or char literal: the index just past its
+    closing quote, or -1 when it has none."""
+    quote = body[i]
+    i += 1
+    while i < len(body):
+        if body[i] == '\\':
+            i += 2
+        elif body[i] == quote:
+            return i + 1
+        else:
+            i += 1
+    return -1
+
+
+def _spec_comma(slot: str) -> int:
+    """The index of the comma that starts a slot's spec — the first `,`
+    outside brackets and literals — or -1. An expression has no unbracketed
+    comma of its own, so nothing in it is ever mistaken for the separator."""
+    depth = 0
+    i = 0
+    while i < len(slot):
+        c = slot[i]
+        if c in '"\'':
+            end = _skip_quoted(slot, i)
+            if end < 0:
+                return -1
+            i = end
+            continue
+        if c in '([':
+            depth += 1
+        elif c in ')]':
+            depth -= 1
+        elif c == ',' and depth == 0:
+            return i
+        i += 1
+    return -1
+
+
+# The whitespace trimmed from a slot's expression and spec (System::trim's set).
+_TRIM = " \t\n\r"
+
+
+def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None]:
+    """Split an interpolated string's body (between the quotes) into decoded
+    text pieces and slots. Each slot's expression is tokenized and parsed on
+    its own, its tokens placed at their real columns in the source line."""
+    lr = head.line_ref
+    # The column of body[0]: the token's own column, past `$"`.
+    base = lr.offset + 2
+    def at(index: int) -> p.LineRef:
+        return p.LineRef(lr.filename, lr.line, base + index)
+
+    parts: list = []
+    raw: list[str] = []
+    def flush() -> p.Error | None:
+        if raw:
+            decoded, err = _unescape_string("".join(raw))
+            if err is not None:
+                return p.Error(lr, err)
+            raw.clear()
+            if decoded:
+                if parts and isinstance(parts[-1], str):
+                    parts[-1] += decoded
+                else:
+                    parts.append(decoded)
+        return None
+
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c == '\\':
+            raw.append(body[i:i+2])
+            i += 2
+            continue
+        if c != '{':
+            raw.append(c)
+            i += 1
+            continue
+        if (err := flush()) is not None:
+            return parts, err
+        # The slot runs to the first `}` outside its string and char literals.
+        j = i + 1
+        while j < len(body) and body[j] != '}':
+            if body[j] in '"\'':
+                end = _skip_quoted(body, j)
+                if end < 0:
+                    return parts, p.Error(at(j), "unterminated literal in interpolation slot")
+                j = end
+            elif body[j] == '{':
+                return parts, p.Error(at(j), "`{` inside an interpolation slot — "
+                                             "write `\\{` for a literal brace")
+            else:
+                j += 1
+        if j >= len(body):
+            return parts, p.Error(at(i), "unterminated interpolation slot — "
+                                         "write `\\{` for a literal brace")
+        slot = body[i+1:j]
+        comma = _spec_comma(slot)
+        text = slot if comma < 0 else slot[:comma]
+        spec: str | None = None
+        if comma >= 0:
+            # The spec is the text after the comma, spaces around it trimmed
+            # before its escapes decode (so a written `\t` survives).
+            spec_text = slot[comma+1:].strip(_TRIM)
+            if not spec_text:
+                return parts, p.Error(at(i + 1 + comma), "empty format spec after `,`")
+            spec, err = _unescape_string(spec_text)
+            if err is not None:
+                return parts, p.Error(at(i + 1 + comma + 1), err)
+        if not text.strip(_TRIM):
+            return parts, p.Error(at(i), "empty interpolation slot")
+        expression, err = _parse_slot(text, at(i + 1), head.indent)
+        if err is not None:
+            return parts, err
+        parts.append(e.InterpolationSlot(at(i), expression, spec, text.strip(_TRIM)))
+        i = j + 1
+    if (err := flush()) is not None:
+        return parts, err
+    return parts, None
+
+
+def _parse_slot(text: str, start: p.LineRef, indent: int) -> tuple[e.Expression | None, p.Error | None]:
+    """A slot's expression, tokenized and parsed alone. `start` is where its
+    first character sits in the source; every token is moved there."""
+    from parsing.tokenizer import tokenize
+    tokens = [dataclasses.replace(tok, indent=indent,
+                  line_ref=p.LineRef(start.filename, start.line, start.offset + tok.line_ref.offset - 1))
+              for tok in tokenize(text, start.filename)]
+    nested = next((tok for tok in tokens if tok.kind == p.TokenKind.INTERP), None)
+    if nested is not None:
+        return None, p.Error(nested.line_ref, "an interpolated string inside an interpolation slot — "
+                                              "bind it with `let` first")
+    result = parse_expression(tokens)
+    if result.errors:
+        return None, result.errors[0]
+    if result.value is None or result.tokens[0].kind != p.TokenKind.EOF:
+        where = result.tokens[0].line_ref if result.tokens else start
+        return None, p.Error(where, "could not parse the interpolation slot as one expression")
+    return result.value, None
 
 
 def __named() -> p.Parser[e.Expression]:
@@ -329,22 +499,34 @@ def __placeholder_entries(function: e.Expression) -> list[int]:
 
 
 # The name of a pipeline's intermediate: `$pipe@<position hash>`. A name no
-# source can spell, so nothing in the piped value can resolve to it; the
-# statement-start rule below recognises a pipeline's block by it.
+# source can spell, so nothing in the piped value can resolve to it.
 _PIPE_TEMP_PREFIX = "$pipe@"
 
 
 def __pipe_stage(last_result: e.Expression, function: e.Expression,
              pipeline_errors: list[p.Error]) -> e.Expression:
+    # The parser keeps the pipeline as written; parse() lowers it (lower_pipe).
+    # A stage has ONE hole for the piped value to fill.
+    if len(__placeholder_entries(function)) > 1:
+        pipeline_errors.append(p.Error(function.line_ref,
+            "at most one `_` placeholder per pipeline stage"))
+        return last_result
+    return e.PipeExpression(function.line_ref, last_result, function)
+
+
+def __pipe_binds_subject(function: e.Expression) -> bool:
+    """Whether a stage lowers to blocks that bind the piped value (a lambda,
+    or a call with one `_` placeholder) rather than to a call of the stage."""
+    return isinstance(function, e.LambdaExpression) or len(__placeholder_entries(function)) == 1
+
+
+def lower_pipe(last_result: e.Expression, function: e.Expression) -> e.Expression:
+    """`last_result |> function`, lowered."""
     # `l |> f(a, _)`: the `_` placeholder receives the piped value — a
     # point-free stage. Same capture-avoiding shape as the lambda case
     # below: bind `l` to a fresh path-derived name OUTSIDE the call, then
     # substitute that name for the placeholder.
     holes = __placeholder_entries(function)
-    if len(holes) > 1:
-        pipeline_errors.append(p.Error(function.line_ref,
-            "at most one `_` placeholder per pipeline stage"))
-        return last_result
     if len(holes) == 1:
         lr = function.line_ref
         tmp = f"{_PIPE_TEMP_PREFIX}{lr.hash6()}"
@@ -386,9 +568,42 @@ def __pipe_stage(last_result: e.Expression, function: e.Expression,
     return call
 
 
+# str_concat_n's fixed operand arrays (yafllib/str.c, lowering/string_concat.py).
+_CONCAT_CAP = 16
+
+
+def lower_interpolation(x: e.InterpolatedStringExpression) -> e.Expression:
+    """`$"a{x}b{y:s}"`, lowered to `str_concat_n("a", show(x), "b", show(y, "s"))`.
+
+    `show` is resolved where the string is written, as `"a" + show(x)` would
+    be. The join is ONE exact-size concatenation, grouped by the runtime's
+    operand cap. str_concat_n checks that every operand is a String
+    (BuiltinOpExpression.check), so a `show` that answers something else is
+    an error, phrased through the call's origin as the slot the user wrote."""
+    return _concat_of(x.line_ref, [
+        e.StringExpression(x.line_ref, part) if isinstance(part, str) else
+        e.CallExpression(part.line_ref, e.NamedExpression(part.line_ref, "show"),
+            e.TupleExpression(part.line_ref,
+                [e.TupleEntryExpression(None, part.expression)]
+                + ([] if part.spec is None else
+                   [e.TupleEntryExpression(None, e.StringExpression(part.line_ref, part.spec))])),
+            origin=e.InterpolationOrigin(part.text))
+        for part in x.parts])
+
+
+def _concat_of(lr: p.LineRef, operands: list[e.Expression]) -> e.Expression:
+    if len(operands) == 1:
+        return operands[0]
+    if len(operands) > _CONCAT_CAP:
+        return _concat_of(lr, [_concat_of(lr, operands[:_CONCAT_CAP])] + operands[_CONCAT_CAP:])
+    count = e.IntegerExpression(lr, len(operands), 32)
+    return e.BuiltinOpExpression(lr, t.BuiltinSpec(lr, "str"), e.StringExpression(lr, "str_concat_n"),
+        e.TupleExpression(lr, [e.TupleEntryExpression(None, v) for v in [count] + operands]))
+
+
 def __invert_operand(expr: e.Expression) -> e.Expression | None:
     """If `expr` is a unary `~x`, return `x`, else None. Used to fold
-    `a & ~b` into the single-pass `andNot(a, b)` at parse time."""
+    `a & ~b` into the single-pass `` `&~`(a, b) `` at parse time."""
     if (isinstance(expr, e.CallExpression)
             and isinstance(expr.function, e.NamedExpression)
             and expr.function.name == "`~`"
@@ -402,24 +617,24 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
     def accumulate(left: e.Expression, entry: tuple[str, e.Expression]):
         op, right = entry
         line = tokens[0].line_ref
-        # `a & ~b` is andNot — recognise it here so it lowers to the runtime's
+        # `a & ~b` is `&~` — recognise it here so it lowers to the runtime's
         # single-pass andnot rather than a separate complement then and. AND is
-        # commutative, so `~a & b` is andNot(b, a) too; only fold when exactly
+        # commutative, so `~a & b` is `&~`(b, a) too; only fold when exactly
         # one side is `~` (both-inverted is NOR, handled by the right side).
         if op == "&":
             def _andnot(x: e.Expression, y: e.Expression) -> e.Expression:
                 return e.CallExpression(line,
-                    e.NamedExpression(line, "andNot"),
+                    e.NamedExpression(line, "`&~`"),
                     e.TupleExpression(line, [
                             e.TupleEntryExpression(None, x),
                             e.TupleEntryExpression(None, y)
                         ]))
             inner_right = __invert_operand(right)
             if inner_right is not None:
-                return _andnot(left, inner_right)          # a & ~b -> andNot(a, b)
+                return _andnot(left, inner_right)          # a & ~b -> `&~`(a, b)
             inner_left = __invert_operand(left)
             if inner_left is not None:
-                return _andnot(right, inner_left)          # ~a & b -> andNot(b, a)
+                return _andnot(right, inner_left)          # ~a & b -> `&~`(b, a)
         return e.CallExpression(line,
             e.NamedExpression(line, f"`{op}`"),
             e.TupleExpression(line, [
@@ -456,7 +671,7 @@ def __to_bind_or_pipeline(result: p.Result[tuple[e.Expression, list[tuple[str, e
 def __to_negate(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[e.Expression]:
     expr = result.value
     if isinstance(expr, (e.IntegerExpression, e.FloatExpression)):
-        folded = dataclasses.replace(expr, value=-expr.value)
+        folded = dataclasses.replace(expr, value=-expr.value, spelling="-" + expr.spelling)
         return p.Result(folded, result.tokens, result.line_ref, result.errors)
     line = result.line_ref
     negated = e.CallExpression(line,
@@ -587,8 +802,9 @@ def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]]
 
 def __expression_start(x: e.Expression) -> p.LineRef:
     """Where an expression starts, read from its shape: a call at its callee, a
-    dot at its base, a ternary at its condition, a pipeline's block at the piped
-    value, a match at its subject; anything else at its own position. The port
+    dot at its base, a ternary at its condition, a match at its subject, a
+    pipeline where its lowering starts — at the piped value when the stage binds
+    it, else at the stage it calls; anything else at its own position. The port
     has the same rule (startLine, bootstrap/parse/builders.yafl)."""
     while True:
         match x:
@@ -600,11 +816,8 @@ def __expression_start(x: e.Expression) -> p.LineRef:
                 x = x.condition
             case m.MatchExpression():
                 x = x.subject
-            case e.BlockExpression() if (x.statements
-                                         and isinstance(x.statements[0], s.LetStatement)
-                                         and x.statements[0].name.startswith(_PIPE_TEMP_PREFIX)
-                                         and x.statements[0].default_value is not None):
-                x = x.statements[0].default_value
+            case e.PipeExpression():
+                x = x.subject if __pipe_binds_subject(x.stage) else x.stage
             case _:
                 return x.line_ref
 
@@ -999,7 +1212,7 @@ __parse_match_subject = p.requires(p.sym("("), p.delimited_list(__parse_expressi
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression").build(__to_match_expression)
 
 __parse_paren_expr = __parse_expr_tuple.map(__to_paren_expr)
-__parse_terminal = __float() | __integer() | __char() | __string() | __regex() | __parse_builtin_op | __parse_pin_set | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
+__parse_terminal = __float() | __integer() | __char() | __string() | __interp() | __regex() | __parse_builtin_op | __parse_pin_set | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
 # Postfix operators form ONE left-associative chain so dot/call/index interleave
 # freely: `f().g()`, `a().b`, `m()[0].x`. `.` is only ever member access (floats
@@ -1312,7 +1525,24 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
             case _: # Discard and report an error
                 errors.append(p.Error(statement.line_ref, f"unexpected statement {type(statement)}"))
 
-    return p.Result(new_statements, result.tokens, result.line_ref, errors)
+    return p.Result(__lower_parse_forms(new_statements), result.tokens, result.line_ref, errors)
+
+
+def __lower_parse_forms(statements: list[s.Statement]) -> list[s.Statement]:
+    """The forms that exist only as the parser read them, lowered: every
+    PipeExpression (lower_pipe) and InterpolatedStringExpression
+    (lower_interpolation), innermost first — the order the parser itself once
+    lowered pipes in. A pipe inside a slot is lowered before the string that
+    holds it."""
+    def replace(_resolver: g.Resolver, x: Any) -> Any:
+        if isinstance(x, e.PipeExpression):
+            return lower_pipe(x.subject, x.stage)
+        if isinstance(x, e.InterpolatedStringExpression):
+            return lower_interpolation(x)
+        return rw.UNCHANGED
+    root = g.ResolverRoot([])
+    return [lowered if (lowered := st.search_and_replace(root, replace)) is not rw.UNCHANGED else st
+            for st in statements]
 
 
 

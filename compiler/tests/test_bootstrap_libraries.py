@@ -10,9 +10,9 @@ a capability, not a calling convention.
 These diff the port's three new surfaces against the Python implementations
 they were ported from:
 
-  `ybootstrap toml`     manifest parsing        vs tomllib + parse_manifest
-  `ybootstrap libs`     discovery on YAFL_PATH  vs discover_libraries
-  `ybootstrap libsfor`  the load worklist       vs the fixpoint in compile_project
+  `yaflc toml`     manifest parsing        vs tomllib + parse_manifest
+  `yaflc libs`     discovery on YAFL_PATH  vs discover_libraries
+  `yaflc libsfor`  the load worklist       vs the fixpoint in compile_project
 
 `.yl` archives are covered too: `package_system_library` now writes ZIP_STORED
 specifically so the port's reader can be a header walk rather than a DEFLATE

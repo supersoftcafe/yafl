@@ -103,7 +103,7 @@ fun withAnd(acc: PExpr|None, one, lr) => match(acc)
 fun withConstruct(ctorName, fields: List<PStmt>, repls: List<PTupEnt>,
                   carrier, lr) => PeCall(PeName(ctorName, List(), lr),
                                          PeTuple(withCtorArgs(fields, repls, carrier, lr,
-                                                              List()), lr), lr)
+                                                              List()), lr), lr, None)
 
 fun withCtorArgs(fs: List<PStmt>, repls: List<PTupEnt>, carrier, lr, acc: List<PTupEnt>) =>
   fold(fs, acc, (a, x) => withCtorArgsStep(a, x, repls, carrier, lr))

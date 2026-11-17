@@ -7,6 +7,7 @@ This folder contains design and reference documentation for YAFL. These document
 | [Architecture](architecture.md) | Runtime design decisions: the parser, task-based async lowering, thread pool, virtual dispatch, and memory model |
 | [Language Guide](guide.md) | Narrative walkthrough of the language, from first program to advanced features |
 | [Language Reference](reference.md) | Authoritative reference for every language construct and built-in type |
+| [Source layout](style.md) | The one layout `yaflc --format` puts source in: blank lines, `=>` or `ret`, wrapping, ternaries, pipelines, comments |
 | [Roadmap](roadmap.md) | Planned features and upcoming language additions |
 | [Internals](internals.md) | In-progress design notes on the garbage collector and runtime internals |
 | [Parser proposal](parser-proposal.md) | Design note: a self-hosted YAFL parser in the `parselib` combinator style |

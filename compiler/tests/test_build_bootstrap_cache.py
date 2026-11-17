@@ -21,8 +21,8 @@ class TestReuseNeedsAVerifiedEntry(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self._tmp.name)
-        self.out = self.dir / "ybootstrap"
-        self.c_out = self.dir / "ybootstrap.c"
+        self.out = self.dir / "yaflc"
+        self.c_out = self.dir / "yaflc.c"
         self.keys = {"python": "P", "sources": "S1", "link": "L"}
         self.calls: list[str] = []
         patches = [

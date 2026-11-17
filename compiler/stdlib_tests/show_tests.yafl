@@ -1,0 +1,40 @@
+# Tests for the Show<T> trait's spec overload, `show(value, spec)`
+# (stdlib/System/traits.yafl). Its default ignores the spec; an instance that
+# has a use for one overrides it.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::ShowTests
+
+import System
+import System::Test
+
+
+fun [test("the spec overload's default ignores the spec")] defaultIgnoresSpec(): None|TestFailure
+    ret assertEqStr(show(42, "x4"), "42", "int")
+     ?? assertEqStr(show("hi", "anything"), "hi", "string")
+     ?? assertEqStr(show(true, ""), "true", "bool, empty spec")
+
+
+class Celsius(degrees: Int)
+
+instance [ambient] Show<Celsius>
+  fun show(value: Celsius): String
+    ret show(value.degrees) + "C"
+  fun show(value: Celsius, spec: String): String
+    ret spec == "F" ? show(value.degrees * 9 / 5 + 32) + "F" : show(value)
+
+fun [test("an instance overrides the spec overload")] instanceOverrides(): None|TestFailure
+    ret assertEqStr(show(Celsius(100), "F"), "212F", "spec used")
+     ?? assertEqStr(show(Celsius(100), ""), "100C", "spec ignored")
+     ?? assertEqStr(show(Celsius(100)), "100C", "plain show")
+
+
+class Kelvin(degrees: Int)
+
+instance [ambient] Show<Kelvin>
+  fun show(value: Kelvin): String
+    ret show(value.degrees) + "K"
+
+fun [test("an instance without the spec overload gets the default")] instanceDefault(): None|TestFailure
+    ret assertEqStr(show(Kelvin(5), "F"), "5K", "default")

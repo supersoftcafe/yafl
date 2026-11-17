@@ -20,6 +20,7 @@ class TokenKind(Enum):
     EOF = 6
     CHAR = 7
     REGEX = 8
+    INTERP = 9
 
     def __repr__(self):
         return self.name
@@ -76,6 +77,15 @@ __kinds = [
     # an escaped quote stays inside the token. Must precede IDENTIFIER, which
     # would otherwise eat the `re` prefix.
     (re.compile(r"re\"(\\.|[^\\\"])*\"?"), TokenKind.REGEX),
+    # Interpolated string: `$"text {expr} text {expr, spec}"`. Text is the
+    # string body (an escape, or any char but backslash, quote and `{`); a
+    # slot is `{`, then plain string / char literals or any char but quote,
+    # apostrophe and braces, then `}`. A slot may hold string literals but no
+    # braces outside them, so the nesting stays one level deep and the token
+    # stays regular. The parser splits the token and reports what this
+    # pattern stops short on (an unterminated slot, a nested `$"`).
+    (re.compile(r"\$\"(?:\\.|\{(?:\"(?:\\.|[^\\\"])*\"|'(?:\\.|[^\\'])*'|[^\"'{}])*\}?|[^\\\"{])*\"?"),
+     TokenKind.INTERP),
     (re.compile(r"\"(\\.|[^\\\"])*\"?"), TokenKind.STRING),
     # Char literal: single quotes, same escape body as a string. The parser
     # decodes it (reusing the string escapes) and requires exactly one

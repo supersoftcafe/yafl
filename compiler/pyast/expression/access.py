@@ -186,6 +186,20 @@ def _enum_member(resolver: g.Resolver, espec: t.EnumSpec, bare: str):
     return cands[0] if cands else None
 
 
+def _private_error(line_ref, name: str, hidden) -> Error:
+    """A written name that resolved to nothing because every candidate is
+    private to a namespace the code cannot see (#17)."""
+    return g.private_error(line_ref, name, g.namespace_of(hidden[0].unique_name))
+
+
+def _member_privacy(resolver: g.Resolver, line_ref, name: str, owner: str) -> list[Error]:
+    """A member's namespace is its class's or enum's (#17)."""
+    owner_namespace = g.namespace_of(owner)
+    if g.can_see(resolver.viewer_namespace(), owner_namespace, name):
+        return []
+    return [g.private_error(line_ref, name, owner_namespace)]
+
+
 @dataclass
 class DotExpression(Expression):
     base: Expression
@@ -283,13 +297,14 @@ class DotExpression(Expression):
                     return [Error(self.line_ref, f"Could not find a field named {self.name}")]
                 if len(datas) > 1:
                     return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
+                return _member_privacy(resolver, self.line_ref, self.name, cname)
             case t.EnumSpec() as espec:
                 found = _enum_member(resolver, espec, self.name)
                 if found is _AMBIGUOUS_ENUM_FIELD:
                     return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
                 if found is None:
                     return [Error(self.line_ref, f"Could not find field {self.name}")]
-                return []
+                return _member_privacy(resolver, self.line_ref, self.name, espec.root_name)
         return []
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
@@ -532,6 +547,9 @@ class NamedExpression(Expression):
         datas = _scope_filtered(datas, self.resolved_trait_scope, resolver)
         match datas:
             case []:
+                hidden = resolver.find_hidden_data(self.name)
+                if hidden:
+                    return [_private_error(self.line_ref, self.name, hidden)] + tp_errors
                 return [Error(self.line_ref, f"Failed to resolve {self.name}")] + tp_errors
             case [resolved]:
                 # A generic AMBIENT instance member that never committed a

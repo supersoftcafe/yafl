@@ -1,0 +1,208 @@
+# Interpolated strings: `$"text {expr} text {expr, spec}"` (#126).
+#
+# A slot `{e}` renders `show(e)`, `{e, spec}` renders `show(e, "spec")`, and the
+# pieces join in ONE str_concat_n. `show` is looked up where the string is
+# written, so `$"a{x}b"` is exactly `"a" + show(x) + "b"`, local overloads
+# included. Only `{` needs escaping (`\{`); a `}` outside a slot is text.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::StringInterpolation::Basic
+
+import System
+import System::Test
+
+fun program(): String
+  let x = 27
+  let name = "fred"
+  ret $"x={x}, name={name}"
+
+fun [test("slots render through show; a String slot is not quoted")] check(): None|TestFailure
+    ret assertEqStr(program(), "x=27, name=fred", "program()")
+
+
+namespace CompilerTests::StringInterpolation::SlotOnly
+
+import System
+import System::Test
+
+fun program(): String
+  let x = 27
+  ret $"{x}"
+
+fun [test("a string that is one slot")] check(): None|TestFailure
+    ret assertEqStr(program(), "27", "program()")
+
+
+namespace CompilerTests::StringInterpolation::NoSlots
+
+import System
+import System::Test
+
+fun program(): String
+  ret $"plain \{x} text"
+
+fun [test("a string with no slot is a plain literal")] check(): None|TestFailure
+    ret assertEqStr(program(), "plain {x} text", "program()")
+
+
+namespace CompilerTests::StringInterpolation::Escapes
+
+import System
+import System::Test
+
+fun program(): String
+  let x = 1
+  ret $"\{x} } \} \"{x}\" \\{x}"
+
+fun [test("only { opens a slot; } and escapes are text")] check(): None|TestFailure
+    ret assertEqStr(program(), "{x} } } \"1\" \\1", "program()")
+
+
+namespace CompilerTests::StringInterpolation::PlainStringBraceEscape
+
+import System
+import System::Test
+
+fun program(): String
+  ret "\{" + "\}"
+
+fun [test("\\{ and \\} decode in plain strings too")] check(): None|TestFailure
+    ret assertEqStr(program(), "{}", "program()")
+
+
+namespace CompilerTests::StringInterpolation::StringLiteralInSlot
+
+import System
+import System::Test
+
+fun wrap(s: String): String
+  ret "<" + s + ">"
+
+fun program(): String
+  ret $"{wrap("a}b")} and {wrap("{")}"
+
+fun [test("a slot may hold string literals, braces and all")] check(): None|TestFailure
+    ret assertEqStr(program(), "<a}b> and <{>", "program()")
+
+
+namespace CompilerTests::StringInterpolation::CharLiteralInSlot
+
+import System
+import System::Test
+
+fun program(): String
+  ret $"{'}'} {'{'}"
+
+fun [test("a slot may hold char literals, braces included")] check(): None|TestFailure
+    ret assertEqStr(program(), "125 123", "program()")
+
+
+namespace CompilerTests::StringInterpolation::Spec
+
+import System
+import System::Test
+
+class Temp(c: Int)
+
+instance [ambient] Show<Temp>
+  fun show(value: Temp): String
+    ret show(value.c) + "C"
+  fun show(value: Temp, spec: String): String
+    ret spec == "F" ? show(value.c * 9 / 5 + 32) + "F" : show(value)
+
+fun program(): String
+  let t = Temp(100)
+  ret $"{t} {t, F} {t,F} {t,   K  } {27, ignored}"
+
+fun [test("a spec calls show(value, spec), trimmed; the default ignores it")] check(): None|TestFailure
+    ret assertEqStr(program(), "100C 212F 212F 100C 27", "program()")
+
+
+namespace CompilerTests::StringInterpolation::QualifiedNameAndTernary
+
+import System
+import System::Test
+
+fun program(): String
+  let x = 5
+  ret $"{System::length("abc")} {x > 3 ? "big" : "small"}"
+
+fun [test("`::` and a ternary's `:` need no brackets")] check(): None|TestFailure
+    ret assertEqStr(program(), "3 big", "program()")
+
+
+namespace CompilerTests::StringInterpolation::CommaInsideBrackets
+
+import System
+import System::Test
+
+fun pair(a: Int, b: Int): String
+  ret show(a) + "+" + show(b)
+
+fun program(): String
+  ret $"{pair(1, 2)} {pair(3, 4), ignored} {"a,b"} {',', ignored}"
+
+fun [test("a comma inside brackets or a literal is not the spec separator")] check(): None|TestFailure
+    ret assertEqStr(program(), "1+2 3+4 a,b 44", "program()")
+
+
+namespace CompilerTests::StringInterpolation::LocalShowOverload
+
+import System
+import System::Test
+
+class Point(x: Int, y: Int)
+
+fun show(p: Point): String
+  ret "(" + show(p.x) + "," + show(p.y) + ")"
+
+fun program(): String
+  let p = Point(1, 2)
+  ret $"p={p}" + "|" + "p=" + show(p)
+
+fun [test("a local show overload takes over, as it does for a written call")] check(): None|TestFailure
+    ret assertEqStr(program(), "p=(1,2)|p=(1,2)", "program()")
+
+
+namespace CompilerTests::StringInterpolation::ManySlots
+
+import System
+import System::Test
+
+fun program(): String
+  let x = 1
+  ret $"{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}{x}|"
+
+fun [test("more operands than one runtime join takes")] check(): None|TestFailure
+    ret assertEqStr(program(), "111111111111111111|", "program()")
+
+
+namespace CompilerTests::StringInterpolation::PipeInSlot
+
+import System
+import System::Test
+
+fun twice(n: Int): Int
+  ret n * 2
+
+fun program(): String
+  let x = 4
+  ret $"{x |> twice} {"s" + "t"}"
+
+fun [test("a slot holds any expression, a pipe included")] check(): None|TestFailure
+    ret assertEqStr(program(), "8 st", "program()")
+
+
+namespace CompilerTests::StringInterpolation::Unicode
+
+import System
+import System::Test
+
+fun program(): String
+  let n = 3
+  ret $"é{n}ü — {n}"
+
+fun [test("multi-byte text around slots")] check(): None|TestFailure
+    ret assertEqStr(program(), "é3ü — 3", "program()")
