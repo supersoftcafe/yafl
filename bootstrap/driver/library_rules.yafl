@@ -40,9 +40,6 @@ fun described(o: Owner): String => match(o.owLibrary)
   (lib: String) => "library '" + lib + "'"
   ()            => "the program"
 
-# Everything before the last `::` of a name, its `@` hash dropped.
-fun namespaceOf(name: String): String => namespacePart(simpleName(name))
-
 
 # ── rule 1: namespace ownership ──────────────────────────────────────────────
 

@@ -43,11 +43,6 @@ class Owner:
         return f"library '{self.library}'" if self.library is not None else "the program"
 
 
-def namespace_of(name: str) -> str:
-    """Everything before the last `::` of a name, its `@` hash dropped."""
-    return g.simple_name(name).rpartition("::")[0]
-
-
 # ── rule 1: namespace ownership ──────────────────────────────────────────────
 
 def library_namespace_errors(library: str, namespaces: frozenset[str],
@@ -71,7 +66,7 @@ def _first_per_namespace(statements: list[s.Statement]) -> dict[str, s.Statement
     for st in statements:
         name = getattr(st, "name", "")
         if name:
-            first.setdefault(namespace_of(name), st)
+            first.setdefault(g.namespace_of(name), st)
     return first
 
 
@@ -90,13 +85,13 @@ def orphan_errors(owner: Owner, statements: list[s.Statement]) -> list[Error]:
 
 
 def _owned_instance(owner: Owner, pattern: t.ClassSpec) -> bool:
-    if owner.owns(namespace_of(pattern.name)):
+    if owner.owns(g.namespace_of(pattern.name)):
         return True
     for arg in pattern.type_params:
         if isinstance(arg, t.GenericPlaceholderSpec):
             return False                    # uncovered: anyone's type could fill it
         outer = _outermost_name(arg)
-        if outer is not None and owner.owns(namespace_of(outer)):
+        if outer is not None and owner.owns(g.namespace_of(outer)):
             return True
     return False
 

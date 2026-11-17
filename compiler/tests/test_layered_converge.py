@@ -33,7 +33,7 @@ _PARSE = c.__dict__["__tokenize_and_parse"]
 
 # Real programs over the whole stdlib: each reaches across the layer
 # boundary for names, overloads, trait providers and member classes.
-_PROGRAMS = ["helloWorld", "findstr", "json_pretty", "raytracer", "ylisp", "yaflc"]
+_PROGRAMS = ["helloWorld", "findstr", "json_pretty", "raytracer", "ylisp", "yspell"]
 
 
 def _parsed(inputs: list[c.Input]):
