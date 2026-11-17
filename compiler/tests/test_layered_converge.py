@@ -84,6 +84,23 @@ fun main(): System::Int
   ret depth(1, 3)
 """
 
+# An enum whose field is a VIEW of another enum: layered, derived equality
+# was decided while Host's field type was still a name, so Payload derived
+# alone and Host never did (fixed in derive_eq.derivable_enums). From the
+# yafl_tests corpus (union_repr.yafl).
+_VIEW_FIELD_EQUALITY = """namespace Main
+import System
+
+enum Payload
+  enum Pay1(p0: String, p1: String)
+  enum Pay2(pTiny: Int)
+enum Host
+  enum Hold(hPay: Pay1)
+  enum Empty1()
+fun main(): System::Int
+  ret 0
+"""
+
 
 def _parsed(inputs: list[c.Input]):
     statements, errors = _PARSE(inputs)
@@ -106,6 +123,7 @@ class TestLayeredConverge(TestCase):
         sources["disagreeing_uses"] = _DISAGREEING_USES
         sources["no_overload_fits"] = _NO_OVERLOAD_FITS
         sources["polymorphic_recursion"] = _POLYMORPHIC_RECURSION
+        sources["view_field_equality"] = _VIEW_FIELD_EQUALITY
         for name, text in sources.items():
             with self.subTest(program=name):
                 program = c.Input(text, "prog.yafl")

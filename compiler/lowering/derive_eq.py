@@ -53,7 +53,8 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
 
     Empty while the answer is not yet complete — an instance or witness not
     yet resolved may be the one that already covers an enum, and derivation
-    must never compete with it — and in a program that does not declare
+    must never compete with it; an enum or a candidate's field still a name
+    may change every answer — and in a program that does not declare
     `System::BasicEquality` (compiled without the stdlib)."""
     if not resolver.find_type("System::BasicEquality"):
         return frozenset()
@@ -67,13 +68,23 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
         # instantiations (`Chain$generic$bigint` has no type params left, but
         # it is still an instance of a generic enum, not a source enum).
         if not (isinstance(st, s.EnumStatement) and not st.type_params
-                and "$generic$" not in st.name and st.get_type() is not None):
+                and "$generic$" not in st.name):
             continue
+        # An enum, or a candidate's field, whose type is still a name is an
+        # input not known yet: the answer waits for it, as it waits for the
+        # providers. Decided without it, `enum Host(hPay: Pay1)` was judged
+        # while Pay1 was a name, Payload derived alone, and once Pay1 resolved
+        # Payload's instance did not cover the view (#136).
+        if st.get_type() is None:
+            return frozenset()
         if __has_equality(st.get_type(), frozenset(), providers, resolver):
             continue
         leaves = __collect_leaves(st, [])
         if leaves is None or not leaves:   # uninhabited variant somewhere
             continue
+        if any(f.declared_type is None or t.contains_named_spec(f.declared_type)
+               for _leaf, fields in leaves for f in fields):
+            return frozenset()
         candidates[st.name] = leaves
 
     # Coinductive fixpoint: assume every candidate has equality, drop failures.
