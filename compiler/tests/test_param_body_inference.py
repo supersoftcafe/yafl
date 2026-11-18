@@ -226,8 +226,7 @@ class TestHintLocality(TimedTestCase):
             return thing
         use.body.search_and_replace(None, visit)
         self.assertTrue(found, "the argument to take() should be converted")
-        import pyast.resolver as g
-        scope = use.body_scope(g.scope_resolver(use, resolver))
+        scope = use.body_scope(c.__dict__["__stmt_scope_resolver"](use, resolver))
         hints = use.body.compile(scope, use.return_type)[2]
         v = use.parameters.targets[0].name
         shown = sorted(str(hint.spec.as_unique_id_str()) for hint in hints.get(v, ()))

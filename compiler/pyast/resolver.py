@@ -868,26 +868,6 @@ class AddScopeResolution(DelegatingResolver):
         return self._parent.get_ambient_patterns(merged)
 
 
-def scope_resolver(stmt: s.Statement, glb: Resolver) -> Resolver:
-    """The scope a top-level statement compiles in: the namespaces it
-    imports, plus its own."""
-    if isinstance(stmt, s.NamedStatement):
-        import_scopes = set(x.path for x in stmt.imports.imports) if stmt.imports else set()
-        own_ns = stmt.name.rpartition('::')[0]  # e.g. "Main" from "Main::main@JnNy0L"
-        if own_ns:
-            import_scopes.add(own_ns)
-        scoped = AddScopeResolution(glb, import_scopes, own_ns)
-        # A global let's initialiser resolves like a function body: it needs the
-        # trait/interface methods (operators) in scope. FunctionStatement adds
-        # this itself (for a top-level function; an inner one adds none — see
-        # FunctionStatement.compile); a top-level LetStatement has no such hook,
-        # so add it here.
-        if isinstance(stmt, s.LetStatement):
-            return stmt._initialiser_resolver(scoped)
-        return scoped
-    return glb
-
-
 class ResolverType(DelegatingResolver):
     """A declaration's generic type params, and the `where` constraints it
     states over them: inside the declaration — its signature as much as its

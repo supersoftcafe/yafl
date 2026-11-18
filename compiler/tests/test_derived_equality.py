@@ -91,3 +91,34 @@ fun main(): Int
                 self.assertIn("BasicEquality", diagnostics, diagnostics)
 
 
+
+
+class TestAMemberNeedsAnInstance(TestCase):
+    """An enum derives BasicEquality when every member's type has an instance
+    of its own — a member that is an enum, one for its root declaration
+    (#136). Functions named `==` and `hashOf` are not an instance."""
+
+    def test_functions_named_like_the_trait_are_not_an_instance(self):
+        emitted, diagnostics = _errors("""\
+namespace Main
+import System
+
+class Point(x: Int, y: Int)
+
+fun `==`(a: Point, b: Point): Bool
+  ret a.x == b.x && a.y == b.y
+
+fun hashOf(p: Point): Int32
+  ret hashOf(p.x)
+
+enum Shape(at: Point)
+
+fun same<T>(a: T, b: T): Bool where BasicEquality<T>
+  ret a == b
+
+fun main(): Int
+  let s = Shape(Point(1, 2))
+  ret same<Shape>(s, s) ? 0 : 1
+""")
+        self.assertEqual("", emitted, "expected the compile to be refused")
+        self.assertIn("BasicEquality", diagnostics, diagnostics)

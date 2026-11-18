@@ -36,6 +36,35 @@ fun [test("a written instance stands")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
 
 
+namespace CompilerTests::EnumLevelEquality::AWrittenRootServesItsLevels
+
+import System
+import System::Test
+
+# Host's field is a Pay1, a level of Payload: Host needs Payload to have
+# equality, and Payload's is written. Every two Payloads are equal by it, so
+# two Holds of different Pay1s are equal too.
+enum Payload
+  enum Pay1(p0: String)
+  enum Pay2(pTiny: Int)
+
+instance [ambient] BasicEquality<Payload>
+  fun `==`(left: Payload, right: Payload): Bool
+    ret true
+  fun hashOf(value: Payload): Int32
+    ret 0i32
+
+enum Host
+  enum Hold(hPay: Pay1)
+  enum Empty1()
+
+fun program(): Int
+  ret Hold(Pay1("x")) == Hold(Pay1("y")) ? 0 : 1
+
+fun [test("a written root serves its levels")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
 namespace CompilerTests::EnumLevelEquality::ALevelHasItsRootsEquality
 
 import System

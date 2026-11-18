@@ -134,7 +134,7 @@ class FunctionStatement(DataStatement):
 
     def __find_locals(self) -> Callable[[str],list[g.Resolved[DataStatement]]]:
         # Parameters only — the function body adds no trait scope of its own. A
-        # top-level function's trait scope is established by scope_resolver
+        # top-level function's trait scope is established by __stmt_scope_resolver
         # (via _initialiser_resolver); an inner function has none, inheriting its
         # owner's lexically (only locals shadow, so nothing is duplicated).
         def finder(query: str) -> list[g.Resolved[DataStatement]]:

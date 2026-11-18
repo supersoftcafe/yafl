@@ -13,18 +13,20 @@
 # representation-aware at codegen, so nothing forces boxing. A user instance
 # suppresses derivation.
 #
-# One question decides everything: does a type have equality — would the
-# calls the synthesised members make on a value of it, `==` and `hashOf`,
-# resolve? They are looked up as a written call is, in the enum's own scope:
-# the ordinary overload resolution, which finds Payload's `==` for two Pay1s
-# as it would for `hPay == hPay2`. A generic instance the lookup reaches needs
-# its `where` clauses met, and a `where` is exact, so a tuple has equality
-# when its members have instances of their own. An enum with equality never
-# derives (idempotence); an enum derives only when every member has it.
-# COINDUCTIVE: candidates are assumed to have equality, shrunk to a fixpoint.
-# Anything without — a union, a function type — blocks; `Spec` never
-# derives because PLine has no `==`, so eqSpec keeps sole ownership of spec
-# equality.
+# One question decides everything: does equality already EXIST for a type —
+# does some instance, in whatever form it now has, cover it (its `where`
+# clauses met, so a tuple has equality when its members do)? An enum for
+# which it does never derives (idempotence); an enum derives only when it does
+# for every member. COINDUCTIVE: candidates are assumed to have equality,
+# shrunk to a fixpoint. Equality arrives TRANSITIVELY: an instance of
+# BasicMath<Int> provides BasicEquality<Int> through the interface closure.
+# Anything no instance covers — unions, function types, generic
+# instantiations — blocks; `Spec` never derives because PLine has no
+# instance, so eqSpec keeps sole ownership of spec equality.
+#
+# One exception (#136): a member whose type is an enum, at any level, needs
+# its root declaration to have equality. The synthesised `==` on two Pay1s
+# takes Payload's, as a written one does.
 #
 # Synthesis is IDENTICAL to Python's, name for name and binder for binder
 # (per-arm indexed binders: match lowering makes one variable per binder name,
@@ -48,11 +50,11 @@ class [final] DeLeaves(dlNames: List<String>, dlSets: List<List<PStmt>>)
 # whole-program fact — rootResolver memoises it per pass, and each enum's own
 # compile emits its instance. IDEMPOTENT: an enum that already has equality —
 # a written instance, a derived one, either lowered or monomorphised — never
-# derives. The same question decides every member: its `==` and `hashOf`
-# resolve (deHasEquality), or it is a candidate itself (coinductive). Empty
-# while the answer is incomplete — an instance not yet resolved may be the one
-# that already covers an enum; an enum or a candidate's field still a name may
-# change every answer — and in a program that does not declare
+# derives. The same question decides every member: equality must exist for
+# it (deHasEquality), or it is a candidate itself (coinductive). Empty while
+# the answer is incomplete — an instance or witness not yet resolved may be
+# the one that already covers an enum; an enum or a candidate's field still a
+# name may change every answer — and in a program that does not declare
 # System::BasicEquality (compiled without the stdlib).
 fun derivableEnums(statements, r): List<String>
   if isEmpty(findType(r, "System::BasicEquality").bItems)
@@ -63,15 +65,15 @@ fun derivableEnums(statements, r): List<String>
 
 # An enum, or a candidate's field, whose type is still a name is an input not
 # known yet: the answer waits for it, as it waits for the providers. Decided
-# without it, `enum Host(hPay: Pay1)` was judged while Pay1 was a name,
-# Payload derived alone, and Host never did (#136).
-fun deDerivable(statements: List<PStmt>, ps: List<DeProvider>, r: Resolver): List<String>
-  if any(statements, deUntypedEnum)
+# without it, `enum Host(hPay: Pay1)` was judged while Pay1 was a name, and
+# Payload derived alone (#136).
+fun deDerivable(statements, ps: List<DeProvider>, r)
+  let cands = deCandidates(statements, ps, r,
+                           DeCands(List(),
+                                   List()))
+  if any(statements, deUntypedEnum) || any(cands.leaves, deLeavesUnresolved)
     ret List()
-  let start = DeWork(DeCands(List(), List()), Dict<String, DeFinds>(), Dict<String, DeUse>())
-  ret match(foldSome(statements, start, (w, st) => deCandidate(w, st, ps, r)))
-    (w: DeWork) => deFixpoint(w.dwCands.dcNames, w.dwCands.dcMembers, ps, r)
-    ()          => List()
+  ret deFixpoint(cands.names, cands.leaves, ps, r)
 
 fun deUntypedEnum(st: PStmt): Bool => match(st)
   (e2: PsEnum) => isEmpty(e2.eGens) && !contains(e2.eName, "$generic$") && deNoSpec(e2.eSpec)
@@ -186,34 +188,19 @@ fun deBaseName(name)
   let g2 = indexOf(name, "$generic$", 0)
   ret simpleName(g2 < 0 ? name : slice(name, 0, g2))
 
-# Does `sp` have equality? The calls a derived instance makes on it resolve,
-# and every generic instance they reach has what its `where` asks for; or it
-# is an enum deriving in this pass, assumed to while the fixpoint runs: its
-# instance, once it exists, takes any value of it.
-fun deHasEquality(sp: Spec|None, use: DeUse, ok: List<String>, ps: List<DeProvider>,
-                  r: Resolver): Bool =>
-  match(sp)
-    (s2: Spec) => deAssumed(s2, ok)
-                  || (use.duFits && all(use.duNeeds, (n) => deInstanceExists(n, ok, ps, r)))
-    ()         => false
-
-fun deAssumed(sp: Spec, ok: List<String>) => match(sp)
-  (e2: SEnum) => contains(ok, e2.seRoot)
-  (o: Spec)   => false
-
-# Is there an instance for exactly `sp`, as `where BasicEquality<sp>` asks?
+# Does equality exist for exactly `sp`, as `where BasicEquality<sp>` asks?
 # Some provider covers it — binding the provider's own params makes its
-# pattern `sp`, compared by unique id — and every `where` holds for the
-# binding; or it is an enum deriving in this pass, assumed to while the
-# fixpoint runs. A `where` is exact: a level of an enum is not its root.
-fun deInstanceExists(sp: Spec, ok: List<String>, ps: List<DeProvider>, r: Resolver): Bool
-  if deAssumedExactly(sp, ok)
+# pattern `sp` (compared by unique id) and every `where` holds for the
+# binding — or it is a candidate enum, assumed to while the fixpoint runs. A
+# level of an enum is not its root (#136).
+fun deHasEquality(sp, ok: List<String>, ps: List<DeProvider>, r): Bool
+  if deAssumed(sp, ok)
     ret true
   let u = uid(sp)
   ret u != "" && any(ps, (p) => deCovers(p, sp, u, ok, ps, r))
 
-fun deAssumedExactly(sp: Spec, ok: List<String>) => match(sp)
-  (e2: SEnum) => isEmpty(e2.sePath) && contains(ok, e2.seRoot)
+fun deAssumed(sp, ok: List<String>) => match(sp)
+  (e2: SEnum) => contains(ok, e2.seRoot) && isEmpty(e2.sePath)
   (o: Spec)   => false
 
 fun deCovers(p: DeProvider, sp, u, ok: List<String>, ps: List<DeProvider>, r) => match(p.dpCovers)
@@ -227,164 +214,42 @@ fun deWhereHolds(w, bindings: List<Binding>, ok: List<String>,
                  ps: List<DeProvider>, r) => match(w)
   (c: SClass) => deBaseName(c.scName) == "System::BasicEquality"
                  && exactly(c.scParams, 1)
-                 && deBoundHasInstance(head(c.scParams), bindings, ok, ps, r)
+                 && deBoundHasEquality(head(c.scParams), bindings, ok, ps, r)
   (o: Spec)   => false
 
-fun deBoundHasInstance(arg: Spec|None, bindings: List<Binding>, ok: List<String>,
+fun deBoundHasEquality(arg: Spec|None, bindings: List<Binding>, ok: List<String>,
                        ps: List<DeProvider>, r) => match(arg)
-  (a: Spec) => deInstanceExists(substitute(a, bindings), ok, ps, r)
+  (a: Spec) => deHasEquality(substitute(a, bindings), ok, ps, r)
   ()        => false
 
 # ── candidates and their leaves ──────────────────────────────────────────────
 
-# The candidate enums and their members (each field's type, and what the
-# derived instance's calls on it resolve to), positionally paired: the
-# fixpoint walks them in lockstep.
-class [final] DeCands(dcNames: List<String>, dcMembers: List<List<DeMember>>)
+# The candidate enums and their leaves, positionally paired. Both are built:
+# the consumers walk them in lockstep.
+class [final] DeCands(dcNames: List<String>,
+                              dcLeaves: List<DeLeaves>)
 
-class [final] DeMember(dmSpec: Spec|None, dmUse: DeUse)
+fun deCandidates(ss: List<PStmt>, ps: List<DeProvider>, r,
+                 acc: DeCands): (names: List<String>, leaves: List<DeLeaves>)
+  let out = fold(ss, acc, (a, st) => deCandidate(a, st, ps, r))
+  ret (out.dcNames, out.dcLeaves)
 
-# The candidates so far, and the lookups made, once per scope and type: every
-# candidate's fields are asked about on every round of the fixpoint, and most
-# share a type.
-class [final] DeWork(dwCands: DeCands, dwFinds: Dict<String, DeFinds>,
-                     dwUses: Dict<String, DeUse>)
-
-class [final] DeWorkUse(wuWork: DeWork, wuUse: DeUse)
-
-class [final] DeMembers(dmsWork: DeWork, dmsList: List<DeMember>)
-
-fun deCandidate(w: DeWork, st: PStmt, ps: List<DeProvider>, r: Resolver): DeWork|None => match(st)
+fun deCandidate(acc: DeCands, st: PStmt, ps: List<DeProvider>, r): DeCands => match(st)
   # Generic enums never derive — nor, after monomorphisation, their
   # instantiations (no type params left, still not a source enum).
   (e2: PsEnum) => isEmpty(e2.eGens) && !contains(e2.eName, "$generic$")
-    ? deRoot(w, e2, ps, r)
-    : w
-  (o: PStmt)   => w
+                  && deLacksEquality(e2, ps, r)
+    ? match(deLeaves(e2, List()))
+      (dl: DeLeaves) => isEmpty(dl.dlNames)
+        ? acc
+        : DeCands(append(acc.dcNames, e2.eName), append(acc.dcLeaves, dl))
+      ()             => acc
+    : acc
+  (o: PStmt)   => acc
 
-# Already has equality: an instance for exactly it, in whatever form it now
-# has — written, derived, or lowered to a witness, which no call finds by
-# name — or its own `==` and `hashOf` resolve without one. Derivation fills a
-# gap, never competes.
-fun deRoot(w: DeWork, e2: PsEnum, ps: List<DeProvider>, r: Resolver): DeWork|None => match(e2.eSpec)
-  (sp: Spec) => deInstanceExists(sp, List(), ps, r) ? w : deRootLookup(w, e2, sp, ps, r)
-  ()         => None
-
-fun deRootLookup(w: DeWork, e2: PsEnum, sp: Spec, ps: List<DeProvider>,
-                 r: Resolver): DeWork|None =>
-  match(deUseOf(w, e2, sp, r))
-    (wu: DeWorkUse) => deHasEquality(sp, wu.wuUse, List(), ps, r)
-      ? wu.wuWork
-      : deRootLeaves(wu.wuWork, e2, r)
-    ()              => None
-
-fun deRootLeaves(w: DeWork, e2: PsEnum, r: Resolver): DeWork|None => match(deLeaves(e2, List()))
-  (dl: DeLeaves) => isEmpty(dl.dlNames) ? w : deRootMembers(w, e2, dl, r)
-  ()             => w
-
-fun deRootMembers(w: DeWork, e2: PsEnum, dl: DeLeaves, r: Resolver): DeWork|None
-  if deLeavesUnresolved(dl)
-    ret None
-  let fields = fold(dl.dlSets, List<PStmt>(), (acc, fs) => concat(acc, fs))
-  ret match(foldSome(fields, DeMembers(w, List()), (m, f) => deMemberStep(m, e2, f, r)))
-    (m: DeMembers) => DeWork(DeCands(append(m.dmsWork.dwCands.dcNames, e2.eName),
-                                     append(m.dmsWork.dwCands.dcMembers, m.dmsList)),
-                             m.dmsWork.dwFinds, m.dmsWork.dwUses)
-    ()             => None
-
-fun deMemberStep(m: DeMembers, e2: PsEnum, f: PStmt, r: Resolver): DeMembers|None => match(f)
-  (l: PsLet) => match(l.lType)
-    (sp: Spec) => match(deUseOf(m.dmsWork, e2, sp, r))
-      (wu: DeWorkUse) => DeMembers(wu.wuWork, append(m.dmsList, DeMember(sp, wu.wuUse)))
-      ()              => None
-    ()         => None
-  (o: PStmt) => DeMembers(m.dmsWork, append(m.dmsList, DeMember(None, DeUse(false, List()))))
-
-# ── the lookup ───────────────────────────────────────────────────────────────
-
-# What the calls a derived instance makes on a value of one type resolve to:
-# duFits when its `==` and its `hashOf` each resolve to one candidate that
-# takes it, and the types a generic instance among them then needs an
-# instance for, exactly — its `where`.
-class [final] DeUse(duFits: Bool, duNeeds: List<Spec>)
-
-# The enum's scope, with every `==` and `hashOf` it can see.
-class [final] DeFinds(dfScope: Resolver, dfEq: List<Found>, dfHash: List<Found>)
-
-fun deUseOf(w: DeWork, e2: PsEnum, sp: Spec, r: Resolver): DeWorkUse|None
-  let key = deScopeKey(e2)
-  let memo = key + "|" + uid(sp)
-  ret match(uid(sp) == "" ? None : get(w.dwUses, memo))
-    (known: DeUse) => DeWorkUse(w, known)
-    ()             => deUseFresh(w, e2, key, memo, sp, r)
-
-fun deUseFresh(w: DeWork, e2: PsEnum, key: String, memo: String, sp: Spec,
-               r: Resolver): DeWorkUse|None =>
-  match(deFindsOf(w, e2, key, r))
-    (f: DeFinds) => deRemember(DeWork(w.dwCands, put(w.dwFinds, key, f), w.dwUses),
-                               memo, sp, deUse(f, sp, e2.pseLine))
-    ()           => None
-
-fun deRemember(w: DeWork, memo: String, sp: Spec, use: DeUse): DeWorkUse =>
-  DeWorkUse(uid(sp) == "" ? w : DeWork(w.dwCands, w.dwFinds, put(w.dwUses, memo, use)), use)
-
-fun deFindsOf(w: DeWork, e2: PsEnum, key: String, r: Resolver): DeFinds|None => match(get(w.dwFinds, key))
-  (f: DeFinds) => f
-  ()           => deFinds(traitScope(List(), scopeResolver(e2, r)))
-
-fun deScopeKey(e2: PsEnum): String => join(sort(stmtScopes(e2)), ",") + "|" + ownNamespace(e2.eName)
-
-# `scope` with every `==` and `hashOf` it can see — or None while that search
-# is incomplete, or a candidate's type is still a name: one not known yet may
-# be the one a call would take.
-fun deFinds(scope: Resolver): DeFinds|None
-  let eq = findData(scope, "`==`")
-  let hash = findData(scope, "hashOf")
-  ret deSettled(eq) && deSettled(hash) ? DeFinds(scope, eq.bItems, hash.bItems) : None
-
-fun deSettled(f: Findings) => f.bComplete && all(f.bItems, deKnownSignature)
-
-fun deKnownSignature(x: Found): Bool => match(candidateSignature(x))
-  (sig: Spec) => !containsNamedSpec(sig)
-  ()          => false
-
-# What the synthesised members' own calls on a value of type `sp` —
-# `left.f == right.f` for a Bool, `hashOf(value.f)` for an Int32 — resolve to
-# in the enum's scope: the ordinary overload resolution a written call gets.
-# A generic instance is taken only when the call binds its parameters.
-fun deUse(f: DeFinds, sp: Spec, lr: PLine): DeUse
-  let one = SEntry("", sp, None)
-  let eq = deCall(f.dfScope, f.dfEq, SCallable(STuple(list2(one, one), lr), SBuiltin("bool", lr), lr))
-  let hash = deCall(f.dfScope, f.dfHash, SCallable(STuple(list1(one), lr), SBuiltin("int32", lr), lr))
-  ret match(eq)
-    (a: List<Spec>) => match(hash)
-      (b: List<Spec>) => DeUse(true, concat(a, b))
-      ()              => DeUse(false, List())
-    ()              => DeUse(false, List())
-
-# One call: what the sole candidate that takes it needs — nothing, or the
-# type a generic instance's `where` then asks about — or None when no
-# candidate, or more than one, does.
-fun deCall(scope: Resolver, cands: List<Found>, want: Spec): List<Spec>|None =>
-  match(soleOf(resolveOverloads(scope, want, cands)))
-    (x: Found) => deTaken(scope, x, want)
-    ()         => None
-
-fun deTaken(scope: Resolver, x: Found, want: Spec): List<Spec>|None => match(x.fInstanceParams)
-  (own: List<String>) => isEmpty(own) ? deAccepts(scope, x, want) : deSolved(scope, x, own, want)
-  ()                  => deAccepts(scope, x, want)
-
-fun deSolved(scope: Resolver, x: Found, own: List<String>, want: Spec): List<Spec>|None =>
-  match(solveInstanceScope(x, own, want, scope))
-    (c: SClass) => exactly(c.scParams, 1) ? c.scParams : None
-    (o: Spec)   => None
-    ()          => None
-
-fun deAccepts(scope: Resolver, x: Found, want: Spec): List<Spec>|None => match(candidateSignature(x))
-  (sig: Spec) => match(assignableEq(scope, want, sig))
-    (b: Bool) => b ? List<Spec>() : None
-    ()        => None
-  ()          => None
+fun deLacksEquality(e2: PsEnum, ps: List<DeProvider>, r) => match(e2.eSpec)
+  (sp: Spec) => !deHasEquality(sp, List(), ps, r)
+  ()         => false
 
 # (leaf unique name, all fields root-down) per constructible leaf, in
 # declaration order. None when any variant is uninhabited.
@@ -408,26 +273,44 @@ fun deLeafStep(acc: DeLeaves, st: PStmt, own: List<PStmt>): DeLeaves|None => mat
 
 # ── the coinductive fixpoint ─────────────────────────────────────────────────
 
-fun deFixpoint(names: List<String>, members: List<List<DeMember>>,
-               ps: List<DeProvider>, r: Resolver)
-  let ok2 = deSurvivors(names, members, names, ps, r, List())
+fun deFixpoint(names: List<String>, leaves: List<DeLeaves>,
+               ps: List<DeProvider>, r)
+  let ok2 = deSurvivors(names, leaves, names, ps, r, List())
   ret sameLen(ok2, names)
     ? ok2
-    : deFixpoint2(ok2, names, members, ps, r)
+    : deFixpoint2(ok2, names, leaves, ps, r)
 
 fun [tail] deFixpoint2(ok: List<String>, names: List<String>,
-                       members: List<List<DeMember>>, ps: List<DeProvider>, r: Resolver)
-  let ok2 = deSurvivors(names, members, ok, ps, r, List())
+                       leaves: List<DeLeaves>, ps: List<DeProvider>, r)
+  let ok2 = deSurvivors(names, leaves, ok, ps, r, List())
   ret sameLen(ok2, ok)
     ? ok2
-    : deFixpoint2(ok2, names, members, ps, r)
+    : deFixpoint2(ok2, names, leaves, ps, r)
 
-fun deSurvivors(ns: List<String>, ms: List<List<DeMember>>, ok: List<String>,
-                ps: List<DeProvider>, r: Resolver, acc: List<String>): List<String> =>
-  zipFold(ns, ms, acc,
-          (a, x, m) => contains(ok, x) && all(m, (d) => deHasEquality(d.dmSpec, d.dmUse, ok, ps, r))
-            ? append(a, x)
-            : a)
+fun deSurvivors(ns: List<String>, ls: List<DeLeaves>, ok: List<String>, ps: List<DeProvider>, r,
+                acc: List<String>): List<String> =>
+  zipFold(ns, ls, acc,
+          (a, x, l) => contains(ok, x) && deAllFieldsHave(l.dlSets, ok, ps, r) ? append(a, x) : a)
+
+fun deAllFieldsHave(sets: List<List<PStmt>>, ok: List<String>, ps: List<DeProvider>, r) =>
+  all(sets, (x) => deFieldsHave(x, ok, ps, r))
+
+fun deFieldsHave(fs: List<PStmt>, ok: List<String>,
+                        ps: List<DeProvider>, r) => all(fs, (x) => deFieldsHaveStep(x, ok, ps, r))
+
+fun deFieldsHaveStep(x: PStmt, ok: List<String>, ps: List<DeProvider>, r) => match(x)
+  (p: PsLet) => match(p.lType)
+    (sp: Spec) => deMemberHasEquality(sp, ok, ps, r)
+    () => false
+  (o: PStmt) => false
+
+# Does a member of type `sp` let its enum derive? Equality exists for it —
+# or, for an enum at any level, for its root declaration (#136).
+fun deMemberHasEquality(sp: Spec, ok: List<String>, ps: List<DeProvider>, r: Resolver): Bool => match(sp)
+  (e2: SEnum) => match(enumLevel(e2, List(), r))
+    (root: SEnum) => deHasEquality(root, ok, ps, r)
+    ()            => false
+  (o: Spec)   => deHasEquality(o, ok, ps, r)
 
 # ── synthesis ────────────────────────────────────────────────────────────────
 
