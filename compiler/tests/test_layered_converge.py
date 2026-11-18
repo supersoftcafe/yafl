@@ -142,8 +142,8 @@ class TestLayeredConverge(TestCase):
         # Whether an enum derives equality must not depend on where the enum
         # it holds a level of was declared. Payload converges in a layer of
         # its own beneath Host, as a library's enum would; Host's field is a
-        # Pay1, so Host derives only if Pay1 has equality — its own derived
-        # instance, never Payload's.
+        # Pay1, which has the equality of its root, Payload — derived beneath
+        # here, a candidate beside Host in the merged run.
         middle = c.Input("namespace Lib\nimport System\n"
                          "enum Payload\n  enum Pay1(p0: String)\n  enum Pay2(pTiny: Int)\n",
                          "lib.yafl")

@@ -423,18 +423,21 @@ fun rootResolver(statements) => rootResolver(statements, None)
 # program a single root would see.
 fun rootResolver(statements, base: RRoot|None)
   let st = buildStatements(statements, base)
-  # The derived-equality analysis reads only type lookups, so a plain root
-  # over the same index serves it (the full root cannot name itself here).
   let plain = RRoot((root) => false, (name) => false, st,
                     None, 0, None, None, None, base)
   let program = allStatements(plain)
   let breakers: List<String> = computeBreakers(program)
-  let derivable: List<String> = derivableEnums(program, plain)
+  let fields = enumFieldsTable(statements)
+  let merged = mergedMembersTable(st, base)
+  # The derived-equality analysis looks `==` and `hashOf` up as a call does,
+  # so it reads a root with every table but its own answer (Python's lazy
+  # derives_equality reads the full root, which never asks itself).
+  let lookup = RRoot((root) => contains(breakers, root), (name) => false,
+                     st, None, 0, fields, None, merged, base)
+  let derivable: List<String> = derivableEnums(program, lookup)
   ret RRoot((root) => contains(breakers, root),
             (name) => contains(derivable, name),
-            st, None, 0,
-            enumFieldsTable(statements), None,
-            mergedMembersTable(st, base), base)
+            st, None, 0, fields, None, merged, base)
 
 # Every root enum's derived fields, once per pass (the stAmbient pattern —
 # resolver-path readers asked ~938k times per self-compile otherwise).

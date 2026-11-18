@@ -379,26 +379,8 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     return a.gen(just_testing=just_testing)
 
 
-def __stmt_scope_resolver(stmt: s.Statement, glb: g.Resolver) -> g.Resolver:
-    if isinstance(stmt, s.NamedStatement):
-        import_scopes = set(x.path for x in stmt.imports.imports) if stmt.imports else set()
-        own_ns = stmt.name.rpartition('::')[0]  # e.g. "Main" from "Main::main@JnNy0L"
-        if own_ns:
-            import_scopes.add(own_ns)
-        scoped = g.AddScopeResolution(glb, import_scopes, own_ns)
-        # A global let's initialiser resolves like a function body: it needs the
-        # trait/interface methods (operators) in scope. FunctionStatement adds
-        # this itself (for a top-level function; an inner one adds none — see
-        # FunctionStatement.compile); a top-level LetStatement has no such hook,
-        # so add it here.
-        if isinstance(stmt, s.LetStatement):
-            return stmt._initialiser_resolver(scoped)
-        return scoped
-    return glb
-
-
 def __compile(stmt: s.Statement, glb: g.Resolver, expected_type: t.TypeSpec | None) -> list[s.Statement]:
-    glb = __stmt_scope_resolver(stmt, glb)
+    glb = g.scope_resolver(stmt, glb)
     result, extras, _ = stmt.compile(glb, expected_type)
     return [result] + extras
 
@@ -436,7 +418,7 @@ def __check_untyped_params(statements: list[s.Statement]) -> list[Error]:
     for stmt in statements:
         if isinstance(stmt, s.FunctionStatement):
             errors += hints.untyped_param_errors(
-                stmt, stmt.body_scope(__stmt_scope_resolver(stmt, resolver)))
+                stmt, stmt.body_scope(g.scope_resolver(stmt, resolver)))
     return errors
 
 
@@ -466,7 +448,7 @@ def __collect_diagnostics(statements: list[s.Statement],
     if future_global_errors:
         return future_global_errors, []
 
-    diagnostics = [x for stmt in statements for x in stmt.check(__stmt_scope_resolver(stmt, resolver), None)]
+    diagnostics = [x for stmt in statements for x in stmt.check(g.scope_resolver(stmt, resolver), None)]
     # A disabled warning category (see warning_flags.py) never enters the
     # diagnostic stream at all — not on success, not folded into a failure's
     # combined error+warning printout either.
@@ -497,7 +479,7 @@ def __collect_diagnostics(statements: list[s.Statement],
                 else Error(thing.line_ref, f"Failed to resolve type '{thing.name}'"))
         return thing
     for stmt in statements:
-        stmt.search_and_replace(__stmt_scope_resolver(stmt, resolver), _find_named_specs)
+        stmt.search_and_replace(g.scope_resolver(stmt, resolver), _find_named_specs)
     if named_spec_errors:
         return named_spec_errors, warnings
     return [], warnings

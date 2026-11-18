@@ -17,23 +17,25 @@ codegen (a value-repr enum gets no shortcut and no cache, and still computes
 correctly), so nothing here forces boxing. A user instance suppresses
 derivation — the vacuum rule: derivation fills a gap, never competes.
 
-One question decides everything: does equality already EXIST for a type —
-does some instance, in whatever form it now has, cover it (with its `where`
-clauses met, so a tuple has equality when its members do)? An enum for which
-it does never derives (idempotence), and an enum derives only when it does
-for every member. That is COINDUCTIVE: while checking, every candidate enum
-is assumed to have equality, so self- and mutually-recursive enums work; the
-assumption set then shrinks to a fixpoint as members fail. Anything no
-instance covers — unions, function types, generic instantiations — blocks
-derivation, and notably `Spec` never derives because `PLine` has no
-instance: `eqSpec` keeps sole ownership of spec equality.
+One question decides everything: does a type have equality — would the
+calls the synthesised members make on a value of it, `==` and `hashOf`,
+resolve? They are looked up as a written call is, in the enum's own scope:
+the ordinary overload resolution, which finds `Payload`'s `==` for two
+`Pay1`s as it would for `hPay == hPay2`. A generic instance the lookup
+reaches needs its `where` clauses met, and a `where` is exact, so a tuple has
+equality when its members have instances of their own. An enum with equality
+never derives (idempotence), and an enum derives only when every member has
+it. That is COINDUCTIVE: while checking, every candidate enum is assumed to
+have equality, so self- and mutually-recursive enums work; the assumption set
+then shrinks to a fixpoint as members fail. Anything without — a union, a
+function type — blocks derivation, and notably `Spec` never derives
+because `PLine` has no `==`: `eqSpec` keeps sole ownership of spec
+equality.
 
 Both compilers synthesise IDENTICAL statements (names and line refs derive
 from the enum's own), so the AST dumps and emitted C stay byte-comparable.
 """
 from __future__ import annotations
-
-import dataclasses
 
 import pyast.expression as e
 import pyast.statement as s
@@ -50,11 +52,11 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
 
     IDEMPOTENT: an enum that already has equality — a written instance, a
     derived one, either of them lowered or monomorphised — never derives.
-    The same question decides every member: equality must exist for it
+    The same question decides every member: its `==` and `hashOf` resolve
     (`__has_equality`), or it is a candidate itself (coinductive).
 
-    Empty while the answer is not yet complete — an instance or witness not
-    yet resolved may be the one that already covers an enum, and derivation
+    Empty while the answer is not yet complete — an instance not yet
+    resolved may be the one that already covers an enum, and derivation
     must never compete with it; an enum or a candidate's field still a name
     may change every answer — and in a program that does not declare
     `System::BasicEquality` (compiled without the stdlib)."""
@@ -63,6 +65,25 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
     providers = __providers(statements, resolver)
     if providers is None:
         return frozenset()
+
+    # The lookups, once per scope and type: every candidate's fields are
+    # asked about on every round of the fixpoint, and most share a type.
+    finds: dict = {}
+    uses: dict = {}
+
+    def use_of(st: s.EnumStatement, spec: t.TypeSpec) -> "_Use | None":
+        own_ns = st.name.rpartition("::")[0]
+        scope_key = (own_ns, frozenset(x.path for x in st.imports.imports) if st.imports else frozenset())
+        uid = spec.as_unique_id_str()
+        if uid is not None and (scope_key, uid) in uses:
+            return uses[(scope_key, uid)]
+        if scope_key not in finds:
+            finds[scope_key] = __finds(st._initialiser_resolver(g.scope_resolver(st, resolver)))
+        scope, found = finds[scope_key]
+        use = None if found is None else __use(scope, found, spec, st.line_ref)
+        if uid is not None:
+            uses[(scope_key, uid)] = use
+        return use
 
     candidates: dict[str, list] = {}
     for st in statements:
@@ -75,11 +96,20 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
         # An enum, or a candidate's field, whose type is still a name is an
         # input not known yet: the answer waits for it, as it waits for the
         # providers. Decided without it, `enum Host(hPay: Pay1)` was judged
-        # while Pay1 was a name, Payload derived alone, and once Pay1 resolved
-        # Payload's instance did not cover the view (#136).
+        # while Pay1 was a name, Payload derived alone, and Host never did
+        # (#136).
         if st.get_type() is None:
             return frozenset()
-        if __has_equality(st.get_type(), frozenset(), providers, resolver):
+        # Already has equality: an instance for exactly it, in whatever form
+        # it now has — written, derived, or lowered to a witness, which no
+        # call finds by name — or its own `==` and `hashOf` resolve without
+        # one. Derivation fills a gap, never competes.
+        if __instance_exists(st.get_type(), frozenset(), providers, resolver):
+            continue
+        own = use_of(st, st.get_type())
+        if own is None:
+            return frozenset()
+        if __has_equality(st.get_type(), own, frozenset(), providers, resolver):
             continue
         leaves = __collect_leaves(st, [])
         if leaves is None or not leaves:   # uninhabited variant somewhere
@@ -87,7 +117,10 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
         if any(f.declared_type is None or t.contains_named_spec(f.declared_type)
                for _leaf, fields in leaves for f in fields):
             return frozenset()
-        candidates[st.name] = leaves
+        members = [(f.declared_type, use_of(st, f.declared_type)) for _leaf, fields in leaves for f in fields]
+        if any(use is None for _spec, use in members):
+            return frozenset()
+        candidates[st.name] = members
 
     # Coinductive fixpoint: assume every candidate has equality, drop failures.
     ok = set(candidates)
@@ -95,42 +128,81 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
     while changed:
         changed = False
         for name in sorted(ok):
-            if not all(__has_equality(let.declared_type, frozenset(ok), providers, resolver)
-                       for _leaf, fields in candidates[name] for let in fields):
+            if not all(__has_equality(spec, use, frozenset(ok), providers, resolver)
+                       for spec, use in candidates[name]):
                 ok.discard(name)
                 changed = True
-    roots = frozenset(ok)
+    return frozenset(ok)
 
-    # Every LEVEL of an enum that has equality derives its own instance — a
-    # level is a type of its own, so BasicEquality<Payload> is no instance
-    # for Pay1 — unless one is written for it. It forwards to the root's.
-    levels: set[str] = set()
-    for st in statements:
-        if not (isinstance(st, s.EnumStatement) and not st.type_params
-                and "$generic$" not in st.name):
-            continue
-        if st.name not in roots and not __has_equality(st.get_type(), frozenset(), providers, resolver):
-            continue
-        for level in __levels(st):
-            spec = level.get_type()
-            if spec is None or not spec.path:
-                return frozenset()          # its layout not assigned yet
-            if not __provided(spec, providers, roots, resolver):
-                levels.add(level.name)
-    return roots | levels
+
+class _Use(NamedTuple):
+    """What the calls a derived instance makes on a value of one type resolve
+    to: `fits` when its `==` and its `hashOf` each resolve to one candidate
+    that takes it, and the types a generic instance among them then needs an
+    instance for, exactly — its `where`."""
+    fits: bool
+    needs: tuple = ()
+
+
+def __finds(scope: g.Resolver) -> "tuple[g.Resolver, dict | None]":
+    """`scope` with every `==` and `hashOf` it can see — or None while that
+    search is incomplete, or a candidate's type is still a name: one not
+    known yet may be the one a call would take."""
+    from pyast.expression.access import candidate_signature
+    found = {}
+    for name in ("`==`", "hashOf"):
+        candidates = scope.find_data(name)
+        if not candidates.complete:
+            return scope, None
+        for x in candidates:
+            sig = candidate_signature(scope, x)
+            if sig is None or t.contains_named_spec(sig):
+                return scope, None
+        found[name] = list(candidates)
+    return scope, found
+
+
+def __use(scope: g.Resolver, found: dict, spec: t.TypeSpec, lr) -> _Use:
+    """What the synthesised members' own calls on a value of type `spec` —
+    `left.f == right.f` for a Bool, `hashOf(value.f)` for an Int32 — resolve
+    to in the enum's scope: the ordinary overload resolution a written call
+    gets. A generic instance is taken only when the call binds its
+    parameters."""
+    from pyast.expression.access import _resolve_overloads, _solve_instance_scope, candidate_signature
+    one = t.TupleEntrySpec(None, spec)
+    needs = []
+    for name, args, result in (("`==`", (one, one), "bool"), ("hashOf", (one,), "int32")):
+        want = t.CallableSpec(lr, t.TupleSpec(lr, args), t.BuiltinSpec(lr, result))
+        chosen = _resolve_overloads(scope, want, found[name])
+        if len(chosen) != 1:
+            return _Use(False)
+        x = chosen[0]
+        if x.instance_params:
+            solved = _solve_instance_scope(scope, x, want)
+            if solved is None or len(solved.type_params) != 1:
+                return _Use(False)
+            needs.append(solved.type_params[0])
+        elif t.trivially_assignable_equals(scope, want, candidate_signature(scope, x)) is not True:
+            return _Use(False)
+    return _Use(True, tuple(needs))
+
+
+def __has_equality(spec, use: _Use, ok: frozenset[str], providers: list[_Provider],
+                   resolver: g.Resolver) -> bool:
+    """Does `spec` have equality? The calls a derived instance makes on it
+    resolve, and every generic instance they reach has what its `where`
+    asks for; or it is an enum deriving in this pass, assumed to while the
+    fixpoint runs: its instance, once it exists, takes any value of it."""
+    if spec is None:
+        return False
+    if isinstance(spec, t.EnumSpec) and spec.root_name in ok:
+        return True
+    return use.fits and all(__instance_exists(need, ok, providers, resolver) for need in use.needs)
 
 
 def derived_instance(st: s.EnumStatement) -> s.TraitInstanceStatement:
-    """The synthesised `BasicEquality<st>` instance for a derivable enum, or
-    for a level of one: that one forwards to its root's."""
-    if st._root_name is not None and st._root_name != st.name:
-        return __synthesise_level(st, st._root_name)
+    """The synthesised `BasicEquality<st>` instance for a derivable enum."""
     return __synthesise(st, __collect_leaves(st, []))
-
-
-def __levels(st: s.EnumStatement) -> list[s.EnumStatement]:
-    """Every level below the root, depth first in declaration order."""
-    return [x for v in st.variants for x in [v] + __levels(v)]
 
 
 class _Provider(NamedTuple):
@@ -201,29 +273,17 @@ def __providers(statements, resolver: g.Resolver) -> "list[_Provider] | None":
     return out
 
 
-def __has_equality(spec, ok: frozenset[str], providers: list[_Provider],
-                   resolver: g.Resolver) -> bool:
-    """Does equality exist for `spec`? Some provider covers exactly it —
-    binding the provider's own params makes its pattern `spec`, compared by
-    unique id, so each level of an enum is a type of its own — and every
-    `where` holds for the binding; or it is a candidate enum, assumed to
-    while the fixpoint runs. A level of a source enum has equality when its
-    root does: it derives its own instance from the root's."""
+def __instance_exists(spec, ok: frozenset[str], providers: list[_Provider],
+                      resolver: g.Resolver) -> bool:
+    """Is there an instance for exactly `spec`, as `where BasicEquality<spec>`
+    asks? Some provider covers it — binding the provider's own params makes
+    its pattern `spec`, compared by unique id — and every `where` holds for
+    the binding; or it is an enum deriving in this pass, assumed to while the
+    fixpoint runs. A `where` is exact: a level of an enum is not its root."""
     if spec is None:
         return False
-    if isinstance(spec, t.EnumSpec) and spec.root_name in ok:
+    if isinstance(spec, t.EnumSpec) and spec.root_name in ok and not spec.path:
         return True
-    if __provided(spec, providers, ok, resolver):
-        return True
-    if (isinstance(spec, t.EnumSpec) and spec.path and not spec.type_params
-            and "$generic$" not in spec.root_name):
-        root = dataclasses.replace(spec, path=(), valid_leaf_names=frozenset(spec.all_leaf_names))
-        return __has_equality(root, ok, providers, resolver)
-    return False
-
-
-def __provided(spec, providers: list[_Provider], ok: frozenset[str], resolver: g.Resolver) -> bool:
-    """Some provider covers exactly `spec`, every `where` holding."""
     uid = spec.as_unique_id_str()
     if uid is None:
         return False
@@ -236,8 +296,8 @@ def __provided(spec, providers: list[_Provider], ok: frozenset[str], resolver: g
             return False
         return all(isinstance(w, t.ClassSpec) and len(w.type_params) == 1
                    and w.name.split("@")[0] == "System::BasicEquality"
-                   and __has_equality(t.substitute_placeholders(w.type_params[0], mapping, resolver),
-                                      ok, providers, resolver)
+                   and __instance_exists(t.substitute_placeholders(w.type_params[0], mapping, resolver),
+                                         ok, providers, resolver)
                    for w in p.wheres)
 
     return any(covered_by(p) for p in providers)
@@ -276,45 +336,6 @@ def __synthesise(st: s.EnumStatement, leaves: list) -> s.TraitInstanceStatement:
         trait_params=(), pattern=pattern, ambient=True,
         statements=[__eq_member(st, leaves, tag),
                     __hash_member(st, leaves, tag)])
-
-
-def __synthesise_level(st: s.EnumStatement, root_name: str) -> s.TraitInstanceStatement:
-    """`BasicEquality<Level>` forwarding to the root's: two values of a level
-    are equal exactly when they are equal as the root, and hash alike.
-
-        fun `==`(left: Pay1, right: Pay1): Bool
-          let wl: Payload = left
-          let wr: Payload = right
-          ret wl == wr
-        fun hashOf(value: Pay1): Int32
-          let wv: Payload = value
-          ret hashOf(wv)
-    """
-    lr = st.line_ref
-    tag = lr.hash6()
-    ns = st.name.rpartition("::")[0]
-    iname = f"{ns}::instance$eq{tag}" if ns else f"instance$eq{tag}"
-    pattern = t.NamedSpec(lr, "System::BasicEquality", (t.NamedSpec(lr, st.name),))
-
-    def widened(name: str, source: str) -> s.LetStatement:
-        return s.LetStatement(lr, f"{name}@{tag}", None, {}, (), __ref(lr, source),
-                              t.NamedSpec(lr, root_name))
-
-    eq = s.FunctionStatement(
-        lr, f"`==`@{tag}", None, {}, (),
-        __destructure(lr, [__param(lr, f"left@{tag}", st.name), __param(lr, f"right@{tag}", st.name)]),
-        e.BlockExpression(lr, [widened("wl", "left"), widened("wr", "right")],
-                          __call(lr, "`==`", __ref(lr, "wl"), __ref(lr, "wr")), tag=None),
-        t.BuiltinSpec(lr, "bool"))
-    hash_of = s.FunctionStatement(
-        lr, f"hashOf@{tag}", None, {}, (),
-        __destructure(lr, [__param(lr, f"value@{tag}", st.name)]),
-        e.BlockExpression(lr, [widened("wv", "value")],
-                          __call(lr, "hashOf", __ref(lr, "wv")), tag=None),
-        t.BuiltinSpec(lr, "int32"))
-    return s.TraitInstanceStatement(
-        lr, iname, st.imports, {"ambient": None}, (),
-        trait_params=(), pattern=pattern, ambient=True, statements=[eq, hash_of])
 
 
 def __ref(lr, name): return e.NamedExpression(lr, name)

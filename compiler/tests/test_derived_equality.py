@@ -51,3 +51,43 @@ fun main(): System::Int
         self.assertIn("BasicEquality", diagnostics, diagnostics)
 
 
+class TestALevelHasNoInstanceOfItsOwn(TestCase):
+    """An enum has one BasicEquality, at its root. A direct `==` on two Pay1s
+    takes Payload's, as any call takes a Pay1 where a Payload is wanted; but
+    a `where BasicEquality<T>` is exact: bound to Pay1 it asks for an
+    instance for Pay1, and there is none (#136)."""
+
+    _HEAD = """\
+namespace Main
+import System
+
+enum Payload
+  enum Pay1(p0: String)
+  enum Pay2(pTiny: Int)
+
+fun same<T>(a: T, b: T): Bool where BasicEquality<T>
+  ret a == b
+
+"""
+
+    def test_the_root_serves_a_direct_call_and_its_own_binding(self):
+        emitted, diagnostics = _errors(self._HEAD + """\
+fun main(): Int
+  let a: Pay1 = Pay1("x")
+  ret (a == a ? 0 : 1) + (same<Payload>(a, a) ? 0 : 2)
+""")
+        self.assertNotEqual("", emitted, diagnostics)
+
+    def test_a_where_bound_to_a_level_is_refused(self):
+        bodies = {
+            "explicit": "  ret same<Pay1>(a, a) ? 0 : 1\n",
+            "inferred": "  ret same(a, a) ? 0 : 1\n",
+            "in a tuple": "  let p: (:Pay1, :Int) = (a, 1)\n  ret p == p ? 0 : 1\n",
+        }
+        for name, body in bodies.items():
+            with self.subTest(name):
+                emitted, diagnostics = _errors(self._HEAD + "fun main(): Int\n  let a: Pay1 = Pay1(\"x\")\n" + body)
+                self.assertEqual("", emitted, "expected the compile to be refused")
+                self.assertIn("BasicEquality", diagnostics, diagnostics)
+
+

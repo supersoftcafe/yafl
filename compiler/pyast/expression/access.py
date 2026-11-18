@@ -111,74 +111,7 @@ def candidate_signature(resolver: g.Resolver, x: g.Resolved[s.DataStatement]) ->
     return xtype
 
 
-def _exact_instances(resolver: g.Resolver, expected_type: t.TypeSpec | None,
-                     candidates: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
-    """The instances of one interface member are not overloads of each other.
-    A call of `==` infers the interface's type argument from its arguments,
-    exactly as a call of a `where`-constrained generic does, and only an
-    instance for exactly that instantiation takes it: two Pay1s are
-    BasicEquality<Pay1>'s, never BasicEquality<Payload>'s, whose `==` would
-    also accept them — a level of an enum is a type of its own, and two
-    candidates that both accept would be ambiguous. A generic instance
-    qualifies when its pattern binds to exactly the instantiation. Arguments
-    that contradict each other leave no instance; while they imply nothing
-    yet, the member's candidates pass through."""
-    if not isinstance(expected_type, t.CallableSpec):
-        return candidates
-
-    def member_key(x: g.Resolved[s.DataStatement]) -> str | None:
-        if (x.scope != g.ResolvedScope.TRAIT or x.owner_class is None
-                or not isinstance(x.trait_scope, t.ClassSpec)
-                or len(x.trait_scope.type_params) != len(x.owner_class.type_params)):
-            return None
-        return f"{x.unique_name}|{x.owner_class.name}"
-
-    groups: dict[str, list[g.Resolved[s.DataStatement]]] = {}
-    for x in candidates:
-        key = member_key(x)
-        if key is not None:
-            groups.setdefault(key, []).append(x)
-    dropped: set[int] = set()
-    for group in groups.values():
-        if len(group) < 2:
-            continue
-        member = group[0].statement.get_type()
-        if not isinstance(member, t.CallableSpec):
-            continue
-        params = group[0].owner_class.type_params
-        inferred = inference.interface_arguments(member, expected_type, [p.name for p in params], resolver)
-        if inferred is None:
-            dropped.update(id(x) for x in group)
-            continue
-        if not inferred:
-            continue
-
-        def same_type(a: t.TypeSpec, b: t.TypeSpec) -> bool:
-            # Equivalence, as invariant type arguments use it: each holds the
-            # other. `Int | Int` is `Int`; `Pay1` is not `Payload`.
-            return a == b or (t.trivially_assignable_equals(resolver, a, b) is True
-                              and t.trivially_assignable_equals(resolver, b, a) is True)
-
-        def exact(x: g.Resolved[s.DataStatement]) -> bool:
-            for p, arg in zip(params, x.trait_scope.type_params):
-                want = inferred.get(p.name)
-                if want is None:
-                    continue
-                if x.instance_params:
-                    mapping = t.pattern_binding(arg, want, x.instance_params, resolver)
-                    if mapping is None or not same_type(t.substitute_placeholders(arg, mapping, resolver), want):
-                        return False
-                elif not same_type(arg, want):
-                    return False
-            return True
-        dropped.update(id(x) for x in group if not exact(x))
-    return [x for x in candidates if id(x) not in dropped]
-
-
 def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, candidates: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
-    if len(candidates) <= 1:
-        return candidates
-    candidates = _exact_instances(resolver, expected_type, candidates)
     if len(candidates) <= 1:
         return candidates
     # Partition by verdict: definite matches (True) win over undecided ones

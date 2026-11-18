@@ -101,7 +101,7 @@ class LetStatement(DataStatement):
         # A generic trait-instance let (`let [trait] _x<S,T>: … where Box<S,T>`)
         # carries a `where` clause that must be compiled. The generic scope
         # itself (S/T) is supplied by the caller via _initialiser_resolver
-        # (see compiler.__stmt_scope_resolver), so do NOT re-wrap here — that
+        # (see resolver.scope_resolver), so do NOT re-wrap here — that
         # would shadow each placeholder and make references ambiguous.
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
         dv, dv_glb, hints = self.default_value.compile(resolver, self._rhs_expected()) if self.default_value else (None, [], {})
