@@ -29,7 +29,10 @@ fun soleOf(datas: Bag<Found>) => singleOrNone(datas)
 # candidate returning a MEMBER of the expected union is still the winner.
 
 fun resolveOverloads(r, expected: Spec|None,
-                     candidates)
+                     candidates0)
+  if sizeAtMost(candidates0, 1)
+    ret Bag(candidates0)
+  let candidates = exactInstances(r, expected, candidates0)
   if sizeAtMost(candidates, 1)
     ret Bag(candidates)
   let survivors = partitionByVerdict(candidates, expected, r)
@@ -43,6 +46,102 @@ fun resolveOverloads(r, expected: Spec|None,
                                         r)
       ()          => survivors
     ()             => survivors
+
+# _exact_instances: the instances of one interface member are not overloads
+# of each other. A call of `==` infers the interface's type argument from its
+# arguments, exactly as a call of a `where`-constrained generic does, and only
+# an instance for exactly that instantiation takes it: two Pay1s are
+# BasicEquality<Pay1>'s, never BasicEquality<Payload>'s, whose `==` would also
+# accept them — a level of an enum is a type of its own, and two candidates
+# that both accept would be ambiguous. A generic instance qualifies when its
+# pattern binds to exactly the instantiation. Arguments that contradict each
+# other leave no instance; while they imply nothing yet, the member's
+# candidates pass through.
+fun exactInstances(r, expected: Spec|None, cs: List<Found>): List<Found> => match(expected)
+  (want: SCallable) => exactAmong(r, want, cs)
+  (o: Spec)         => cs
+  ()                => cs
+
+# Per member: what inference decided — None while it decides nothing (or
+# only one candidate is the member), else the inferred arguments, empty when
+# the arguments contradict each other.
+class [final] MemberVerdict(mvInferred: List<Binding>|None)
+
+fun exactAmong(r, want: SCallable, cs: List<Found>): List<Found>
+  let verdicts = fold(cs, Dict<String, MemberVerdict>(), (acc, x) => memberVerdictStep(acc, x, cs, want, r))
+  ret filter(cs, (x) => keepInstance(x, verdicts, r))
+
+fun memberKey(x: Found): String|None => match(x.fScope)
+  (tr: ScTrait) => match(x.fOwner)
+    (cls: PsClass) => match(x.fTraitScope)
+      (tsc: SClass) => sameLen(tsc.scParams, cls.cGens) ? x.fName + "|" + cls.cName : None
+      (o: Spec)     => None
+      ()            => None
+    (o: PStmt)     => None
+    ()             => None
+  (o: RScope)   => None
+
+fun memberVerdictStep(acc: Dict<String, MemberVerdict>, x: Found, cs: List<Found>,
+                      want: SCallable, r): Dict<String, MemberVerdict> => match(memberKey(x))
+  (key: String) => contains(acc, key)
+    ? acc
+    : put(acc, key, memberVerdict(x, sizeAtLeast(filter(cs, (y) => hasMemberKey(y, key)), 2), want, r))
+  ()            => acc
+
+fun hasMemberKey(y: Found, key: String): Bool => match(memberKey(y))
+  (k: String) => k == key
+  ()          => false
+
+fun memberVerdict(x: Found, shared: Bool, want: SCallable, r): MemberVerdict
+  if !shared
+    ret MemberVerdict(None)
+  ret match(stmtType(x.fStmt))
+    (member: SCallable) => match(x.fOwner)
+      (cls: PsClass) => decided(interfaceArguments(member, want, map(cls.cGens, (g2) => g2.genName), r))
+      (o: PStmt)     => MemberVerdict(None)
+      ()             => MemberVerdict(None)
+    (o: Spec)           => MemberVerdict(None)
+    ()                  => MemberVerdict(None)
+
+fun decided(inferred: List<Binding>|None): MemberVerdict => match(inferred)
+  (bs: List<Binding>) => isEmpty(bs) ? MemberVerdict(None) : MemberVerdict(bs)
+  ()                  => MemberVerdict(List<Binding>())
+
+fun keepInstance(x: Found, verdicts: Dict<String, MemberVerdict>, r): Bool => match(memberKey(x))
+  (key: String) => match(get(verdicts, key))
+    (v: MemberVerdict) => match(v.mvInferred)
+      (bs: List<Binding>) => !isEmpty(bs) && exactInstance(x, bs, r)
+      ()                  => true
+    ()                 => true
+  ()            => true
+
+fun exactInstance(x: Found, inferred: List<Binding>, r): Bool => match(x.fOwner)
+  (cls: PsClass) => match(x.fTraitScope)
+    (tsc: SClass) => zipFold(cls.cGens, tsc.scParams, true,
+                             (ok, g2, arg) => ok && exactArgument(arg, bindingOf(inferred, g2.genName), x, r))
+    (o: Spec)     => false
+    ()            => false
+  (o: PStmt)     => false
+  ()             => false
+
+fun exactArgument(arg: Spec, want: Spec|None, x: Found, r): Bool => match(want)
+  (w: Spec) => match(x.fInstanceParams)
+    (ips: List<String>) => isEmpty(ips) ? sameType(arg, w, r) : boundExactly(arg, w, ips, r)
+    ()                  => sameType(arg, w, r)
+  ()        => true
+
+fun boundExactly(arg: Spec, want: Spec, ips: List<String>, r): Bool => match(patternBinding(arg, want, ips, r))
+  (m: List<Binding>) => sameType(substitute(arg, m), want, r)
+  ()                 => false
+
+# Equivalence, as invariant type arguments use it: each holds the other.
+# `Int | Int` is `Int`; `Pay1` is not `Payload`.
+fun sameType(a: Spec, b: Spec, r): Bool
+  ret eqSpec(a, b) || (definitelyTrue(assignableEq(r, a, b)) && definitelyTrue(assignableEq(r, b, a)))
+
+fun definitelyTrue(b: Bool|None): Bool => match(b)
+  (x: Bool) => x
+  ()        => false
 
 # Bags, not Lists: the survivors are either narrowed to a sole candidate or
 # rendered by check_expr's ambiguity message, which does

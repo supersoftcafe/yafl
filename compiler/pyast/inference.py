@@ -114,6 +114,47 @@ def _unknown_argument_names(covariant: t.TypeSpec, actual: t.TypeSpec,
             for name in t.placeholder_names_in(entry.type)}
 
 
+def interface_arguments(member: t.CallableSpec, expected: t.CallableSpec,
+                        names: list[str], resolver: g.Resolver) -> dict[str, t.TypeSpec] | None:
+    """The interface's type arguments a call of one of its members implies,
+    inferred as a `where`-constrained generic's are: each argument whose type
+    the call already settles, merged into its declared parameter — widening
+    across arguments, so `(Pay1, Pay2)` gives their common level — then the
+    expected result, filling what the arguments left open. Only what binds to
+    a settled type is returned; a lambda argument, typed from this very
+    binding, says nothing. None when the arguments contradict each other
+    (`Int` and `Int32` for one parameter): no instantiation takes them. The
+    member's own placeholders are `names`."""
+    bindings: dict[str, t.TypeSpec | None] = {n: None for n in names}
+
+    def settled(spec: t.TypeSpec | None) -> bool:
+        return (spec is not None and not t.contains_named_spec(spec)
+                and not t.has_free_placeholders(spec, resolver)
+                and not t.has_missing_arguments(spec, resolver))
+
+    declared = t.without_callable_params(member.parameters)
+    actual = expected.parameters
+    if isinstance(declared, t.TupleSpec) and isinstance(actual, t.TupleSpec):
+        binding = t.bind_tuple_entries(declared.entries, [en.name for en in actual.entries])
+        if binding is not None:
+            for entry, b in zip(declared.entries, binding):
+                if b is None or entry.type is None or isinstance(entry.type, t.CallableSpec):
+                    continue
+                arg = actual.entries[b].type
+                if not settled(arg):
+                    continue
+                _m, learned, errors = t.merge(entry.type, arg, bindings, resolver, widen_levels=True)
+                if errors:
+                    return None
+                bindings = learned
+    if member.result is not None and expected.result is not None and settled(expected.result):
+        _r, learned, errors = t.merge(expected.result, member.result, bindings, resolver,
+                                      widen_levels=True, callee_left=False)
+        if not errors:
+            bindings = learned
+    return {n: spec for n, spec in bindings.items() if spec is not None and settled(spec)}
+
+
 def _known(spec: t.TypeSpec | None, resolver: g.Resolver) -> bool:
     """An argument's type is known: present, resolved, and holding no hole."""
     return (spec is not None and spec.is_concrete() and not t.has_free_placeholders(spec, resolver)

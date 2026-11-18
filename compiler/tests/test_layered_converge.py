@@ -22,6 +22,7 @@ from pathlib import Path
 
 import compiler as c
 import pyast.resolver as g
+import pyast.statement as s
 from tests.astdump import dump
 from tests.testutil import stdlib_files, stdlib_unit_name
 from tests.testutil import TimedTestCase as TestCase
@@ -136,3 +137,24 @@ class TestLayeredConverge(TestCase):
                                  (dump(self.lib_converged) + dump(app)).splitlines())
                 self.assertTrue(merged == self.lib_converged + app,
                                 f"{name}: trees differ in a field the dump omits")
+
+    def test_a_level_from_a_layer_beneath(self):
+        # Whether an enum derives equality must not depend on where the enum
+        # it holds a level of was declared. Payload converges in a layer of
+        # its own beneath Host, as a library's enum would; Host's field is a
+        # Pay1, so Host derives only if Pay1 has equality — its own derived
+        # instance, never Payload's.
+        middle = c.Input("namespace Lib\nimport System\n"
+                         "enum Payload\n  enum Pay1(p0: String)\n  enum Pay2(pTiny: Int)\n",
+                         "lib.yafl")
+        top = c.Input("namespace Main\nimport System\nimport Lib\n"
+                      "enum Host\n  enum Hold(hPay: Pay1)\n  enum Empty1()\n"
+                      "fun main(): System::Int\n  ret 0\n", "prog.yafl")
+        merged, _, _ = _CONVERGE(_parsed(self.lib + [middle, top]))
+        lib_layer, _, _ = _CONVERGE(_parsed([middle]), self.base)
+        app, _, _ = _CONVERGE(_parsed([top]), g.ResolverRoot(lib_layer, self.base))
+        self.assertEqual(dump(merged).splitlines(),
+                         (dump(self.lib_converged) + dump(lib_layer) + dump(app)).splitlines())
+        self.assertTrue(merged == self.lib_converged + lib_layer + app)
+        derived = [st.name for st in app if isinstance(st, s.TraitInstanceStatement)]
+        self.assertTrue(derived, "Host derived no equality")

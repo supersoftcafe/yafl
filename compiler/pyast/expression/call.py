@@ -65,8 +65,9 @@ def _type_str(ts: t.TypeSpec | None) -> str:
     if isinstance(ts, t.EnumSpec):
         # Without this an enum rendered as "EnumSpec" — the internal class
         # name this function exists to avoid. List/Option/Result are all
-        # enums, so it was the common case.
-        return _spec_name(ts.root_name, ts.type_params)
+        # enums, so it was the common case. A level is named as itself:
+        # `Pay1`, never its root `Payload` — they are different types.
+        return _spec_name(ts.path[-1] if ts.path else ts.root_name, ts.type_params)
     if isinstance(ts, t.GenericPlaceholderSpec):
         return g.bare_name(ts.name)
     return type(ts).__name__

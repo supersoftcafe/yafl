@@ -70,7 +70,56 @@ fun deDerivable(statements, ps: List<DeProvider>, r)
                                    List()))
   if any(statements, deUntypedEnum) || any(cands.leaves, deLeavesUnresolved)
     ret List()
-  ret deFixpoint(cands.names, cands.leaves, ps, r)
+  let roots = deFixpoint(cands.names, cands.leaves, ps, r)
+  ret match(foldSome(statements, List<String>(), (acc, st) => deLevelsOf(acc, st, roots, ps, r)))
+    (levels: List<String>) => concat(roots, levels)
+    ()                     => List()
+
+# Every LEVEL of an enum that has equality derives its own instance — a level
+# is a type of its own, so BasicEquality<Payload> is no instance for Pay1 —
+# unless one is written for it. It forwards to the root's. None while a
+# level's layout is not assigned yet.
+fun deLevelsOf(acc: List<String>, st: PStmt, roots: List<String>,
+               ps: List<DeProvider>, r): List<String>|None => match(st)
+  (e2: PsEnum) => isEmpty(e2.eGens) && !contains(e2.eName, "$generic$")
+                  && deRootHasEquality(e2, roots, ps, r)
+    ? foldSome(deAllLevels(e2.eVariants), acc, (a, lv) => deLevelStep(a, lv, roots, ps, r))
+    : acc
+  (o: PStmt)   => acc
+
+fun deRootHasEquality(e2: PsEnum, roots: List<String>, ps: List<DeProvider>, r): Bool
+  if contains(roots, e2.eName)
+    ret true
+  ret match(e2.eSpec)
+    (sp: Spec) => deHasEquality(sp, List(), ps, r)
+    ()         => false
+
+# Every level below the root, depth first in declaration order.
+fun deAllLevels(vs: List<PStmt>): List<PStmt> =>
+  fold(vs, List<PStmt>(), (acc, v) => concat(append(acc, v), deSubLevels(v)))
+
+fun deSubLevels(v: PStmt): List<PStmt> => match(v)
+  (e2: PsEnum) => deAllLevels(e2.eVariants)
+  (o: PStmt)   => List<PStmt>()
+
+fun deLevelStep(acc: List<String>, lv: PStmt, roots: List<String>,
+                ps: List<DeProvider>, r): List<String>|None => match(lv)
+  (e2: PsEnum) => match(e2.eSpec)
+    (sp: Spec) => deLevelSpec(acc, e2.eName, sp, roots, ps, r)
+    ()         => None
+  (o: PStmt)   => acc
+
+fun deLevelSpec(acc: List<String>, name: String, sp: Spec, roots: List<String>,
+                ps: List<DeProvider>, r): List<String>|None
+  if !deIsLevel(sp)
+    ret None
+  if deProvided(sp, roots, ps, r)
+    ret acc
+  ret append(acc, name)
+
+fun deIsLevel(sp: Spec): Bool => match(sp)
+  (e3: SEnum) => !isEmpty(e3.sePath)
+  (o: Spec)   => false
 
 fun deUntypedEnum(st: PStmt): Bool => match(st)
   (e2: PsEnum) => isEmpty(e2.eGens) && !contains(e2.eName, "$generic$") && deNoSpec(e2.eSpec)
@@ -89,7 +138,11 @@ fun deFieldUnresolved(f: PStmt): Bool => match(f)
   (o: PStmt) => false
 
 # The synthesised BasicEquality<e> instance for a derivable enum.
-fun derivedInstance(e: PsEnum) => match(deLeaves(e, List()))
+fun derivedInstance(e: PsEnum) => match(e.eRootName)
+  (root: String) => root != e.eName ? deSynthesiseLevel(e, root) : deDerivedRoot(e)
+  ()             => deDerivedRoot(e)
+
+fun deDerivedRoot(e: PsEnum) => match(deLeaves(e, List()))
   (dl: DeLeaves) => deSynthesise(e, dl)
   ()             => deSynthesise(e, DeLeaves(List(), List()))
 
@@ -135,9 +188,20 @@ fun deAddAll(ps: List<Spec>, r, acc: List<DeProvider>): List<DeProvider>|None =>
 fun deAdd(iface, params: List<String>, wheres: List<Spec>, r,
           acc: List<DeProvider>): List<DeProvider>|None => match(iface)
   (c: SClass) => match(deReachesEquality(c.scName, r))
-    (b: Bool) => b ? deProvided(c, params, wheres, acc) : acc
+    (b: Bool) => b ? deProvidedIfKnown(c, params, wheres, acc) : acc
     ()        => None
   (o: Spec)   => None
+
+# The type it covers, or a `where` it needs, still a name: which type it
+# provides for is not known yet. Read as covering nothing, a written
+# `BasicEquality<Payload>` let Payload derive a second instance beside it
+# (#136: a program converged above a settled stdlib met its own instance
+# while the argument was a name).
+fun deProvidedIfKnown(c: SClass, params: List<String>, wheres: List<Spec>,
+                      acc: List<DeProvider>): List<DeProvider>|None
+  if containsNamedSpec(c) || any(wheres, containsNamedSpec)
+    ret None
+  ret deProvided(c, params, wheres, acc)
 
 fun deProvided(c: SClass, params: List<String>, wheres: List<Spec>,
                acc: List<DeProvider>) => match(head(c.scParams))
@@ -178,9 +242,22 @@ fun deBaseName(name)
 # provider's own params makes its pattern `sp` (compared by unique id, so
 # enum views stay one type) and every `where` holds for the binding — or it
 # is a candidate enum, assumed to while the fixpoint runs.
+# Does equality exist for sp? Some provider covers exactly it — each level of
+# an enum is a type of its own — or it is a candidate enum, assumed to while
+# the fixpoint runs. A level of a source enum has equality when its root
+# does: it derives its own instance from the root's.
 fun deHasEquality(sp, ok: List<String>, ps: List<DeProvider>, r): Bool
-  if deAssumed(sp, ok)
+  if deAssumed(sp, ok) || deProvided(sp, ok, ps, r)
     ret true
+  ret match(sp)
+    (e2: SEnum) => !isEmpty(e2.sePath) && isEmpty(e2.seParams) && !contains(e2.seRoot, "$generic$")
+                   && deHasEquality(SEnum(e2.seRoot, e2.seAllLeaves, e2.seAllLeaves, e2.seParams,
+                                          e2.seLine, List()),
+                                    ok, ps, r)
+    (o: Spec)   => false
+
+# Some provider covers exactly sp, every `where` holding.
+fun deProvided(sp, ok: List<String>, ps: List<DeProvider>, r): Bool
   let u = uid(sp)
   ret u != "" && any(ps, (p) => deCovers(p, sp, u, ok, ps, r))
 
@@ -301,6 +378,39 @@ fun deSynthesise(e2: PsEnum, dl: DeLeaves)
                       List(),
                       list2(deEqMember(e2, dl), deHashMember(e2, dl)),
                       lr, e2.eImports)
+
+# BasicEquality<Level> forwarding to the root's: two values of a level are
+# equal exactly when they are equal as the root, and hash alike.
+#
+#     fun `==`(left: Pay1, right: Pay1): Bool
+#       let wl: Payload = left
+#       let wr: Payload = right
+#       ret wl == wr
+#     fun hashOf(value: Pay1): Int32
+#       let wv: Payload = value
+#       ret hashOf(wv)
+fun deSynthesiseLevel(e2: PsEnum, root: String)
+  let lr = e2.pseLine
+  let ns = deNamespaceOf(e2.eName)
+  let iname = ns == "" ? "instance$eq" + deTag(lr) : ns + "::instance$eq" + deTag(lr)
+  let pattern = SNamed("System::BasicEquality",
+                       list1(SNamed(e2.eName, List(), lr)), lr)
+  let eq = PsFun(hashName("`==`", lr), List(), List(),
+                 funParamsStmt(list2(deParam("left", e2.eName, lr), deParam("right", e2.eName, lr)), lr),
+                 PeBlock(list2(deWidened("wl", "left", root, lr), deWidened("wr", "right", root, lr)),
+                         deCall2("`==`", deRef("wl", lr), deRef("wr", lr), lr), "", lr),
+                 SBuiltin("bool", lr), List(), lr)
+  let hashOf = PsFun(hashName("hashOf", lr), List(), List(),
+                     funParamsStmt(list1(deParam("value", e2.eName, lr)), lr),
+                     PeBlock(list1(deWidened("wv", "value", root, lr)),
+                             deCall1("hashOf", deRef("wv", lr), lr), "", lr),
+                     SBuiltin("int32", lr), List(), lr)
+  ret PsTraitInstance(iname, List(), true, List(), pattern,
+                      List(), list2(eq, hashOf), lr, e2.eImports)
+
+fun deWidened(name, source, root, lr: PLine) =>
+  PsLet(hashName(name, lr), List(), List(), SNamed(root, List(), lr), deRef(source, lr),
+        "", List(), lr)
 
 fun deTag(lr: PLine) => hash6(lr.plFile, lr.plLine, lr.plCol)
 

@@ -185,6 +185,56 @@ fun argKnown(ix: Int, actual: List<SEntry>, r): Bool
       ()         => false
     ()          => false
 
+# interface_arguments: the interface's type arguments a call of one of its
+# members implies, inferred as a `where`-constrained generic's are: each
+# argument whose type the call already settles, merged into its declared
+# parameter — widening across arguments, so (Pay1, Pay2) gives their common
+# level — then the expected result, filling what the arguments left open. Only
+# what binds to a settled type is returned; a lambda argument, typed from this
+# very binding, says nothing. None when the arguments contradict each other
+# (Int and Int32 for one parameter): no instantiation takes them. The member's
+# own placeholders are `names`.
+fun interfaceArguments(member: SCallable, want: SCallable, names: List<String>, r): List<Binding>|None
+  let declared = withoutCallableParams(member.scParams2)
+  ret match(argumentBinds(declared, want.scParams2, map(names, (n) => MBind(n, None)), r))
+    (bs: List<MBind>) => filter(learnedBindings(resultFilled(member, want, bs, r), List()),
+                                (b) => settledSpec(b.bSpec, r))
+    ()                => None
+
+fun argumentBinds(declared: Spec, actual: Spec, bs: List<MBind>, r): List<MBind>|None => match(declared, actual)
+  (dt: STuple, at: STuple) => match(bindTupleEntries(dt.stEntries, map(at.stEntries, (e) => e.seName)))
+    (b: List<Int>) => zipFold<SEntry, Int, List<MBind>|None>(dt.stEntries, b, bs,
+                              (acc: List<MBind>|None, d: SEntry, ix: Int) => argumentStep(acc, d, ix, at.stEntries, r))
+    ()             => bs
+  ()                       => bs
+
+fun argumentStep(acc: List<MBind>|None, d: SEntry, ix: Int, actual: List<SEntry>, r): List<MBind>|None => match(acc)
+  (bs: List<MBind>) => ix < 0 || declaresCallable(d) ? acc : argumentMerged(bs, d.seType, argAt(ix, actual), r)
+  ()                => None
+
+fun argAt(ix: Int, actual: List<SEntry>): Spec|None => match(head(drop(actual, ix)))
+  (e: SEntry) => e.seType
+  ()          => None
+
+fun argumentMerged(bs: List<MBind>, param: Spec|None, arg: Spec|None, r): List<MBind>|None => match(param)
+  (p: Spec) => match(arg)
+    (a: Spec) => settledSpec(a, r) ? mergedOrNone(mergeSpecsWidening(p, a, bs, true, r)) : bs
+    ()        => bs
+  ()        => bs
+
+fun mergedOrNone(m: MergeOut): List<MBind>|None => isEmpty(m.moErrs) ? m.moBinds : None
+
+fun resultFilled(member: SCallable, want: SCallable, bs: List<MBind>, r): List<MBind> => match(member.scResult)
+  (mr: Spec) => match(want.scResult)
+    (wr: Spec) => settledSpec(wr, r) ? resultMergedOr(mergeSpecsWidening(wr, mr, bs, false, r), bs) : bs
+    ()         => bs
+  ()         => bs
+
+fun resultMergedOr(m: MergeOut, bs: List<MBind>): List<MBind> => isEmpty(m.moErrs) ? m.moBinds : bs
+
+fun settledSpec(sp: Spec, r): Bool
+  ret !containsNamedSpec(sp) && !hasFreePlaceholders(sp, r) && !hasMissingArguments(sp, r)
+
 # _arguments_known: every argument whose type this call's binding does not
 # itself decide is known. A lambda argument's type is derived from the binding,
 # so it never counts; an argument left out (a default, or the checker's arity

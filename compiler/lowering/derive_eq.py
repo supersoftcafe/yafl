@@ -33,6 +33,8 @@ from the enum's own), so the AST dumps and emitted C stay byte-comparable.
 """
 from __future__ import annotations
 
+import dataclasses
+
 import pyast.expression as e
 import pyast.statement as s
 import pyast.typespec as t
@@ -97,12 +99,38 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
                        for _leaf, fields in candidates[name] for let in fields):
                 ok.discard(name)
                 changed = True
-    return frozenset(ok)
+    roots = frozenset(ok)
+
+    # Every LEVEL of an enum that has equality derives its own instance — a
+    # level is a type of its own, so BasicEquality<Payload> is no instance
+    # for Pay1 — unless one is written for it. It forwards to the root's.
+    levels: set[str] = set()
+    for st in statements:
+        if not (isinstance(st, s.EnumStatement) and not st.type_params
+                and "$generic$" not in st.name):
+            continue
+        if st.name not in roots and not __has_equality(st.get_type(), frozenset(), providers, resolver):
+            continue
+        for level in __levels(st):
+            spec = level.get_type()
+            if spec is None or not spec.path:
+                return frozenset()          # its layout not assigned yet
+            if not __provided(spec, providers, roots, resolver):
+                levels.add(level.name)
+    return roots | levels
 
 
 def derived_instance(st: s.EnumStatement) -> s.TraitInstanceStatement:
-    """The synthesised `BasicEquality<st>` instance for a derivable enum."""
+    """The synthesised `BasicEquality<st>` instance for a derivable enum, or
+    for a level of one: that one forwards to its root's."""
+    if st._root_name is not None and st._root_name != st.name:
+        return __synthesise_level(st, st._root_name)
     return __synthesise(st, __collect_leaves(st, []))
+
+
+def __levels(st: s.EnumStatement) -> list[s.EnumStatement]:
+    """Every level below the root, depth first in declaration order."""
+    return [x for v in st.variants for x in [v] + __levels(v)]
 
 
 class _Provider(NamedTuple):
@@ -142,6 +170,13 @@ def __providers(statements, resolver: g.Resolver) -> "list[_Provider] | None":
         if reaches is None:
             return False
         if reaches:
+            # The type it covers, or a `where` it needs, still a name: which
+            # type it provides for is not known yet. Read as covering nothing,
+            # a written `BasicEquality<Payload>` let Payload derive a second
+            # instance beside it (#136: a program converged above a settled
+            # stdlib met its own instance while the argument was a name).
+            if t.contains_named_spec(iface) or any(t.contains_named_spec(w) for w in wheres):
+                return False
             if iface.type_params:
                 out.append(_Provider(params, iface.type_params[0], wheres))
             elif "$generic$" in iface.name:
@@ -168,14 +203,27 @@ def __providers(statements, resolver: g.Resolver) -> "list[_Provider] | None":
 
 def __has_equality(spec, ok: frozenset[str], providers: list[_Provider],
                    resolver: g.Resolver) -> bool:
-    """Does equality exist for `spec`? Some provider covers it — binding the
-    provider's own params makes its pattern `spec` (compared by unique id,
-    so enum views stay one type) and every `where` holds for the binding —
-    or it is a candidate enum, assumed to while the fixpoint runs."""
+    """Does equality exist for `spec`? Some provider covers exactly it —
+    binding the provider's own params makes its pattern `spec`, compared by
+    unique id, so each level of an enum is a type of its own — and every
+    `where` holds for the binding; or it is a candidate enum, assumed to
+    while the fixpoint runs. A level of a source enum has equality when its
+    root does: it derives its own instance from the root's."""
     if spec is None:
         return False
     if isinstance(spec, t.EnumSpec) and spec.root_name in ok:
         return True
+    if __provided(spec, providers, ok, resolver):
+        return True
+    if (isinstance(spec, t.EnumSpec) and spec.path and not spec.type_params
+            and "$generic$" not in spec.root_name):
+        root = dataclasses.replace(spec, path=(), valid_leaf_names=frozenset(spec.all_leaf_names))
+        return __has_equality(root, ok, providers, resolver)
+    return False
+
+
+def __provided(spec, providers: list[_Provider], ok: frozenset[str], resolver: g.Resolver) -> bool:
+    """Some provider covers exactly `spec`, every `where` holding."""
     uid = spec.as_unique_id_str()
     if uid is None:
         return False
@@ -228,6 +276,45 @@ def __synthesise(st: s.EnumStatement, leaves: list) -> s.TraitInstanceStatement:
         trait_params=(), pattern=pattern, ambient=True,
         statements=[__eq_member(st, leaves, tag),
                     __hash_member(st, leaves, tag)])
+
+
+def __synthesise_level(st: s.EnumStatement, root_name: str) -> s.TraitInstanceStatement:
+    """`BasicEquality<Level>` forwarding to the root's: two values of a level
+    are equal exactly when they are equal as the root, and hash alike.
+
+        fun `==`(left: Pay1, right: Pay1): Bool
+          let wl: Payload = left
+          let wr: Payload = right
+          ret wl == wr
+        fun hashOf(value: Pay1): Int32
+          let wv: Payload = value
+          ret hashOf(wv)
+    """
+    lr = st.line_ref
+    tag = lr.hash6()
+    ns = st.name.rpartition("::")[0]
+    iname = f"{ns}::instance$eq{tag}" if ns else f"instance$eq{tag}"
+    pattern = t.NamedSpec(lr, "System::BasicEquality", (t.NamedSpec(lr, st.name),))
+
+    def widened(name: str, source: str) -> s.LetStatement:
+        return s.LetStatement(lr, f"{name}@{tag}", None, {}, (), __ref(lr, source),
+                              t.NamedSpec(lr, root_name))
+
+    eq = s.FunctionStatement(
+        lr, f"`==`@{tag}", None, {}, (),
+        __destructure(lr, [__param(lr, f"left@{tag}", st.name), __param(lr, f"right@{tag}", st.name)]),
+        e.BlockExpression(lr, [widened("wl", "left"), widened("wr", "right")],
+                          __call(lr, "`==`", __ref(lr, "wl"), __ref(lr, "wr")), tag=None),
+        t.BuiltinSpec(lr, "bool"))
+    hash_of = s.FunctionStatement(
+        lr, f"hashOf@{tag}", None, {}, (),
+        __destructure(lr, [__param(lr, f"value@{tag}", st.name)]),
+        e.BlockExpression(lr, [widened("wv", "value")],
+                          __call(lr, "hashOf", __ref(lr, "wv")), tag=None),
+        t.BuiltinSpec(lr, "int32"))
+    return s.TraitInstanceStatement(
+        lr, iname, st.imports, {"ambient": None}, (),
+        trait_params=(), pattern=pattern, ambient=True, statements=[eq, hash_of])
 
 
 def __ref(lr, name): return e.NamedExpression(lr, name)

@@ -1,0 +1,104 @@
+# Equality on the LEVELS of an enum. A level (`Pay1` of `Payload`) is a type
+# of its own: an instance for one level is never an instance for another. A
+# call of `==` infers its interface's type argument from its arguments, as a
+# `where`-constrained generic does, and only the instance for exactly that
+# type takes it — instances are never weighed against each other.
+#
+# Converging libraries in layers (#136) found the first of these: a written
+# `BasicEquality<Payload>` was read, for a pass, while its argument was still
+# a name, so the enum derived a second instance beside it and every `==` on
+# a Payload was ambiguous.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::EnumLevelEquality::AWrittenInstanceStands
+
+import System
+import System::Test
+
+enum Payload
+  enum Pay1(p0: String)
+  enum Pay2(pTiny: Int)
+
+# Every two Payloads are equal: proof that this instance, not a derived one,
+# is the one in use.
+instance [ambient] BasicEquality<Payload>
+  fun `==`(left: Payload, right: Payload): Bool
+    ret true
+  fun hashOf(value: Payload): Int32
+    ret 0i32
+
+fun program(): Int
+  let a: Payload = Pay1("x")
+  let b: Payload = Pay2(1)
+  ret a == b ? 0 : 1
+
+fun [test("a written instance stands")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::EnumLevelEquality::EachInstanceServesItsOwnLevel
+
+import System
+import System::Test
+
+enum Payload
+  enum Pay1(p0: String)
+  enum Pay2(pTiny: Int)
+
+# Payload's instance says no two Payloads are equal; Pay1's compares.
+instance [ambient] BasicEquality<Payload>
+  fun `==`(left: Payload, right: Payload): Bool
+    ret false
+  fun hashOf(value: Payload): Int32
+    ret 0i32
+
+instance [ambient] BasicEquality<Pay1>
+  fun `==`(left: Pay1, right: Pay1): Bool
+    ret left.p0 == right.p0
+  fun hashOf(value: Pay1): Int32
+    ret 1i32
+
+fun program(): Int
+  let a: Pay1 = Pay1("x")
+  let b: Pay1 = Pay1("x")
+  let wa: Payload = a
+  let wb: Payload = b
+  # Two Pay1s are compared as Pay1s; the same values as Payloads, as Payloads.
+  ret (a == b ? 0 : 1) + (wa == wb ? 10 : 0)
+
+fun [test("each instance serves its own level")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::EnumLevelEquality::EveryLevelDerives
+
+import System
+import System::Test
+
+# No instance is written: every level of Payload derives its own, so
+# BasicEquality<Pay1> exists for generic code and inside a tuple, and Host —
+# whose field is a Pay1 — derives too.
+enum Payload
+  enum Pay1(p0: String)
+  enum Pay2(pTiny: Int)
+
+enum Host
+  enum Hold(hPay: Pay1)
+  enum Empty1()
+
+fun same<T>(a: T, b: T): Bool where BasicEquality<T>
+  ret a == b
+
+fun program(): Int
+  let a: Pay1 = Pay1("x")
+  let b: Pay1 = Pay1("y")
+  let pair: (:Pay1, :Int) = (a, 1)
+  let other: (:Pay1, :Int) = (b, 1)
+  ret (same<Pay1>(a, a) ? 0 : 1) + (same<Pay1>(a, b) ? 2 : 0)
+    + (pair == pair ? 0 : 4) + (pair == other ? 8 : 0)
+    + (Hold(a) == Hold(a) ? 0 : 16) + (Hold(a) == Hold(b) ? 32 : 0)
+
+fun [test("every level derives")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
