@@ -44,13 +44,18 @@ import System
 import System::Containers
 import System::Test
 
-instance [ambient]<T> Show<List<T>> where Show<T>
-  fun show(value: List<T>): String
+# The interface is this program's own: `Show<List<T>>` here would be an
+# orphan, since both Show and List belong to System (#136).
+interface Describe<T>
+  fun describe(value: T): String
+
+instance [ambient]<T> Describe<List<T>> where Show<T>
+  fun describe(value: List<T>): String
     ret fold(value, "", (acc: String, x: T) => acc + show(x))
 
 fun program(): Int
   let l = prepend(1, prepend(2, List<Int>()))
-  ret show(l) == "12" ? 0 : 1
+  ret describe(l) == "12" ? 0 : 1
 
 fun [test("constrained ambient")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")

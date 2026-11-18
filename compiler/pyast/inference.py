@@ -109,12 +109,32 @@ def _unknown_argument_names(covariant: t.TypeSpec, actual: t.TypeSpec,
     binding = t.bind_tuple_entries(covariant.entries, [en.name for en in actual.entries])
     if binding is None:
         return set()
-    def known(spec: t.TypeSpec | None) -> bool:
-        return (spec is not None and spec.is_concrete() and not t.has_free_placeholders(spec, resolver)
-                and not t.has_missing_arguments(spec, resolver))
     return {name for entry, b in zip(covariant.entries, binding)
-            if b is None or not known(actual.entries[b].type)
+            if b is None or not _known(actual.entries[b].type, resolver)
             for name in t.placeholder_names_in(entry.type)}
+
+
+def _known(spec: t.TypeSpec | None, resolver: g.Resolver) -> bool:
+    """An argument's type is known: present, resolved, and holding no hole."""
+    return (spec is not None and spec.is_concrete() and not t.has_free_placeholders(spec, resolver)
+            and not t.has_missing_arguments(spec, resolver))
+
+
+def _arguments_known(declared: t.CallableSpec, expected: t.CallableSpec,
+                     resolver: g.Resolver) -> bool:
+    """Every argument whose type this call's binding does not itself decide is
+    known. A lambda argument's type is derived from the binding, so it never
+    counts; an argument left out (a default, or the checker's arity error) has
+    nothing to wait for."""
+    params, actual = declared.parameters, expected.parameters
+    if not isinstance(params, t.TupleSpec) or not isinstance(actual, t.TupleSpec):
+        return True
+    binding = t.bind_tuple_entries(params.entries, [en.name for en in actual.entries])
+    if binding is None:
+        return True
+    return all(b is None or isinstance(entry.type, t.CallableSpec)
+               or _known(actual.entries[b].type, resolver)
+               for entry, b in zip(params.entries, binding))
 
 
 def _infer_type_params(stmt: s.Statement, declared: t.CallableSpec,
@@ -234,6 +254,19 @@ def use_site_type_params(stmt: s.Statement,
     # contradiction takes the fresh binding.
     prior = (dict(zip((p.name for p in stmt_type_params), supplied))
              if len(supplied) == len(stmt_type_params) else {})
+    # An unbound param is written as its own placeholder, to be read as "not
+    # bound yet" next pass. Inside its own declaration (a recursive use) that
+    # placeholder RESOLVES — it is the enclosing generic's param — and reads
+    # as a complete answer that latches: `depth(Wrap<T>(x), n - 1)` stayed
+    # `depth<T>` once an early pass, its second argument still unknown,
+    # bound nothing (#136). While an argument is unknown that answer is a
+    # guess, so nothing is decided; once every argument is known, a param
+    # they still leave unbound IS the caller's own — recursion at the same
+    # type — and the placeholder is the answer.
+    if (not _arguments_known(declared, expected_type, resolver)
+            and any(p.name not in mapping and p.name not in prior
+                    and not t.has_free_placeholders(p.type, resolver) for p in stmt_type_params)):
+        return supplied
     def bound(p) -> t.TypeSpec:
         fresh = mapping.get(p.name, p.type)
         merged, _b, errors = t.merge(prior.get(p.name), fresh, {}, resolver, widen_levels=True)

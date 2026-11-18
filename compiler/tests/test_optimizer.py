@@ -272,7 +272,7 @@ fun main(): System::Int
         including the RuntimeInvoke side-effect — because the target StackVar was unread.
         The fix: only eliminate Moves whose source has no side effects.
         """
-        content = """namespace System
+        content = """namespace Main
 import System
 fun main(): System::Int where BasicMath<System::Int>
     print("Hello")

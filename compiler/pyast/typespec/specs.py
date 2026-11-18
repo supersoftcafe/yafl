@@ -526,19 +526,22 @@ class EnumSpec(TypeSpec):
         return self.holds(other) and other.path != self.path
 
     def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
-        # Snap all_fields to the latest canonical version stored on the
-        # source EnumStatement. Cached EnumSpec instances inside
-        # let.declared_type / function-param types thus stay fresh as
-        # the iterative compile loop refines field types from
-        # NamedSpec → concrete. The line_ref is preserved so error
-        # messages still point at the use site. Walking all_fields here
-        # would recurse infinitely on self-referential enums.
-        types = resolver.find_type(self.root_name)
-        if len(types) == 1:
-            target = types[0].statement
-            if isinstance(target, s.EnumStatement) and target._enum_spec is not None:
-                canonical = target._enum_spec
-        return self, []
+        # The type ARGUMENTS keep compiling, exactly as a ClassSpec's do. A
+        # written `Box<A>` becomes this spec on the pass `Box` resolves, its
+        # arguments compiled once then; one naming a type not settled yet
+        # (an alias still resolving down its chain) must settle on a later
+        # pass, or it latches as the raw name. Unchanged arguments return
+        # `self`, so a settled spec keeps its identity. The fields are not
+        # walked: they derive from the declaration, and walking them here
+        # would recurse forever on a self-referential enum.
+        if not self.type_params:
+            return self, []
+        compiled = [tp.compile(resolver) for tp in self.type_params]
+        type_params = tuple(spec for spec, _ in compiled)
+        globals = [x for _, glb in compiled for x in glb]
+        if all(a is b for a, b in zip(type_params, self.type_params)):
+            return self, globals
+        return dataclasses.replace(self, type_params=type_params), globals
 
     def check(self, resolver: g.Resolver) -> list[Error]:
         # Field types are checked at their DECLARATION (the enum
@@ -788,7 +791,19 @@ def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
         if not (isinstance(m, EnumSpec) and '@' in m.root_name):
             return False
         return any(isinstance(o, EnumSpec) and o.strictly_holds(m) for o in flat)
-    return tuple(m for m in flat if not strictly_held(m))
+    return _canonical_order([m for m in flat if not strictly_held(m)])
+
+
+def _canonical_order(members: list[TypeSpec]) -> tuple[TypeSpec, ...]:
+    """A union is a set, so it has ONE spelling: the members with an identity
+    sorted by it, then any whose identity is not ground yet (holes
+    mid-fixpoint) in the order given — the fixpoint re-sorts them once they
+    ground. Without this the spelling was whatever order inference first met
+    the members in, so the converged tree depended on which pass settled what
+    (#136: the stdlib converged beneath a program reordered its unions)."""
+    ground = sorted((m for m in members if m.as_unique_id_str() is not None),
+                    key=lambda m: m.as_unique_id_str())
+    return tuple(ground + [m for m in members if m.as_unique_id_str() is None])
 
 
 class HeldMember(NamedTuple):

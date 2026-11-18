@@ -182,7 +182,9 @@ class TestUnions(TestCase):
 
     def test_a_union_member_hole_fills(self):
         result, _b, errors = t.merge(union(enum(_LIST, hole()), UNIT), enum(_LIST, INT), {}, EMPTY)
-        self.assertEqual(union(enum(_LIST, INT), UNIT), result)
+        # A union has one spelling, its ground members sorted by identity
+        # (#136): the filled member no longer keeps the hole's place.
+        self.assertEqual(union(UNIT, enum(_LIST, INT)), result)
         self.assertEqual([], errors)
 
     def test_a_hole_member_takes_what_no_other_member_holds(self):

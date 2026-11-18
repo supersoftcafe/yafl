@@ -1,0 +1,35 @@
+# A generic enum's TYPE ARGUMENTS keep resolving after the enum itself has.
+#
+# A written `Box<A>` becomes an enum type as soon as `Box` resolves, and its
+# arguments are compiled at that moment. An argument that names a type not
+# settled yet — here `A`, an alias whose chain takes several passes to reach
+# `Int` — must still settle on a later pass. It used to latch as the raw
+# name for good, and the program failed with "Failed to resolve type 'A'".
+# Converging libraries in layers (#136) found it: there the stdlib's enums
+# are settled from the first pass, so every `List<AppType>` was exposed.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::EnumTypeArgs::SettleAfterTheEnum
+
+import System
+import System::Test
+
+enum Box<T>
+  enum Full(value: T)
+  enum Empty()
+
+typealias A: B
+typealias B: C
+typealias C: D
+typealias D: Int
+
+fun make(): Box<A> => Full(1)
+
+fun program(): Int => match(make())
+  (f: Full) => f.value
+  (e: Empty) => 0
+
+fun [test("settle after the enum")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")

@@ -61,6 +61,15 @@ fun inferType(current, fresh: Spec|None, declared: Bool,
 # Type each un-annotated parameter from its hints. The inferred type is
 # re-read every pass and may change; nothing is read while a name in the body
 # has not resolved. A declared type always stands.
+#
+# Nor is anything read while a use's type is still a name: that use is evidence
+# not yet known, and deciding from the uses that happen to be known is a guess.
+# `ring(x) + heavy(x)` once typed x a Rock from heavy alone, ring's Circle
+# still a name, and kept it once the two were found to disagree (#136: a
+# program converged above a settled stdlib reached that pass). Decided only on
+# certain evidence, a type stands when a later verdict finds none: the uses
+# that then disagree were shaped by the type itself (a conversion now wraps the
+# argument), and unsetting it would only bring the first answer back next pass.
 fun inferredParams(params, hints: Dict<String, List<Hint>>, r)
   if isUnsettled(hints)
     ret params
@@ -72,8 +81,13 @@ fun inferredParams(params, hints: Dict<String, List<Hint>>, r)
 fun inferredParam(p, hints: Dict<String, List<Hint>>, r) => match(p)
   (l: PsLet) => hasDeclaredType(l)
     ? p
-    : inferredLet(l, hintVerdict(hintsFor(hints, l.lName), r).vType)
+    : inferredFromUses(l, hintsFor(hints, l.lName), r)
   (o: PStmt) => p
+
+fun inferredFromUses(l: PsLet, uses: List<Hint>, r): PStmt
+  if any(uses, (use) => containsNamedSpec(use.hSpec))
+    ret l
+  ret inferredLet(l, hintVerdict(uses, r).vType)
 
 fun inferredLet(l: PsLet, fresh: Spec|None) => match(fresh)
   (t2: Spec) => with l(lType = t2, lTypeInferred = true)

@@ -25,20 +25,23 @@ import Bootstrap::StdlibCandidates
 import Bootstrap::Types
 
 
-class [final] RegexLowering(rlStmts: List<PStmt>, rlErrs: Set<PErr>)
+# rlLayers: the program's layers (#136), each rewritten in place; the globals
+# lead the first, where every layer can see them.
+class [final] RegexLowering(rlLayers: List<List<PStmt>>, rlErrs: Set<PErr>)
 
-fun fixGlobalRegexes(statements: List<PStmt>): RegexLowering
-  let found = foldStmts(statements, rxIdNames, rxCollect, List<PeRegex>())
+fun fixGlobalRegexes(layers: List<List<PStmt>>): RegexLowering
+  let found = fold(layers, List<PeRegex>(), (acc, l) => foldStmts(l, rxIdNames, rxCollect, acc))
   if isEmpty(found)
-    ret RegexLowering(statements, Set())
+    ret RegexLowering(layers, Set())
   # Sorted before numbering, like $strings: discovery order must never reach
   # the generated names.
   let patterns = sort(Set(map(found, (r) => r.pattern)))
   let errs = rxErrors(patterns, found, Set())
   if !isEmpty(errs)
-    ret RegexLowering(statements, errs)
-  ret RegexLowering(concat(rxGlobals(patterns, 0, List()),
-                           rwStmts(statements, rwOnExpr((x) => rxReplace(x, patterns)))),
+    ret RegexLowering(layers, errs)
+  let rewritten = map(layers, (l) => rwStmts(l, rwOnExpr((x) => rxReplace(x, patterns))))
+  ret RegexLowering(prepend(concat(rxGlobals(patterns, 0, List()), head(rewritten) ?? List()),
+                            dropOne(rewritten)),
                     Set())
 
 fun rxIdNames(acc, st: PStmt): List<PeRegex> => acc

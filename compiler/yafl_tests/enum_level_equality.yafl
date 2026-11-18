@@ -1,0 +1,90 @@
+# Equality on an enum and its LEVELS. An enum has one BasicEquality, at its
+# root, written or derived; a value of any level (`Pay1` of `Payload`) is
+# compared by it.
+#
+# Converging libraries in layers (#136) found the first of these: a written
+# `BasicEquality<Payload>` was read, for a pass, while its argument was still
+# a name, so the enum derived a second instance beside it and every `==` on
+# a Payload was ambiguous.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::EnumLevelEquality::AWrittenInstanceStands
+
+import System
+import System::Test
+
+enum Payload
+  enum Pay1(p0: String)
+  enum Pay2(pTiny: Int)
+
+# Every two Payloads are equal: proof that this instance, not a derived one,
+# is the one in use.
+instance [ambient] BasicEquality<Payload>
+  fun `==`(left: Payload, right: Payload): Bool
+    ret true
+  fun hashOf(value: Payload): Int32
+    ret 0i32
+
+fun program(): Int
+  let a: Payload = Pay1("x")
+  let b: Payload = Pay2(1)
+  ret a == b ? 0 : 1
+
+fun [test("a written instance stands")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::EnumLevelEquality::AWrittenRootServesItsLevels
+
+import System
+import System::Test
+
+# Host's field is a Pay1, a level of Payload: Host needs Payload to have
+# equality, and Payload's is written. Every two Payloads are equal by it, so
+# two Holds of different Pay1s are equal too.
+enum Payload
+  enum Pay1(p0: String)
+  enum Pay2(pTiny: Int)
+
+instance [ambient] BasicEquality<Payload>
+  fun `==`(left: Payload, right: Payload): Bool
+    ret true
+  fun hashOf(value: Payload): Int32
+    ret 0i32
+
+enum Host
+  enum Hold(hPay: Pay1)
+  enum Empty1()
+
+fun program(): Int
+  ret Hold(Pay1("x")) == Hold(Pay1("y")) ? 0 : 1
+
+fun [test("a written root serves its levels")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::EnumLevelEquality::ALevelHasItsRootsEquality
+
+import System
+import System::Test
+
+# No instance is written: Payload derives one, two Pay1s compare by it, and
+# Host — whose field is a Pay1 — derives too.
+enum Payload
+  enum Pay1(p0: String)
+  enum Pay2(pTiny: Int)
+
+enum Host
+  enum Hold(hPay: Pay1)
+  enum Empty1()
+
+fun program(): Int
+  let a: Pay1 = Pay1("x")
+  let b: Pay1 = Pay1("y")
+  ret (a == a ? 0 : 1) + (a == b ? 2 : 0)
+    + (Hold(a) == Hold(a) ? 0 : 4) + (Hold(a) == Hold(b) ? 8 : 0)
+
+fun [test("a level has its root's equality")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

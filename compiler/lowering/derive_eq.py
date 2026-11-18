@@ -28,6 +28,10 @@ instance covers — unions, function types, generic instantiations — blocks
 derivation, and notably `Spec` never derives because `PLine` has no
 instance: `eqSpec` keeps sole ownership of spec equality.
 
+One exception (#136): a member whose type is an enum, at any level, needs
+its root declaration to have equality. The synthesised `==` on two `Pay1`s
+takes `Payload`'s, as a written one does.
+
 Both compilers synthesise IDENTICAL statements (names and line refs derive
 from the enum's own), so the AST dumps and emitted C stay byte-comparable.
 """
@@ -53,7 +57,8 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
 
     Empty while the answer is not yet complete — an instance or witness not
     yet resolved may be the one that already covers an enum, and derivation
-    must never compete with it — and in a program that does not declare
+    must never compete with it; an enum or a candidate's field still a name
+    may change every answer — and in a program that does not declare
     `System::BasicEquality` (compiled without the stdlib)."""
     if not resolver.find_type("System::BasicEquality"):
         return frozenset()
@@ -67,13 +72,22 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
         # instantiations (`Chain$generic$bigint` has no type params left, but
         # it is still an instance of a generic enum, not a source enum).
         if not (isinstance(st, s.EnumStatement) and not st.type_params
-                and "$generic$" not in st.name and st.get_type() is not None):
+                and "$generic$" not in st.name):
             continue
+        # An enum, or a candidate's field, whose type is still a name is an
+        # input not known yet: the answer waits for it, as it waits for the
+        # providers. Decided without it, `enum Host(hPay: Pay1)` was judged
+        # while Pay1 was a name, and Payload derived alone (#136).
+        if st.get_type() is None:
+            return frozenset()
         if __has_equality(st.get_type(), frozenset(), providers, resolver):
             continue
         leaves = __collect_leaves(st, [])
         if leaves is None or not leaves:   # uninhabited variant somewhere
             continue
+        if any(f.declared_type is None or t.contains_named_spec(f.declared_type)
+               for _leaf, fields in leaves for f in fields):
+            return frozenset()
         candidates[st.name] = leaves
 
     # Coinductive fixpoint: assume every candidate has equality, drop failures.
@@ -82,7 +96,7 @@ def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> froz
     while changed:
         changed = False
         for name in sorted(ok):
-            if not all(__has_equality(let.declared_type, frozenset(ok), providers, resolver)
+            if not all(__member_has_equality(let.declared_type, frozenset(ok), providers, resolver)
                        for _leaf, fields in candidates[name] for let in fields):
                 ok.discard(name)
                 changed = True
@@ -131,6 +145,13 @@ def __providers(statements, resolver: g.Resolver) -> "list[_Provider] | None":
         if reaches is None:
             return False
         if reaches:
+            # The type it covers, or a `where` it needs, still a name: which
+            # type it provides for is not known yet. Read as covering nothing,
+            # a written `BasicEquality<Payload>` let Payload derive a second
+            # instance beside it (#136: a program converged above a settled
+            # stdlib met its own instance while the argument was a name).
+            if t.contains_named_spec(iface) or any(t.contains_named_spec(w) for w in wheres):
+                return False
             if iface.type_params:
                 out.append(_Provider(params, iface.type_params[0], wheres))
             elif "$generic$" in iface.name:
@@ -157,13 +178,14 @@ def __providers(statements, resolver: g.Resolver) -> "list[_Provider] | None":
 
 def __has_equality(spec, ok: frozenset[str], providers: list[_Provider],
                    resolver: g.Resolver) -> bool:
-    """Does equality exist for `spec`? Some provider covers it — binding the
-    provider's own params makes its pattern `spec` (compared by unique id,
-    so enum views stay one type) and every `where` holds for the binding —
-    or it is a candidate enum, assumed to while the fixpoint runs."""
+    """Does equality exist for exactly `spec`, as `where BasicEquality<spec>`
+    asks? Some provider covers it — binding the provider's own params makes
+    its pattern `spec` (compared by unique id) and every `where` holds for
+    the binding — or it is a candidate enum, assumed to while the fixpoint
+    runs. A level of an enum is not its root (#136)."""
     if spec is None:
         return False
-    if isinstance(spec, t.EnumSpec) and spec.root_name in ok:
+    if isinstance(spec, t.EnumSpec) and spec.root_name in ok and not spec.path:
         return True
     uid = spec.as_unique_id_str()
     if uid is None:
@@ -182,6 +204,15 @@ def __has_equality(spec, ok: frozenset[str], providers: list[_Provider],
                    for w in p.wheres)
 
     return any(covered_by(p) for p in providers)
+
+
+def __member_has_equality(spec, ok: frozenset[str], providers: list[_Provider],
+                          resolver: g.Resolver) -> bool:
+    """Does a member of type `spec` let its enum derive? Equality exists for
+    it — or, for an enum at any level, for its root declaration (#136)."""
+    if isinstance(spec, t.EnumSpec):
+        spec = t.enum_level(spec, (), resolver)
+    return __has_equality(spec, ok, providers, resolver)
 
 
 def __collect_leaves(st: s.EnumStatement, inherited: list) -> "list | None":

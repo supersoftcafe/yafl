@@ -24,6 +24,10 @@
 # instantiations — blocks; `Spec` never derives because PLine has no
 # instance, so eqSpec keeps sole ownership of spec equality.
 #
+# One exception (#136): a member whose type is an enum, at any level, needs
+# its root declaration to have equality. The synthesised `==` on two Pay1s
+# takes Payload's, as a written one does.
+#
 # Synthesis is IDENTICAL to Python's, name for name and binder for binder
 # (per-arm indexed binders: match lowering makes one variable per binder name,
 # and a shared name across arms violates SSA), so dumps and C stay
@@ -49,8 +53,9 @@ class [final] DeLeaves(dlNames: List<String>, dlSets: List<List<PStmt>>)
 # derives. The same question decides every member: equality must exist for
 # it (deHasEquality), or it is a candidate itself (coinductive). Empty while
 # the answer is incomplete — an instance or witness not yet resolved may be
-# the one that already covers an enum — and in a program that does not
-# declare System::BasicEquality (compiled without the stdlib).
+# the one that already covers an enum; an enum or a candidate's field still a
+# name may change every answer — and in a program that does not declare
+# System::BasicEquality (compiled without the stdlib).
 fun derivableEnums(statements, r): List<String>
   if isEmpty(findType(r, "System::BasicEquality").bItems)
     ret List()
@@ -58,11 +63,33 @@ fun derivableEnums(statements, r): List<String>
     (ps: List<DeProvider>) => deDerivable(statements, ps, r)
     ()                     => List()
 
+# An enum, or a candidate's field, whose type is still a name is an input not
+# known yet: the answer waits for it, as it waits for the providers. Decided
+# without it, `enum Host(hPay: Pay1)` was judged while Pay1 was a name, and
+# Payload derived alone (#136).
 fun deDerivable(statements, ps: List<DeProvider>, r)
   let cands = deCandidates(statements, ps, r,
                            DeCands(List(),
                                    List()))
+  if any(statements, deUntypedEnum) || any(cands.leaves, deLeavesUnresolved)
+    ret List()
   ret deFixpoint(cands.names, cands.leaves, ps, r)
+
+fun deUntypedEnum(st: PStmt): Bool => match(st)
+  (e2: PsEnum) => isEmpty(e2.eGens) && !contains(e2.eName, "$generic$") && deNoSpec(e2.eSpec)
+  (o: PStmt)   => false
+
+fun deNoSpec(sp: Spec|None): Bool => match(sp)
+  (s2: Spec) => false
+  ()         => true
+
+fun deLeavesUnresolved(dl: DeLeaves): Bool => any(dl.dlSets, (fs) => any(fs, deFieldUnresolved))
+
+fun deFieldUnresolved(f: PStmt): Bool => match(f)
+  (l: PsLet) => match(l.lType)
+    (sp: Spec) => containsNamedSpec(sp)
+    ()         => true
+  (o: PStmt) => false
 
 # The synthesised BasicEquality<e> instance for a derivable enum.
 fun derivedInstance(e: PsEnum) => match(deLeaves(e, List()))
@@ -111,9 +138,20 @@ fun deAddAll(ps: List<Spec>, r, acc: List<DeProvider>): List<DeProvider>|None =>
 fun deAdd(iface, params: List<String>, wheres: List<Spec>, r,
           acc: List<DeProvider>): List<DeProvider>|None => match(iface)
   (c: SClass) => match(deReachesEquality(c.scName, r))
-    (b: Bool) => b ? deProvided(c, params, wheres, acc) : acc
+    (b: Bool) => b ? deProvidedIfKnown(c, params, wheres, acc) : acc
     ()        => None
   (o: Spec)   => None
+
+# The type it covers, or a `where` it needs, still a name: which type it
+# provides for is not known yet. Read as covering nothing, a written
+# `BasicEquality<Payload>` let Payload derive a second instance beside it
+# (#136: a program converged above a settled stdlib met its own instance
+# while the argument was a name).
+fun deProvidedIfKnown(c: SClass, params: List<String>, wheres: List<Spec>,
+                      acc: List<DeProvider>): List<DeProvider>|None
+  if containsNamedSpec(c) || any(wheres, containsNamedSpec)
+    ret None
+  ret deProvided(c, params, wheres, acc)
 
 fun deProvided(c: SClass, params: List<String>, wheres: List<Spec>,
                acc: List<DeProvider>) => match(head(c.scParams))
@@ -150,10 +188,11 @@ fun deBaseName(name)
   let g2 = indexOf(name, "$generic$", 0)
   ret simpleName(g2 < 0 ? name : slice(name, 0, g2))
 
-# Does equality exist for `sp`? Some provider covers it — binding the
-# provider's own params makes its pattern `sp` (compared by unique id, so
-# enum views stay one type) and every `where` holds for the binding — or it
-# is a candidate enum, assumed to while the fixpoint runs.
+# Does equality exist for exactly `sp`, as `where BasicEquality<sp>` asks?
+# Some provider covers it — binding the provider's own params makes its
+# pattern `sp` (compared by unique id) and every `where` holds for the
+# binding — or it is a candidate enum, assumed to while the fixpoint runs. A
+# level of an enum is not its root (#136).
 fun deHasEquality(sp, ok: List<String>, ps: List<DeProvider>, r): Bool
   if deAssumed(sp, ok)
     ret true
@@ -161,7 +200,7 @@ fun deHasEquality(sp, ok: List<String>, ps: List<DeProvider>, r): Bool
   ret u != "" && any(ps, (p) => deCovers(p, sp, u, ok, ps, r))
 
 fun deAssumed(sp, ok: List<String>) => match(sp)
-  (e2: SEnum) => contains(ok, e2.seRoot)
+  (e2: SEnum) => contains(ok, e2.seRoot) && isEmpty(e2.sePath)
   (o: Spec)   => false
 
 fun deCovers(p: DeProvider, sp, u, ok: List<String>, ps: List<DeProvider>, r) => match(p.dpCovers)
@@ -261,9 +300,17 @@ fun deFieldsHave(fs: List<PStmt>, ok: List<String>,
 
 fun deFieldsHaveStep(x: PStmt, ok: List<String>, ps: List<DeProvider>, r) => match(x)
   (p: PsLet) => match(p.lType)
-    (sp: Spec) => deHasEquality(sp, ok, ps, r)
+    (sp: Spec) => deMemberHasEquality(sp, ok, ps, r)
     () => false
   (o: PStmt) => false
+
+# Does a member of type `sp` let its enum derive? Equality exists for it —
+# or, for an enum at any level, for its root declaration (#136).
+fun deMemberHasEquality(sp: Spec, ok: List<String>, ps: List<DeProvider>, r: Resolver): Bool => match(sp)
+  (e2: SEnum) => match(enumLevel(e2, List(), r))
+    (root: SEnum) => deHasEquality(root, ok, ps, r)
+    ()            => false
+  (o: Spec)   => deHasEquality(o, ok, ps, r)
 
 # ── synthesis ────────────────────────────────────────────────────────────────
 

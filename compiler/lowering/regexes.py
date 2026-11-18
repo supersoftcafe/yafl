@@ -124,7 +124,9 @@ def _validate(pattern: str) -> str | None:
     return None
 
 
-def fix_global_regexes(statements: list[s.Statement]) -> tuple[list[s.Statement], list[Error]]:
+def fix_global_regexes(layers: list[list[s.Statement]]) -> tuple[list[list[s.Statement]], list[Error]]:
+    """`layers`: the program's layers (#136), each rewritten in place; the
+    globals lead the first, where every layer can see them."""
     # Collect every regex literal (with a line_ref for error reporting).
     found: dict[str, LineRef] = {}
 
@@ -133,16 +135,17 @@ def fix_global_regexes(statements: list[s.Statement]) -> tuple[list[s.Statement]
             found.setdefault(thing.pattern, thing.line_ref)
         return rw.UNCHANGED
 
-    for x in statements:
-        x.search_and_replace(g.ResolverRoot([]), collect)
+    for layer in layers:
+        for x in layer:
+            x.search_and_replace(g.ResolverRoot([]), collect)
     if not found:
-        return statements, []
+        return layers, []
 
     errors = [Error(lr, f"invalid regex: {msg}")
               for pattern, lr in sorted(found.items())
               if (msg := _validate(pattern)) is not None]
     if errors:
-        return statements, errors
+        return layers, errors
 
     # One shared global per distinct pattern. Sorted before numbering, like
     # $strings — set/dict order must never reach name generation.
@@ -164,5 +167,5 @@ def fix_global_regexes(statements: list[s.Statement]) -> tuple[list[s.Statement]
             return references[thing.pattern]
         return thing
 
-    statements = [x.search_and_replace(g.ResolverRoot([]), replace) for x in statements]
-    return list(global_statements.values()) + statements, []
+    rewritten = [[x.search_and_replace(g.ResolverRoot([]), replace) for x in layer] for layer in layers]
+    return [list(global_statements.values()) + rewritten[0]] + rewritten[1:], []

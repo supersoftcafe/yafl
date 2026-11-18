@@ -195,7 +195,7 @@ def has_missing_arguments(spec: "TypeSpec | None", resolver: "g.Resolver") -> bo
     return found[0]
 
 
-def _contains_named_spec(spec: "TypeSpec") -> bool:
+def contains_named_spec(spec: "TypeSpec") -> bool:
     """True when `spec` is or contains a raw NamedSpec spelling — a signature
     view that hasn't compiled yet. Its names are only meaningful in the
     declaring scope, so it must never escape into a type-param binding that
@@ -268,7 +268,7 @@ def merge(left: "TypeSpec | None", right: "TypeSpec | None",
         if bound is None:
             # Nothing to bind yet — a hole, or a type still holding a raw
             # name that only means something in its declaring scope.
-            if is_hole(other, binds, False) or _contains_named_spec(other):
+            if is_hole(other, binds, False) or contains_named_spec(other):
                 return GenericPlaceholderSpec(other.line_ref if other is not None else None, name), binds, []
             return other, {**binds, name: other}, []
         # Bound: agree with it — holes inside the binding fill, nothing widens

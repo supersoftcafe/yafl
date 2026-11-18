@@ -92,10 +92,15 @@ fun typeStrOf(t2) => match(t2)
   (g2: SGeneric)     => bareOfUnique(g2.sgName)
   # Without the root name an enum rendered as the literal "EnumSpec" — the
   # internal class name these strings exist to avoid. List, Option and
-  # Result are all enums, so it was the common case.
-  (e2: SEnum)        => specName(e2.seRoot, e2.seParams)
+  # Result are all enums, so it was the common case. A level is named as
+  # itself: `Pay1`, never its root `Payload` — they are different types.
+  (e2: SEnum)        => specName(levelName(e2), e2.seParams)
   (af: SArrayField)  => "ArrayFieldSpec"
   (ls: SLazyStub)    => "LazyStubSpec"
+
+fun levelName(e2: SEnum): String => match(head(takeLastOne(e2.sePath)))
+  (n: String) => n
+  ()          => e2.seRoot
 
 # A declared type's name as the author would write it: no namespace, no
 # unique-name hash, and a monomorphised specialisation shown with its argument

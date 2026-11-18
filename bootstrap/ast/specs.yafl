@@ -198,6 +198,17 @@ fun withoutNoneOf(members: List<Spec>, lr)
 # where an SCombination is expected.
 fun reprMembersOf(types: List<Spec>): List<Spec> => flattenMembers(types, List())
   |> dropStrictlyHeld
+  |> canonicalOrder
+
+# A union is a set, so it has ONE spelling: the members with an identity
+# sorted by it, then any whose identity is not ground yet (holes mid-fixpoint)
+# in the order given — the fixpoint re-sorts them once they ground (Python
+# _canonical_order). Without this the spelling was whatever order inference
+# first met the members in, so the converged tree depended on which pass
+# settled what (#136).
+fun canonicalOrder(members: List<Spec>): List<Spec>
+  let ground = sortBy(filter(members, (m) => uid(m) != ""), (a, b) => uid(a) < uid(b))
+  ret concat(ground, filter(members, (m) => uid(m) == ""))
 
 fun flattenMembers(ts: List<Spec>, acc: List<Spec>): List<Spec> =>
   fold(ts, acc, addMember)

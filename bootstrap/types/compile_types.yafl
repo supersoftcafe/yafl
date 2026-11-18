@@ -95,23 +95,20 @@ fun compileClass(c: SClass, r)
       |> (ps) => SpecOut(SClass(f.fName, ps.psSpecs, c.scLine), ps.psGlobals)
     ()         => SpecOut(c, List())
 
-# An enum re-reads its fields from the declaration each pass — the instance in
-# hand may predate the layout that filled them in.
-fun compileEnum(e: SEnum, r) => match(soleItem(findType(r, e.seRoot)))
-  (f: Found) => canonicalEnum(e, f.fStmt)
-  ()         => SpecOut(e, List())
-
-fun canonicalEnum(e, st) => match(st)
-  (en: PsEnum) => match(en.eSpec)
-    (canon: Spec) => refreshedEnum(e, canon)
-    ()            => SpecOut(e, List())
-  (o: PStmt)   => SpecOut(e, List())
-
-fun refreshedEnum(e: SEnum, canon) => match(canon)
-  (ce: SEnum) => SpecOut(SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
-                               e.seParams, e.seLine, e.sePath),
-                         List())
-  (o: Spec)   => SpecOut(e, List())
+# An enum's type ARGUMENTS keep compiling, exactly as a class's do (Python
+# EnumSpec._compile). A written `Box<A>` becomes an SEnum on the pass `Box`
+# resolves, its arguments compiled once then; one naming a type not settled
+# yet (an alias still resolving down its chain) must settle on a later pass,
+# or it latches as the raw name. The fields are not walked: they derive from
+# the declaration, and walking them here would recurse forever on a
+# self-referential enum.
+fun compileEnum(e: SEnum, r)
+  if isEmpty(e.seParams)
+    ret SpecOut(e, List())
+  let ps = compileParams(e.seParams, r)
+  ret SpecOut(SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
+                    ps.psSpecs, e.seLine, e.sePath),
+              ps.psGlobals)
 
 # ── the structural types ────────────────────────────────────────────────────
 
