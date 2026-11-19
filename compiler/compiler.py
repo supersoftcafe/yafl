@@ -442,8 +442,11 @@ def __check_untyped_params(statements: list[s.Statement]) -> list[Error]:
 
 def __collect_diagnostics(statements: list[s.Statement],
                           resolver: g.Resolver,
-                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> tuple[list[Error], list[Error]]:
-    """The post-convergence diagnostic phases, in driver order. Returns
+                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([]),
+                          whole_program: bool = True) -> tuple[list[Error], list[Error]]:
+    """The post-convergence diagnostic phases, in driver order.
+    `whole_program`: false for statements that are not one program to build
+    (the port's language server, #26), which are not counted for a main. Returns
     (failures, warnings): a non-empty `failures` is exactly the list the
     driver fails with (which may include warnings — on failure everything
     prints together); `warnings` carries through on success. Shared by the
@@ -473,9 +476,9 @@ def __collect_diagnostics(statements: list[s.Statement],
     diagnostics = [x for x in diagnostics if x.severity != "warning" or x.category in enabled_warnings]
     mains = [stmt for stmt in statements
              if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
-    if not mains:
+    if whole_program and not mains:
         diagnostics += [Error(LineRef("none", 0, 0), "No main function found")]
-    elif len(mains) > 1:
+    elif whole_program and len(mains) > 1:
         diagnostics += [Error(LineRef("none", 0, 0), "Too many main functions defined")]
 
     # Warnings never fail the build: split them out and carry them to the
@@ -668,14 +671,24 @@ def __analyse(layers: list[list[s.Statement]], owners: "list[library_rules.Owner
 def __check_converged(converged: list[list[s.Statement]], owners: "list[library_rules.Owner]",
                       enabled_warnings: frozenset[str]) -> _Analysed | _Failed:
     """Rule 2 (#136): no orphan instances. On the converged layers, where
-    every instance's interface and types have resolved. Then global lambdas
-    become functions and the affine drops go in."""
+    every instance's interface and types have resolved. Then the check
+    phase, on all of them at once."""
     orphans = [err for owner, layer in zip(owners, converged)
                for err in library_rules.orphan_errors(owner, layer)]
     if orphans:
         return _Failed(orphans, [])
-    new_statements = [st for layer in converged for st in layer]
-    resolver = g.ResolverRoot(new_statements)
+    return __checked_layer([st for layer in converged for st in layer], None, enabled_warnings, True)
+
+
+def __checked_layer(new_statements: list[s.Statement], base: g.ResolverRoot | None,
+                    enabled_warnings: frozenset[str], whole_program: bool) -> _Analysed | _Failed:
+    """Global lambdas become functions and the affine drops go in, then the
+    checks. `base`: statements beneath these, already through this phase,
+    that they resolve against but which are not checked again (the port's
+    language server checks its libraries once and its program on them). A
+    compile has none. `whole_program`: whether the statements are one program
+    to build, which has exactly one main (__collect_diagnostics)."""
+    resolver = g.ResolverRoot(new_statements, base)
 
     # A global `let` holding a lambda is a function by another name — rewrite
     # it to one now that inference is done (every lambda is fully typed), so
@@ -686,18 +699,18 @@ def __check_converged(converged: list[list[s.Statement]], owners: "list[library_
     # instance is consumed by an inserted scope-exit `drop(x)` (see
     # lowering/drops.py). Needs converged types to decide, and a re-convergence
     # afterwards so the inserted calls resolve like ordinary code.
-    new_statements, dropped = lowering.drops.insert_drops(new_statements)
+    new_statements, dropped = lowering.drops.insert_drops(new_statements, base)
     if dropped:
-        new_statements, resolver, _passes = __converge(new_statements)
-    return __checked_program(new_statements, resolver, enabled_warnings)
+        new_statements, resolver, _passes = __converge(new_statements, base)
+    return __checked_program(new_statements, resolver, enabled_warnings, whole_program)
 
 
 def __checked_program(new_statements: list[s.Statement], resolver: g.Resolver,
-                      enabled_warnings: frozenset[str]) -> _Analysed | _Failed:
+                      enabled_warnings: frozenset[str], whole_program: bool) -> _Analysed | _Failed:
     """The check phase, after the drops re-convergence: diagnostics, then
     linearity on a clean check. Once the diagnostics pass, their warnings
     ride along whatever fails later."""
-    failures, warnings = __collect_diagnostics(new_statements, resolver, enabled_warnings)
+    failures, warnings = __collect_diagnostics(new_statements, resolver, enabled_warnings, whole_program)
     if failures:
         return _Failed(failures, [])
 

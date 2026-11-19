@@ -3,12 +3,13 @@
 # The libraries are layers in dependency order, as a compile has them (#136),
 # but WHOLE: a compile prunes each to the namespaces its program reaches, and
 # an editor's program changes what it reaches with every import. They are
-# converged once, on the first analysis, and never again.
+# converged and checked once, when first needed, and kept.
 #
 # The program is the top layer. An analysis parses it, converges it on the
-# libraries' root, and runs the checks on every layer, as `analyse` does for a
-# compile. A program that does not parse gets its parse errors and nothing
-# more.
+# converged libraries, and runs the check phase on it alone, on the checked
+# libraries: what a compile does to every layer at once (`analyse`), done to
+# the one layer that changes. A program that does not parse gets its parse
+# errors and nothing more.
 
 namespace Bootstrap::Lsp
 
@@ -26,40 +27,70 @@ import Bootstrap::Types
 # ── the libraries ────────────────────────────────────────────────────────────
 
 # lbLayers: each library's converged statements, in dependency order; lbBase,
-# the root over all of them; lbIndex, which library owns which namespace.
+# the root over all of them, which the program converges on; lbChecked, the
+# root over them after the check phase, which the program's checks resolve
+# against; lbIndex, which library owns which namespace.
 # lbPlaces: their declarations by unique name; lbTexts: the text of each of
 # their files, by path. A library's files are in its folder, or, for one read
 # from a `.yl`, wherever its sources were written out (sourceFolder).
 class [final] Libraries(lbLayers: List<List<PStmt>>, lbOwners: List<Owner>,
-                        lbBase: RRoot|None, lbIndex: List<NsEntry>,
+                        lbBase: RRoot|None, lbChecked: RRoot|None, lbIndex: List<NsEntry>,
                         lbPlaces: Dict<String, Place>, lbTexts: Dict<String, String>)
 
-# The installed libraries, as read, converged; or why they cannot be.
-# `folders`: the folder holding each library's files, by library root.
-fun librariesFrom(found: LibResult, folders: Dict<String, String>): Libraries|String => match(found)
-  (e: LibsErr) => e.libsWhy
+# Why the libraries cannot be loaded, and the diagnostics that say where.
+class [final] LibraryFailure(lfWhy: String, lfErrs: Set<PErr>)
+
+fun libraryFailure(why: String): LibraryFailure => LibraryFailure(why, Set())
+
+# The installed libraries, as read, converged and checked; or why they cannot
+# be. `folders`: the folder holding each library's files, by library root.
+fun librariesFrom(found: LibResult, folders: Dict<String, String>): Libraries|LibraryFailure => match(found)
+  (e: LibsErr) => libraryFailure(e.libsWhy)
   (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
-    (why: String)        => why
+    (why: String)        => libraryFailure(why)
     (idx: List<NsEntry>) => parsedLibraries(ok.libsFound, idx, folders)
 
-fun parsedLibraries(libs: List<Library>, idx: List<NsEntry>, folders: Dict<String, String>): Libraries|String
+fun parsedLibraries(libs: List<Library>, idx: List<NsEntry>,
+                    folders: Dict<String, String>): Libraries|LibraryFailure
   ret match(parseLibraries(libs, List()))
-    (pe: LoadErrors)             => "an installed library does not parse"
+    (pe: LoadErrors)             => LibraryFailure("an installed library does not parse", pe.peErrs)
     (layers: List<List<PStmt>>) => match(libraryLayers(libs, layers, idx))
-      (why: String)           => why
+      (why: String)           => libraryFailure(why)
       (ordered: List<Loaded>) => convergedLibraries(ordered, idx, folders)
 
-fun convergedLibraries(ordered: List<Loaded>, idx: List<NsEntry>, folders: Dict<String, String>): Libraries|String
+fun convergedLibraries(ordered: List<Loaded>, idx: List<NsEntry>,
+                       folders: Dict<String, String>): Libraries|LibraryFailure
   let rx = fixGlobalRegexes(map(ordered, (x) => x.ldStmts),
                             map(ordered, (x) => libraryName(x.ldLib)))
   if !isEmpty(rx.rlErrs)
-    ret "an installed library has an invalid regex"
+    ret LibraryFailure("an installed library has an invalid regex", rx.rlErrs)
   ret match(convergeLayers(rx.rlLayers, None, List()))
-    (converged: List<List<PStmt>>) => Libraries(converged, map(ordered, (x) => libraryOwner(x.ldLib)),
-                                                baseOf(converged), idx,
-                                                libraryPlaces(ordered, converged, folders),
-                                                libraryTexts(ordered, folders))
-    (d: CvDiverged)                => "the installed libraries do not converge"
+    (converged: List<List<PStmt>>) => checkedLibraries(ordered, converged, idx, folders)
+    (d: CvDiverged)                => LibraryFailure("the installed libraries do not converge", d.cvErrs)
+
+# Rule 2 (#136), no orphan instances, then the check phase, once, on every
+# library, as a compile runs them. Libraries are not a program: there is no
+# main to count. Only errors stop them: no warnings are enabled, since a
+# library's warnings are its author's to see, not its user's.
+fun checkedLibraries(ordered: List<Loaded>, converged: List<List<PStmt>>, idx: List<NsEntry>,
+                     folders: Dict<String, String>): Libraries|LibraryFailure
+  let owners = map(ordered, (x) => libraryOwner(x.ldLib))
+  let orphans = zipFold(owners, converged, Set<PErr>(), (acc, o, l) => union(acc, orphanErrors(o, l)))
+  if !isEmpty(orphans)
+    ret LibraryFailure("an installed library declares an orphan instance", orphans)
+  ret match(checkedLayer(flatMap(converged, (l) => l), None, Set<String>(), false))
+    (ok: AnOk)    => Libraries(converged, owners, baseOf(converged), rootResolver(ok.anStmts, None), idx,
+                               libraryPlaces(ordered, converged, folders), libraryTexts(ordered, folders))
+    (f: AnFailed) => LibraryFailure("the installed libraries do not pass their checks", f.anErrs)
+
+# What an analysis reports when the libraries cannot be loaded: in every
+# document, each error with where it is, since a library's file is not one the
+# editor has.
+fun failureDiagnostics(f: LibraryFailure): Set<PErr>
+  let why = "the libraries cannot be loaded: " + f.lfWhy
+  ret isEmpty(f.lfErrs)
+    ? Set(List(PErr(PLine("", 1, 1), why)))
+    : Set(map(sortBy(f.lfErrs, errLess), (e) => PErr(PLine("", 1, 1), why + ": " + errStr(e))))
 
 fun libraryName(l: Library): String|None => l.libManifest.libName
 
@@ -72,9 +103,11 @@ fun libraryPlaces(ordered: List<Loaded>, converged: List<List<PStmt>>,
 
 fun libraryTexts(ordered: List<Loaded>, folders: Dict<String, String>): Dict<String, String>
   ret fold(ordered, Dict<String, String>(), (d: Dict<String, String>, x: Loaded) => match(get(folders, x.ldLib.libRoot))
-    (dir: String) => fold(x.ldLib.libSources, d,
-                          (d2: Dict<String, String>, src: LibSource) => put(d2, dir + "/" + src.libFileName, src.libText))
+    (dir: String) => fold(x.ldLib.libSources, d, (d2: Dict<String, String>, src: LibSource) => withText(d2, dir, src))
     ()            => d)
+
+fun withText(d: Dict<String, String>, dir: String, src: LibSource): Dict<String, String>
+  ret put(d, dir + "/" + src.libFileName, src.libText)
 
 
 # ── where a library's files are ──────────────────────────────────────────────
@@ -98,9 +131,10 @@ fun sourceFolder(lib: Library): String|None
     ()             => None
 
 fun writtenSources(lib: Library, dir: String): String|None
-  let failed = fold(lib.libSources, false,
-                    (f: Bool, src: LibSource) => f || writeWholeFile(dir + "/" + src.libFileName, src.libText) is String)
+  let failed = fold(lib.libSources, false, (f: Bool, src: LibSource) => f || !writtenOut(dir, src))
   ret failed ? None : dir
+
+fun writtenOut(dir: String, src: LibSource): Bool => writeWholeFile(dir + "/" + src.libFileName, src.libText) is None
 
 # The root over every layer, each on the ones beneath it.
 fun baseOf(layers: List<List<PStmt>>): RRoot|None =>
@@ -112,19 +146,19 @@ fun baseOf(layers: List<List<PStmt>>): RRoot|None =>
 # What an analysis finds: every diagnostic, errors and warnings together,
 # each carrying the unit it is in; every use of a name in the program; and
 # the program's declarations, by unique name.
-class [final] Examined(exErrs: Set<PErr>, exUses: List<Use>, exPlaces: Dict<String, Place>)
+class [final] Examined(exErrs: Set<PErr>, exUses: Uses, exPlaces: Dict<String, Place>)
 
-fun examined(errs: Set<PErr>): Examined => Examined(errs, List(), Dict())
+fun examined(errs: Set<PErr>): Examined => Examined(errs, noUses(), Dict())
 
 # The program in `root`, as `srcs` give its units.
 fun examinedProgram(libs: Libraries, root: String, srcs: List<LibSource>, enabled: Set<String>): Examined
   ret match(parseUnits(srcs))
     (pe: LoadErrors)     => examined(pe.peErrs)
-    (stmts: List<PStmt>) => checkedProgram(libs, root, stmts, enabled)
+    (stmts: List<PStmt>) => programExamined(libs, root, stmts, enabled)
 
 # Rule 1 (#136) first: the program declares into no namespace a library lists.
-# Then the program converges on the libraries, and the checks run over all.
-fun checkedProgram(libs: Libraries, root: String, stmts: List<PStmt>, enabled: Set<String>): Examined
+# Then the program converges on the libraries, and is checked on them.
+fun programExamined(libs: Libraries, root: String, stmts: List<PStmt>, enabled: Set<String>): Examined
   let misplaced = programNamespaceErrors(listedNamespaces(libs.lbIndex), stmts)
   if !isEmpty(misplaced)
     ret examined(misplaced)
@@ -132,11 +166,19 @@ fun checkedProgram(libs: Libraries, root: String, stmts: List<PStmt>, enabled: S
   if !isEmpty(rx.rlErrs)
     ret examined(rx.rlErrs)
   ret match(converge(head(rx.rlLayers) ?? List(), libs.lbBase))
-    (ok: CvOk)      => indexed(libs, root, stmts, ok.cvStatements, match(checkConverged(append(libs.lbLayers, ok.cvStatements),
-                                                                          append(libs.lbOwners, programOwner(libs.lbIndex)), enabled))
-      (a: AnOk)     => a.anWarns
-      (f: AnFailed) => union(f.anErrs, f.anWarns))
+    (ok: CvOk)      => indexed(libs, root, stmts, ok.cvStatements, programDiagnostics(libs, ok.cvStatements, enabled))
     (d: CvDiverged) => indexed(libs, root, stmts, d.cvLast, d.cvErrs)
+
+# Rule 2 (#136), no orphan instances, then the check phase: on the program's
+# converged statements alone, resolving against the checked libraries. The
+# folder may hold several programs (examples/), so mains are not counted.
+fun programDiagnostics(libs: Libraries, converged: List<PStmt>, enabled: Set<String>): Set<PErr>
+  let orphans = orphanErrors(programOwner(libs.lbIndex), converged)
+  if !isEmpty(orphans)
+    ret orphans
+  ret match(checkedLayer(converged, libs.lbChecked, enabled, false))
+    (ok: AnOk)    => ok.anWarns
+    (f: AnFailed) => union(f.anErrs, f.anWarns)
 
 # The diagnostics, with the program's uses and declarations: from the
 # converged statements, and the type names from the parsed ones.

@@ -369,7 +369,7 @@ fun checkOutput(stmts0: List<PStmt>, enabledWarnings: Set<String>): String
 
 fun checkedOutput(stmts, enabledWarnings: Set<String>): String
   let r = rootResolver(stmts)
-  let d = collectDiagnostics(stmts, r, enabledWarnings)
+  let d = collectDiagnostics(stmts, r, enabledWarnings, true)
   if !isEmpty(d.dFails)
     ret printedDiagnostics(d.dFails)
   # Linearity runs only on a clean check phase; its errors return ALONE.
@@ -660,17 +660,27 @@ fun analyse(layers: List<List<PStmt>>, owners: List<Owner>,
     (d: CvDiverged)                => AnFailed(d.cvErrs, noErrs(), 2)
 
 # Rule 2 (#136): no orphan instances. On the converged layers, where every
-# instance's interface and types have resolved. Then global lambdas become
-# functions and the affine drops go in, which needs one more convergence.
+# instance's interface and types have resolved. Then the check phase, on all
+# of them at once.
 fun checkConverged(converged: List<List<PStmt>>, owners: List<Owner>,
                    enabledWarnings: Set<String>): Analysis
   let orphans = zipFold(owners, converged, Set<PErr>(), (acc, o, l) => union(acc, orphanErrors(o, l)))
   if !isEmpty(orphans)
     ret AnFailed(orphans, noErrs(), 1)
-  let lowered = lowerLambdaGlobals(flatMap(converged, (l) => l))
-  let d0 = insertDrops(lowered, rootResolver(lowered))
-  ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
-    (ok: CvOk)       => checkedProgram(ok.cvStatements, enabledWarnings)
+  ret checkedLayer(flatMap(converged, (l) => l), None, enabledWarnings, true)
+
+# Global lambdas become functions and the affine drops go in, which needs one
+# more convergence; then the checks. `base`: statements beneath these, already
+# through this phase, that they resolve against but which are not checked
+# again (the language server checks its libraries once and its program on
+# them). A compile has none. `wholeProgram`: whether the statements are one
+# program to build, which has exactly one main (collectDiagnostics).
+fun checkedLayer(stmts: List<PStmt>, base: RRoot|None, enabledWarnings: Set<String>,
+                 wholeProgram: Bool): Analysis
+  let lowered = lowerLambdaGlobals(stmts)
+  let d0 = insertDrops(lowered, rootResolver(lowered, base))
+  ret match(d0.dsChanged ? converge(d0.dsStmts, base) : CvOk(d0.dsStmts, 0))
+    (ok: CvOk)       => checkedProgram(ok.cvStatements, base, enabledWarnings, wholeProgram)
     (dv: CvDiverged) => AnFailed(dv.cvErrs, noErrs(), 2)
 
 # The CHECK PHASE, at compiler.py's exact position (after the drops
@@ -686,9 +696,10 @@ fun checkConverged(converged: List<List<PStmt>>, owners: List<Owner>,
 # System::nosuchname` compiled to C and exited 0 where Python printed "Failed
 # to resolve" and exited 1. Byte-identical output means nothing if the two
 # compilers disagree about which programs are legal.
-fun checkedProgram(stmts: List<PStmt>, enabledWarnings: Set<String>): Analysis
-  let r = rootResolver(stmts)
-  let d = collectDiagnostics(stmts, r, enabledWarnings)
+fun checkedProgram(stmts: List<PStmt>, base: RRoot|None, enabledWarnings: Set<String>,
+                   wholeProgram: Bool): Analysis
+  let r = rootResolver(stmts, base)
+  let d = collectDiagnostics(stmts, r, enabledWarnings, wholeProgram)
   if !isEmpty(d.dFails)
     ret AnFailed(d.dFails, noErrs(), 1)
   let lin = checkLinearity(stmts, r)

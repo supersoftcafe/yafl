@@ -43,10 +43,12 @@ import pyast.utils as u
 from lowering.linearity import _Checker
 
 
-def insert_drops(statements: list[s.Statement]) -> tuple[list[s.Statement], bool]:
+def insert_drops(statements: list[s.Statement], base: g.ResolverRoot | None = None
+                 ) -> tuple[list[s.Statement], bool]:
     """Rewrite `statements`, appending scope-exit `drop(x)` calls for unused
-    droppable linear bindings. Returns (new_statements, changed)."""
-    resolver = g.ResolverRoot(statements)
+    droppable linear bindings. `base`: the statements beneath them, already
+    through this, that they resolve against. Returns (new_statements, changed)."""
+    resolver = g.ResolverRoot(statements, base)
     inserter = _Inserter(resolver)
     new_statements = [inserter.rewrite_toplevel(stmt) for stmt in statements]
     return (new_statements, True) if inserter.changed else (statements, False)

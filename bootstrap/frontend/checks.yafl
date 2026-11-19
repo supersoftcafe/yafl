@@ -29,7 +29,10 @@ class [final] Diag(dFails: Set<PErr>, dWarns: Set<PErr>)
 
 # compiler.py's __collect_diagnostics, the main check included: a program
 # with no main (or two) fails here, with every other diagnostic beside it.
-fun collectDiagnostics(statements: List<PStmt>, r, enabledWarnings: Set<String>): Diag
+# `wholeProgram`: false for statements that are not one program to build — a
+# library, or an editor's folder that may hold several (#26) — which are not
+# counted for a main.
+fun collectDiagnostics(statements: List<PStmt>, r, enabledWarnings: Set<String>, wholeProgram: Bool): Diag
   let untyped = untypedParamErrors(statements, r)
   if !isEmpty(untyped)
     ret Diag(untyped, noErrs())
@@ -43,7 +46,7 @@ fun collectDiagnostics(statements: List<PStmt>, r, enabledWarnings: Set<String>)
   # __collect_diagnostics, the single choke point every diagnostic passes
   # through there too.
   let checks = filter(checks0, (e2) => !e2.errWarn || contains(enabledWarnings, e2.errCategory))
-  let diagnostics = withMainCount(statements, checks)
+  let diagnostics = wholeProgram ? withMainCount(statements, checks) : checks
   let warnings = filter(diagnostics, (e2) => e2.errWarn)
   # "not every diagnostic is a warning" — i.e. at least one real error. This
   # used to build the warning subset and compare LENGTHS, which needed a walk

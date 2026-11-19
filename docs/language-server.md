@@ -25,16 +25,21 @@ The workspace folder is the program: every `.yafl` file under it, each named by
 its path relative to the folder, exactly the units `yaflc <folder>` compiles.
 Libraries are what is installed, outside it. A document the editor has open
 replaces the file on disk, until it is closed. A document outside the
-workspace folder has no diagnostics.
+workspace folder has no diagnostics. With several folders open, the first
+is the workspace and the others get nothing.
 
 ## The libraries
 
 The installed libraries are found as a compile finds them. A compile prunes
 each library to the namespaces its program reaches; the server cannot, since
 an edit can add an import at any time, so it loads every library whole. The
-libraries converge once, each on the ones beneath it, the first time they are
-needed, and are never converged again. Only the program converges with each
-analysis, on top of them.
+libraries are converged and checked once, each on the ones beneath it, the
+first time they are needed. Each analysis then converges and checks only the
+program, on top of them.
+
+When the libraries cannot be loaded, every document shows why: each error
+with its file and position, since a library's file is not one the editor has.
+The next analysis tries again, so a library fixed meanwhile is picked up.
 
 A library installed as a `.yl` keeps its sources inside the zip, where an
 editor cannot open them. The server writes them out where a compile writes the

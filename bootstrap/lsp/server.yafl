@@ -38,20 +38,20 @@ enum Phase
   enum ShutDown()            # after `shutdown`, waiting for `exit`
   enum Exited(exCode: Int)   # after `exit`, with the session's exit code
 
-# svRoot: the workspace folder, the program's root. svDocs: the open
-# documents, by unit name. svEdits counts the edits so far, and an analysis is
+# svRoot: the workspace folder, the program's root. svDocs: the text of each
+# open document, by unit name. svEdits counts the edits so far, and an analysis is
 # of the edit it was made after. svLibs: the libraries once loaded, or why
-# they could not be.
-class [final] Server(svPhase: Phase, svRoot: String|None, svDocs: Dict<String, Doc>,
-                     svEdits: Int, svLibs: Libraries|String|None, svReport: Report|None)
+# they could not be; a failure is tried again on the next analysis, so a
+# library fixed meanwhile is picked up.
+class [final] Server(svPhase: Phase, svRoot: String|None, svDocs: Dict<String, String>,
+                     svEdits: Int, svLibs: Libraries|LibraryFailure|None, svReport: Report|None)
 
-class [final] Doc(docText: String, docVersion: Int)
 
 # An analysis: the edit it is of, what it found, and the text of every unit
 # it read, which its positions are counted in. rpUses and rpPlaces: the
 # program's uses of names and its declarations (navigation.yafl).
 class [final] Report(rpEdit: Int, rpErrs: Set<PErr>, rpTexts: Dict<String, String>,
-                     rpUses: List<Use>, rpPlaces: Dict<String, Place>)
+                     rpUses: Uses, rpPlaces: Dict<String, Place>)
 
 fun freshServer(): Server => Server(Waiting(), None, Dict(), 0, None, None)
 
@@ -85,12 +85,20 @@ fun request(sv: Server, cp: Captured, rq: Request): (:Server, :Next<List<String>
   (r: Running)  => running(sv, cp, rq)
   (other)       => replying(sv, List(errorReply(rq.rqId, invalidRequestCode(), "the server is shutting down")))
 
-fun running(sv: Server, cp: Captured, rq: Request): (:Server, :Next<List<String>>) => match(rq.rqMethod)
-  ("shutdown")                => replying(with sv(svPhase = ShutDown()), List(resultReply(rq.rqId, JsonNull())))
-  ("textDocument/diagnostic") => analysed(sv, cp) |> (fresh) => replying(fresh, List(diagnosticReply(fresh, rq)))
-  ("textDocument/definition") => analysed(sv, cp) |> (fresh) => replying(fresh, List(definitionReply(fresh, rq)))
-  ("textDocument/references") => analysed(sv, cp) |> (fresh) => replying(fresh, List(referencesReply(fresh, rq)))
-  (other)                     => replying(sv, List(errorReply(rq.rqId, methodNotFoundCode(), "unknown method: " + other)))
+fun running(sv: Server, cp: Captured, rq: Request): (:Server, :Next<List<String>>)
+  ret match(get(analysisAnswers, rq.rqMethod))
+    (answer: (:Server, :Request): String) => analysed(sv, cp) |> (fresh) => replying(fresh, List(answer(fresh, rq)))
+    ()                                    => rq.rqMethod == "shutdown"
+      ? replying(with sv(svPhase = ShutDown()), List(resultReply(rq.rqId, JsonNull())))
+      : replying(sv, List(errorReply(rq.rqId, methodNotFoundCode(), "unknown method: " + rq.rqMethod)))
+
+# The requests answered from an analysis, each with how. The one list: a
+# request named here is analysed first, so no answer comes from text older
+# than the request.
+let analysisAnswers: Dict<String, (:Server, :Request): String> = Dict<String, (:Server, :Request): String>()
+  |> (d) => put(d, "textDocument/diagnostic", diagnosticReply)
+  |> (d) => put(d, "textDocument/definition", definitionReply)
+  |> (d) => put(d, "textDocument/references", referencesReply)
 
 # Notifications get no reply. Unknown ones are ignored, as the protocol asks.
 fun notification(sv: Server, nt: Notification): (:Server, :Next<List<String>>) => match(nt.ntMethod)
@@ -134,11 +142,8 @@ fun initializeResult(): JsonValue
 # Whether handling `m` analyses: a request that answers from an analysis,
 # while running, when the stored analysis is older than the latest edit.
 fun needsAnalysis(sv: Server, m: Message): Bool => match(sv.svPhase, m)
-  (r: Running, rq: Request) => contains(analysingMethods(), rq.rqMethod) && !isFresh(sv)
+  (r: Running, rq: Request) => get(analysisAnswers, rq.rqMethod) !is None && !isFresh(sv)
   (p, other)                => false
-
-fun analysingMethods(): Set<String>
-  ret Set(List("textDocument/diagnostic", "textDocument/definition", "textDocument/references"))
 
 fun isFresh(sv: Server): Bool => match(sv.svReport)
   (r: Report) => r.rpEdit == sv.svEdits
@@ -148,12 +153,12 @@ fun isFresh(sv: Server): Bool => match(sv.svReport)
 fun captured(sv: Server, m: Message): Captured
   if !needsAnalysis(sv, m)
     ret Captured(None, Dict(), None)
-  let libs = sv.svLibs is None ? availableLibraries(List()) : None
+  let libs = sv.svLibs is Libraries ? None : availableLibraries(List())
   let folders = match(libs)
     (ok: LibsOk) => libraryFolders(ok.libsFound)
     (other)      => Dict<String, String>()
   ret match(sv.svRoot)
-    (root: String) => Captured(libs, folders, programSources(root, openTexts(sv.svDocs)))
+    (root: String) => Captured(libs, folders, programSources(root, sv.svDocs))
     ()             => Captured(libs, folders, List<LibSource>())
 
 # The server with an analysis of its latest edit, when the sources for one
@@ -162,7 +167,7 @@ fun captured(sv: Server, m: Message): Captured
 fun analysed(sv: Server, cp: Captured): Server => match(cp.cpSrcs)
   (srcs: List<LibSource>) => reanalysed(withLibraries(sv, cp), srcs)
   (why: String)           => with sv(svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), why))),
-                                                       Dict(), List(), Dict()))
+                                                       Dict(), noUses(), Dict()))
   ()                      => sv
 
 fun withLibraries(sv: Server, cp: Captured): Server => match(cp.cpLibs)
@@ -174,12 +179,10 @@ fun reanalysed(sv: Server, srcs: List<LibSource>): Server
   let found = match(sv.svLibs, sv.svRoot)
     (l: Libraries, root: String) => examinedProgram(l, root, srcs, defaultWarnings())
     (l: Libraries, n)            => examined(Set())
-    (why: String, root)          => examined(Set(List(PErr(PLine("", 1, 1), "the libraries cannot be loaded: " + why))))
+    (f: LibraryFailure, root)    => examined(failureDiagnostics(f))
     (n, root)                    => examined(Set(List(PErr(PLine("", 1, 1), "the libraries were not read"))))
   ret with sv(svReport = Report(sv.svEdits, found.exErrs, texts, found.exUses, found.exPlaces))
 
-fun openTexts(docs: Dict<String, Doc>): Dict<String, String> =>
-  fold(keys(docs), Dict<String, String>(), (d, k) => put(d, k, (get(docs, k) ?? Doc("", 0)).docText))
 
 fun defaultWarnings(): Set<String> => match(resolveEnabledWarnings(List()))
   (ok: WrOk)  => ok.wrEnabled
