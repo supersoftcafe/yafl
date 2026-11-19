@@ -9,6 +9,8 @@ import System
 import System::Containers
 import System::Json
 
+import Bootstrap::Ast
+
 
 # The position of the compiler's (line, col) in `text`.
 fun lspPosition(text: String, line: Int, col: Int): JsonValue
@@ -34,3 +36,62 @@ fun [tail] utf16Units(text: String, off: Int, chars: Int, acc: Int): Int
       ? acc
       : utf16Units(text, d.next, chars - 1, acc + (d.cp >= 0x10000i32 ? 2 : 1))
     ()                                  => acc
+
+# The range of `length` characters from the compiler's (line, col).
+fun lspRange(text: String, line: Int, col: Int, length: Int): JsonValue
+  ret JsonObj(List(JsonPair("start", lspPosition(text, line, col)),
+                   JsonPair("end", lspPosition(text, line, col + length))))
+
+# The compiler's column of the character `units` UTF-16 units into line `row`
+# (from 0): the inverse of lspPosition.
+fun compilerColumn(text: String, row: Int, units: Int): Int => charsIn(text, lineStart(text, row, 0), units, 1)
+
+fun [tail] charsIn(text: String, off: Int, units: Int, col: Int): Int
+  if units <= 0
+    ret col
+  ret match(decode(text, off))
+    (d: (cp: System::Int32, next: Int)) => d.cp == '\n'
+      ? col
+      : charsIn(text, d.next, units - (d.cp >= 0x10000i32 ? 2 : 1), col + 1)
+    ()                                  => col
+
+
+# ── names in the text ────────────────────────────────────────────────────────
+
+# Where `name` is written on the compiler's line `at.plLine`, at `at` or after
+# it, as a whole word; None when it is not.
+fun namedAt(text: String, at: PLine, name: String): PLine|None
+  let start = lineStart(text, at.plLine - 1, 0)
+  let from = charOffset(text, start, at.plCol - 1)
+  let nl = findByte(text, '\n', from)
+  let found = wordIn(text, name, from, nl < 0 ? System::length(text) : nl)
+  ret found < 0 ? None : PLine(at.plFile, at.plLine, at.plCol + charsBetween(text, from, found, 0))
+
+# The byte offset `chars` characters after `off`, stopping at the end of the
+# line.
+fun [tail] charOffset(text: String, off: Int, chars: Int): Int
+  if chars <= 0
+    ret off
+  ret match(decode(text, off))
+    (d: (cp: System::Int32, next: Int)) => d.cp == '\n' ? off : charOffset(text, d.next, chars - 1)
+    ()                                  => off
+
+fun [tail] charsBetween(text: String, off: Int, end: Int, acc: Int): Int
+  if off >= end
+    ret acc
+  ret match(decode(text, off))
+    (d: (cp: System::Int32, next: Int)) => charsBetween(text, d.next, end, acc + 1)
+    ()                                  => acc
+
+# The offset of the first whole-word `name` in [from, end), or -1.
+fun [tail] wordIn(text: String, name: String, from: Int, end: Int): Int
+  let i = indexOf(text, name, from)
+  if i < 0 || i + System::length(name) > end
+    ret -1
+  let before = i > 0 && isWordByte(System::byteAt(text, i - 1))
+  let after = i + System::length(name) < System::length(text)
+              && isWordByte(System::byteAt(text, i + System::length(name)))
+  ret before || after ? wordIn(text, name, i + 1, end) : i
+
+fun isWordByte(b: System::Int32): Bool
+  ret b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'

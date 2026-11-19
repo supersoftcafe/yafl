@@ -1,0 +1,191 @@
+# bootstrap/lsp/navigation.yafl — go to definition and find references (#26).
+#
+# Every declaration's name is unique once parsed: `name@hash`, the hash taken
+# from where it is declared. Convergence resolves each name the program uses
+# to the unique name it means — a function, a local, a parameter, a field or
+# member reached through `.`, a class or enum in a type. So the index is two
+# plain things: every DECLARATION by unique name (the libraries' once, the
+# program's with each analysis), and every USE in the program, each with the
+# unique name it resolved to. A declaration counts as a use of itself, so
+# asking from it finds the same name.
+#
+# Positions in the tree are the compiler's: a declaration's is where its
+# statement starts (`fun area` is at `fun`), a use's where it is written (a
+# qualified `System::length` is at `System`). The name itself is looked for
+# on that line, from there on; a use whose name is not there — something the
+# compiler wrote for the program, such as the `show` an interpolation calls —
+# is no use the client can point at.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::Json
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+# ── the index ────────────────────────────────────────────────────────────────
+
+# A declaration: the file it is in, by path, and where its statement starts.
+class [final] Place(pcPath: String, pcAt: PLine)
+
+# A name the program uses: where, and the unique name it resolved to.
+class [final] Use(useAt: PLine, useKey: String)
+
+# Every declaration in `stmts`, at any depth, by unique name. `pathOf` gives
+# the file a unit name is.
+fun declarations(stmts: List<PStmt>, pathOf: (:String): String,
+                 acc: Dict<String, Place>): Dict<String, Place>
+  ret foldStmts(stmts, (d: Dict<String, Place>, st: PStmt) => declared(d, st, pathOf),
+                (d: Dict<String, Place>, x: PExpr) => d, acc)
+
+fun declared(d: Dict<String, Place>, st: PStmt, pathOf: (:String): String): Dict<String, Place>
+  let name = stmtName(st)
+  ret isUnique(name) && get(d, name) is None
+    ? put(d, name, Place(pathOf(stmtLine(st).plFile), stmtLine(st)))
+    : d
+
+# Every use in `stmts`, and every declaration as a use of itself.
+fun uses(stmts: List<PStmt>): List<Use>
+  ret walkStmts(stmts, emptyResolverGlobal, List<Use>(),
+                Walk<List<Use>>((u, r, x) => (s = usedIn(u, x), r = None),
+                                (u, r, st) => (s = noted(u, stmtName(st), stmtLine(st)), r = None),
+                                (u, r, sp) => (s = usedType(u, sp), r = None))).s
+
+fun usedIn(u: List<Use>, x: PExpr): List<Use> => match(x)
+  (n: PeName) => noted(u, n.refName, n.penLine)
+  (d: PeDot)  => noted(u, d.member, d.pedLine)
+  (other)     => u
+
+fun usedType(u: List<Use>, sp: Spec): List<Use> => match(sp)
+  (c: SClass) => noted(u, c.scName, c.scLine)
+  (e: SEnum)  => isEmpty(e.sePath) ? noted(u, e.seRoot, e.seLine) : u
+  (other)     => u
+
+fun noted(u: List<Use>, name: String, at: PLine): List<Use>
+  ret isUnique(name) ? append(u, Use(at, name)) : u
+
+fun isUnique(name: String): Bool => contains(name, "@")
+
+
+# ── where a name is written ──────────────────────────────────────────────────
+
+# The name `key` declares, as written.
+fun writtenName(key: String): String => bareOfUnique(key)
+
+# Where the name is written, from `at` on, and its length in characters.
+fun nameSpan(text: String, at: PLine, key: String): PLine|None => namedAt(text, at, writtenName(key))
+
+fun nameLength(key: String): Int => charsBetween(writtenName(key), 0, System::length(writtenName(key)), 0)
+
+# A client location for the name `key` written from `at` in the file at
+# `path`; None when it is not written there.
+fun location(path: String, text: String, at: PLine, key: String): JsonValue|None
+  ret match(nameSpan(text, at, key))
+    (n: PLine) => JsonObj(List(JsonPair("uri", JsonStr(pathUri(path))),
+                               JsonPair("range", lspRange(text, n.plLine, n.plCol, nameLength(key)))))
+    ()         => None
+
+fun pathUri(path: String): String => "file://" + percentEncoded(path, 0, "")
+
+fun [tail] percentEncoded(s: String, i: Int, out: String): String
+  if i >= System::length(s)
+    ret out
+  let b = System::byteAt(s, i)
+  let plain = isWordByte(b) || b == '/' || b == '.' || b == '-' || b == '~'
+  ret percentEncoded(s, i + 1, plain ? out + asciiToString(b) : out + "%" + hexByte(b))
+
+fun hexByte(b: System::Int32): String
+  ret asciiToString(hexDigit(b / 16i32)) + asciiToString(hexDigit(b % 16i32))
+
+fun hexDigit(n: System::Int32): System::Int32 => n < 10i32 ? '0' + n : 'A' + n - 10i32
+
+
+# ── the requests ─────────────────────────────────────────────────────────────
+
+# The use at the request's position, in the unit it names.
+fun useAtCursor(sv: Server, r: Report, params: JsonValue): Use|None
+  let uri = stringField(field(params, "textDocument") ?? JsonNull(), "uri") ?? ""
+  let pos = field(params, "position") ?? JsonNull()
+  ret match(unitIn(sv, JsonObj(List(JsonPair("uri", JsonStr(uri))))), intField(pos, "line"), intField(pos, "character"))
+    (unit: String, row: Int, units: Int) => useIn(r, unit, row, units)
+    (u, row, units)                       => None
+
+fun useIn(r: Report, unit: String, row: Int, units: Int): Use|None
+  let text = get(r.rpTexts, unit) ?? ""
+  let col = compilerColumn(text, row, units)
+  ret firstWhere(r.rpUses, (u) => u.useAt.plFile == unit && u.useAt.plLine == row + 1 && covers(text, u, col))
+
+fun covers(text: String, u: Use, col: Int): Bool => match(nameSpan(text, u.useAt, u.useKey))
+  (n: PLine) => col >= n.plCol && col < n.plCol + nameLength(u.useKey)
+  ()         => false
+
+# The declaration `key` names, in the program or a library.
+fun placeOf(sv: Server, r: Report, key: String): Place|None => match(get(r.rpPlaces, key))
+  (p: Place) => p
+  ()         => match(sv.svLibs)
+    (l: Libraries) => get(l.lbPlaces, key)
+    (other)        => None
+
+# The text of the file at `path`: a unit of the program's as analysed, or a
+# library's.
+fun textAt(sv: Server, r: Report, path: String): String
+  let unit = match(sv.svRoot)
+    (root: String) => startsWith(path, root + "/") ? slice(path, System::length(root) + 1, System::length(path)) : ""
+    ()             => ""
+  ret match(get(r.rpTexts, unit))
+    (t: String) => t
+    ()          => match(sv.svLibs)
+      (l: Libraries) => get(l.lbTexts, path) ?? ""
+      (other)        => ""
+
+fun placeLocation(sv: Server, r: Report, p: Place, key: String): JsonValue|None
+  ret location(p.pcPath, textAt(sv, r, p.pcPath), p.pcAt, key)
+
+fun useLocation(sv: Server, r: Report, u: Use): JsonValue|None
+  let root = sv.svRoot ?? ""
+  ret location(root + "/" + u.useAt.plFile, get(r.rpTexts, u.useAt.plFile) ?? "", u.useAt, u.useKey)
+
+fun definitionReply(sv: Server, rq: Request): String
+  let found = match(sv.svReport)
+    (r: Report) => match(useAtCursor(sv, r, rq.rqParams))
+      (u: Use) => match(placeOf(sv, r, u.useKey))
+        (p: Place) => placeLocation(sv, r, p, u.useKey)
+        ()         => None
+      ()       => None
+    ()          => None
+  ret resultReply(rq.rqId, found ?? JsonNull())
+
+# Every use of the name at the position, in the program's units; with its
+# declaration only when the client asks for it.
+fun referencesReply(sv: Server, rq: Request): String
+  let withDecl = match(field(field(rq.rqParams, "context") ?? JsonNull(), "includeDeclaration"))
+    (t: JsonTrue) => true
+    (other)       => false
+  let found = match(sv.svReport)
+    (r: Report) => match(useAtCursor(sv, r, rq.rqParams))
+      (u: Use) => references(sv, r, u.useKey, withDecl)
+      ()       => List<JsonValue>()
+    ()          => List<JsonValue>()
+  ret resultReply(rq.rqId, JsonArr(found))
+
+fun references(sv: Server, r: Report, key: String, withDecl: Bool): List<JsonValue>
+  let decl = match(placeOf(sv, r, key))
+    (p: Place) => placeLocation(sv, r, p, key)
+    ()         => None
+  let declKey = match(decl)
+    (d: JsonValue) => stringify(d)
+    ()             => ""
+  let byKey = fold(filter(r.rpUses, (u) => u.useKey == key), Dict<String, JsonValue>(),
+                   (acc, u) => match(useLocation(sv, r, u))
+                     (l: JsonValue) => put(acc, stringify(l), l)
+                     ()             => acc)
+  let all = match(decl)
+    (d: JsonValue) => withDecl ? put(byKey, declKey, d) : remove(byKey, declKey)
+    ()             => byKey
+  ret map(sort(keys(all)), (k) => get(all, k) ?? JsonNull())

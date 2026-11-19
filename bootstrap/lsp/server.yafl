@@ -48,8 +48,10 @@ class [final] Server(svPhase: Phase, svRoot: String|None, svDocs: Dict<String, D
 class [final] Doc(docText: String, docVersion: Int)
 
 # An analysis: the edit it is of, what it found, and the text of every unit
-# it read, which its positions are counted in.
-class [final] Report(rpEdit: Int, rpErrs: Set<PErr>, rpTexts: Dict<String, String>)
+# it read, which its positions are counted in. rpUses and rpPlaces: the
+# program's uses of names and its declarations (navigation.yafl).
+class [final] Report(rpEdit: Int, rpErrs: Set<PErr>, rpTexts: Dict<String, String>,
+                     rpUses: List<Use>, rpPlaces: Dict<String, Place>)
 
 fun freshServer(): Server => Server(Waiting(), None, Dict(), 0, None, None)
 
@@ -85,6 +87,8 @@ fun request(sv: Server, cp: Captured, rq: Request): (:Server, :Next<List<String>
 fun running(sv: Server, cp: Captured, rq: Request): (:Server, :Next<List<String>>) => match(rq.rqMethod)
   ("shutdown")                => replying(with sv(svPhase = ShutDown()), List(resultReply(rq.rqId, JsonNull())))
   ("textDocument/diagnostic") => analysed(sv, cp) |> (fresh) => replying(fresh, List(diagnosticReply(fresh, rq)))
+  ("textDocument/definition") => analysed(sv, cp) |> (fresh) => replying(fresh, List(definitionReply(fresh, rq)))
+  ("textDocument/references") => analysed(sv, cp) |> (fresh) => replying(fresh, List(referencesReply(fresh, rq)))
   (other)                     => replying(sv, List(errorReply(rq.rqId, methodNotFoundCode(), "unknown method: " + other)))
 
 # Notifications get no reply. Unknown ones are ignored, as the protocol asks.
@@ -111,23 +115,29 @@ fun rootUriOf(params: JsonValue): String|None => match(stringField(params, "root
 # Positions are UTF-16 units, the protocol's default and the only encoding
 # every client supports. Documents are sent whole on every change (sync kind
 # 1). Diagnostics are pulled, and an edit in one file can change another's.
+# Names lead to their declarations, and declarations to their uses.
 fun initializeResult(): JsonValue
   ret JsonObj(List(
-    JsonPair("capabilities", JsonObj(List(
+    JsonPair("capabilities", JsonObj(concat(List(
       JsonPair("positionEncoding", JsonStr("utf-16")),
       JsonPair("textDocumentSync", JsonObj(List(JsonPair("openClose", JsonTrue()), JsonPair("change", JsonInt(1))))),
       JsonPair("diagnosticProvider", JsonObj(List(JsonPair("interFileDependencies", JsonTrue()),
-                                                  JsonPair("workspaceDiagnostics", JsonFalse()))))))),
+                                                  JsonPair("workspaceDiagnostics", JsonFalse()))))),
+      List(JsonPair("definitionProvider", JsonTrue()),
+           JsonPair("referencesProvider", JsonTrue()))))),
     JsonPair("serverInfo", JsonObj(List(JsonPair("name", JsonStr("yaflc")))))))
 
 
 # ── analysis, on demand ──────────────────────────────────────────────────────
 
-# Whether handling `m` analyses: a request for diagnostics while running,
-# when the stored analysis is older than the latest edit.
+# Whether handling `m` analyses: a request that answers from an analysis,
+# while running, when the stored analysis is older than the latest edit.
 fun needsAnalysis(sv: Server, m: Message): Bool => match(sv.svPhase, m)
-  (r: Running, rq: Request) => rq.rqMethod == "textDocument/diagnostic" && !isFresh(sv)
+  (r: Running, rq: Request) => contains(analysingMethods(), rq.rqMethod) && !isFresh(sv)
   (p, other)                => false
+
+fun analysingMethods(): Set<String>
+  ret Set(List("textDocument/diagnostic", "textDocument/definition", "textDocument/references"))
 
 fun isFresh(sv: Server): Bool => match(sv.svReport)
   (r: Report) => r.rpEdit == sv.svEdits
@@ -154,10 +164,12 @@ fun withLibraries(sv: Server, found: LibResult|None): Server => match(found)
 
 fun reanalysed(sv: Server, srcs: List<LibSource>): Server
   let texts = fold(srcs, Dict<String, String>(), (d, x) => put(d, x.libFileName, x.libText))
-  ret match(sv.svLibs)
-    (l: Libraries) => with sv(svReport = Report(sv.svEdits, programDiagnostics(l, srcs, defaultWarnings()), texts))
-    (why: String)  => with sv(svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), "the libraries cannot be loaded: " + why))), texts))
-    ()             => with sv(svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), "the libraries were not read"))), texts))
+  let found = match(sv.svLibs, sv.svRoot)
+    (l: Libraries, root: String) => examinedProgram(l, root, srcs, defaultWarnings())
+    (l: Libraries, n)            => examined(Set())
+    (why: String, root)          => examined(Set(List(PErr(PLine("", 1, 1), "the libraries cannot be loaded: " + why))))
+    (n, root)                    => examined(Set(List(PErr(PLine("", 1, 1), "the libraries were not read"))))
+  ret with sv(svReport = Report(sv.svEdits, found.exErrs, texts, found.exUses, found.exPlaces))
 
 fun openTexts(docs: Dict<String, Doc>): Dict<String, String> =>
   fold(keys(docs), Dict<String, String>(), (d, k) => put(d, k, (get(docs, k) ?? Doc("", 0)).docText))

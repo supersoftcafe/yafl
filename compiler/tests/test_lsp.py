@@ -241,3 +241,109 @@ class TestDiagnostics(TestCase):
         items = self._session(_request(2, "textDocument/diagnostic",
                                        {"textDocument": {"uri": "file:///elsewhere/x.yafl"}}))[2]
         self.assertEqual([], items)
+
+
+class TestNavigation(TestCase):
+    """Go to definition and find references, over a workspace folder and the
+    libraries beneath it."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._dir = tempfile.TemporaryDirectory()
+        self.root = Path(self._dir.name).resolve()
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _write(self, unit: str, text: str) -> None:
+        path = self.root / unit
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def _uri(self, unit: str) -> str:
+        return (self.root / unit).as_uri()
+
+    def _session(self, *messages: dict) -> dict:
+        """Each reply's result, by request id."""
+        stream = [_request(1, "initialize", {"rootUri": self.root.as_uri(), "capabilities": {}}),
+                  _notification("initialized"), *messages,
+                  _request(99, "shutdown"), _notification("exit")]
+        p = subprocess.run([shared_bootstrap_binary(), "--lsp"],
+                           input=b"".join(_frame(m) for m in stream),
+                           capture_output=True, timeout=300)
+        self.assertEqual(0, p.returncode, p.stderr)
+        return {r["id"]: r.get("result") for r in _replies(p.stdout)}
+
+    def _at(self, id_, method: str, unit: str, line: int, character: int, **extra) -> dict:
+        return _request(id_, method, {"textDocument": {"uri": self._uri(unit)},
+                                      "position": {"line": line, "character": character}, **extra})
+
+    @staticmethod
+    def _text(location: dict) -> str:
+        """The text a single-line location covers."""
+        from urllib.parse import unquote, urlparse
+        start, end = location["range"]["start"], location["range"]["end"]
+        assert start["line"] == end["line"]
+        with open(unquote(urlparse(location["uri"]).path), encoding="utf-8") as f:
+            line = f.read().split("\n")[start["line"]]
+        return line[start["character"]:end["character"]]
+
+    def _where(self, location: dict) -> tuple:
+        return (location["uri"], location["range"]["start"]["line"], self._text(location))
+
+    _MAIN = ("namespace Main\nimport System\n"
+             "class Point(x: Int, y: Int)\n"
+             "fun area(p: Point): Int\n"
+             "  let w = p.x\n"
+             "  ret w * p.y + helper()\n"
+             "fun main(): Int\n"
+             "  ret area(Point(1, 2)) + length(\"ab\") + helper()\n")
+    _HELPER = "namespace Main\nimport System\n\nfun helper(): Int\n  ret 0\n"
+
+    def test_definitions(self):
+        self._write("main.yafl", self._MAIN)
+        self._write("lib/helper.yafl", self._HELPER)
+        main, helper = self._uri("main.yafl"), self._uri("lib/helper.yafl")
+        got = self._session(
+            self._at(2, "textDocument/definition", "main.yafl", 5, 18),   # helper, in another file
+            self._at(3, "textDocument/definition", "main.yafl", 5, 6),    # w, a local
+            self._at(4, "textDocument/definition", "main.yafl", 4, 10),   # p, a parameter
+            self._at(5, "textDocument/definition", "main.yafl", 4, 12),   # x, a field
+            self._at(6, "textDocument/definition", "main.yafl", 3, 14),   # Point, a type
+            self._at(7, "textDocument/definition", "main.yafl", 7, 9),    # area, a function
+            self._at(8, "textDocument/definition", "main.yafl", 1, 0))    # import: nothing
+        self.assertEqual((helper, 3, "helper"), self._where(got[2]))
+        self.assertEqual((main, 4, "w"), self._where(got[3]))
+        self.assertEqual((main, 3, "p"), self._where(got[4]))
+        self.assertEqual((main, 2, "x"), self._where(got[5]))
+        self.assertEqual((main, 2, "Point"), self._where(got[6]))
+        self.assertEqual((main, 3, "area"), self._where(got[7]))
+        self.assertIsNone(got[8])
+
+    def test_a_definition_in_a_library(self):
+        self._write("main.yafl", self._MAIN)
+        self._write("lib/helper.yafl", self._HELPER)
+        got = self._session(self._at(2, "textDocument/definition", "main.yafl", 7, 28))
+        self.assertIn("/compiler/stdlib/System/", got[2]["uri"])
+        self.assertEqual("length", self._text(got[2]))
+
+    def test_references(self):
+        self._write("main.yafl", self._MAIN)
+        self._write("lib/helper.yafl", self._HELPER)
+        main, helper = self._uri("main.yafl"), self._uri("lib/helper.yafl")
+        got = self._session(
+            self._at(2, "textDocument/references", "lib/helper.yafl", 3, 5,
+                     context={"includeDeclaration": True}),
+            self._at(3, "textDocument/references", "main.yafl", 5, 18,
+                     context={"includeDeclaration": False}))
+        self.assertEqual(sorted([(helper, 3, "helper"), (main, 5, "helper"), (main, 7, "helper")]),
+                         sorted(self._where(x) for x in got[2]))
+        self.assertEqual(sorted([(main, 5, "helper"), (main, 7, "helper")]),
+                         sorted(self._where(x) for x in got[3]))
+
+    def test_the_server_says_it_navigates(self):
+        got = self._session()
+        caps = got[1]["capabilities"]
+        self.assertTrue(caps["definitionProvider"])
+        self.assertTrue(caps["referencesProvider"])
