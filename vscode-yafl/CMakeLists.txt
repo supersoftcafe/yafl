@@ -7,11 +7,14 @@ project(vscode-yafl NONE)
 #   cmake -S vscode-yafl -B vscode-yafl/build
 #   cmake --build vscode-yafl/build --target install-extension
 #
-# install-extension symlinks this source directory into the VS Code extensions
-# directory, so grammar edits are live after "Developer: Reload Window" with no
-# rebuild.
+# install-extension installs the language client's npm dependencies (npm ci,
+# from package-lock.json), then symlinks this source directory into the VS Code
+# extensions directory, so edits are live after "Developer: Reload Window" with
+# no rebuild.
 
-set(EXT_ID "yafl-0.1.0")
+set(EXT_ID "yafl-0.2.0")
+
+find_program(NPM_EXECUTABLE npm REQUIRED)
 
 set(YAFL_VSCODE_EXTENSIONS_DIR "$ENV{HOME}/.vscode/extensions"
     CACHE PATH "Parent directory VS Code loads extensions from")
@@ -19,6 +22,8 @@ set(YAFL_VSCODE_EXTENSIONS_DIR "$ENV{HOME}/.vscode/extensions"
 set(_link "${YAFL_VSCODE_EXTENSIONS_DIR}/${EXT_ID}")
 
 add_custom_target(install-extension
+    COMMAND "${NPM_EXECUTABLE}" ci --no-fund --no-audit
+            --prefix "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${YAFL_VSCODE_EXTENSIONS_DIR}"
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_link}"
     COMMAND "${CMAKE_COMMAND}" -E create_symlink
@@ -37,9 +42,9 @@ add_custom_target(uninstall-extension
 find_program(NPX_EXECUTABLE npx)
 if(NPX_EXECUTABLE)
     add_custom_target(package-vsix
+        COMMAND "${NPM_EXECUTABLE}" ci --no-fund --no-audit
         COMMAND "${NPX_EXECUTABLE}" --yes @vscode/vsce package
-                --no-dependencies
-                -o "${CMAKE_CURRENT_BINARY_DIR}/vscode-yafl-0.1.0.vsix"
+                -o "${CMAKE_CURRENT_BINARY_DIR}/vscode-yafl-0.2.0.vsix"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM)
 else()

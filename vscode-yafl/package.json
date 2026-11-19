@@ -1,18 +1,39 @@
 {
     "name": "yafl",
     "displayName": "YAFL",
-    "description": "Syntax highlighting and editor support for YAFL (Yet Another Functional Language)",
-    "version": "0.1.0",
+    "description": "Syntax highlighting, diagnostics and navigation for YAFL (Yet Another Functional Language)",
+    "version": "0.2.0",
     "publisher": "yafl",
     "license": "SEE LICENSE IN LICENSE",
-    "engines": { "vscode": "^1.75.0" },
-    "categories": ["Programming Languages"],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/supersoftcafe/yafl.git",
+        "directory": "vscode-yafl"
+    },
+    "engines": {
+        "vscode": "^1.82.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "main": "./extension.js",
+    "activationEvents": [
+        "onLanguage:yafl"
+    ],
+    "dependencies": {
+        "vscode-languageclient": "9.0.1"
+    },
     "contributes": {
         "languages": [
             {
                 "id": "yafl",
-                "aliases": ["YAFL", "yafl"],
-                "extensions": [".yafl"],
+                "aliases": [
+                    "YAFL",
+                    "yafl"
+                ],
+                "extensions": [
+                    ".yafl"
+                ],
                 "configuration": "./language-configuration.json"
             }
         ],
@@ -37,6 +58,16 @@
                 "editor.insertSpaces": true,
                 "editor.tabSize": 2,
                 "editor.detectIndentation": false
+            }
+        },
+        "configuration": {
+            "title": "YAFL",
+            "properties": {
+                "yafl.server.path": {
+                    "type": "string",
+                    "default": "yaflc",
+                    "description": "The YAFL compiler to run as the language server (`yaflc --lsp`): a command on PATH, or a path to the binary. Takes effect when the window is reloaded."
+                }
             }
         }
     }
