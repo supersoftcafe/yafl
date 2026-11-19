@@ -83,13 +83,27 @@ fun program(): System::Int
     (e: IOError) => 9
     (io: IO)     => afterFlush(path, writeAll(io, "abc"))
 
-# What another handle reads from the file while the writer is still open.
+# Each step waits on the one before by matching its result: the write, then
+# the flush, then what another handle reads while the writer is still open,
+# and only then the close.
 fun afterFlush(path: System::String, w: (io: IO, v: System::Int|IOError)): System::Int
-  let f = w.io.flush()
-  let seen = withFile(open_read(path), readAll)
-  ret match(f.io.close(), f.v, seen)
-    (c, n: System::None, s: System::String) => s == "abc" ? 0 : 1
-    (c, x, y)                               => 2
+  ret match(w.v)
+    (n: System::Int) => flushedThenRead(path, w.io.flush())
+    (e: IOError)     => closed(w.io, 3)
+
+fun flushedThenRead(path: System::String, f: (io: IO, v: IOError|System::None)): System::Int
+  ret match(f.v)
+    (e: IOError) => closed(f.io, 2)
+    ()           => readWhileOpen(path, f.io)
+
+fun readWhileOpen(path: System::String, io: IO): System::Int
+  ret match(withFile(open_read(path), readAll))
+    (s: System::String) => closed(io, s == "abc" ? 0 : 1)
+    (e: IOError)        => closed(io, 4)
+
+fun closed(io: IO, code: System::Int): System::Int => match(io.close())
+  (e: IOError) => 5
+  ()           => code
 
 fun [test("a flushed write is in the file before the handle closes")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
