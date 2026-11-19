@@ -1,10 +1,11 @@
 # bootstrap/lsp/server.yafl — `yaflc --lsp` (#26): a language server on stdin
 # and stdout.
 #
-# The server is a fold, step(state, message) → (state, replies), and the loop
-# around it does the protocol's IO: it reads one message, steps, writes the
-# replies, and goes round again until the session ends. The only other IO is
-# an analysis reading the files that are not open, and the libraries once.
+# System::Server runs the loop: it reads a message, captures what handling
+# it needs from disk, steps, and writes the replies. The step is pure:
+# step(state, captured, message) → (state, replies). What is captured is the
+# program's files, read again for each analysis, and the installed libraries,
+# read once.
 #
 # The lifecycle: requests before `initialize` are refused; after `shutdown`
 # only `exit` is accepted; `exit` ends the session, with 0 when `shutdown`
@@ -21,6 +22,7 @@ import System
 import System::Containers
 import System::IO
 import System::Json
+import System::Server
 
 import Bootstrap::Ast
 import Bootstrap::Driver
@@ -31,9 +33,10 @@ import Bootstrap::Types
 # ── state ────────────────────────────────────────────────────────────────────
 
 enum Phase
-  enum Waiting()     # before `initialize`
+  enum Waiting()             # before `initialize`
   enum Running()
-  enum ShutDown()    # after `shutdown`, waiting for `exit`
+  enum ShutDown()            # after `shutdown`, waiting for `exit`
+  enum Exited(exCode: Int)   # after `exit`, with the session's exit code
 
 # svRoot: the workspace folder, the program's root. svDocs: the open
 # documents, by unit name. svEdits counts the edits so far, and an analysis is
@@ -50,43 +53,47 @@ class [final] Report(rpEdit: Int, rpErrs: Set<PErr>, rpTexts: Dict<String, Strin
 
 fun freshServer(): Server => Server(Waiting(), None, Dict(), 0, None, None)
 
-# What one message does: the state after it, the bodies to send, and the exit
-# code when it ends the session.
-class [final] Step(stState: Server, stReplies: List<String>, stExit: Int|None)
+# What an analysis reads from disk: the installed libraries, when they have
+# not been read yet, and the program's sources. None when a message needs no
+# analysis.
+class [final] Captured(cpLibs: LibResult|None, cpSrcs: List<LibSource>|None)
 
 
-# ── the fold ─────────────────────────────────────────────────────────────────
+# ── the step ─────────────────────────────────────────────────────────────────
 
-fun step(sv: Server, m: Message): Step => match(m)
-  (rq: Request)      => request(sv, rq)
+# The state after a message, and its replies; Done() when it ends the session.
+fun step(sv: Server, cp: Captured, m: Message): (:Server, :Next<List<String>>) => match(m)
+  (rq: Request)      => request(sv, cp, rq)
   (nt: Notification) => notification(sv, nt)
-  (cr: ClientReply)  => Step(sv, List(), None)
-  (mf: Malformed)    => Step(sv, repliesOf(mf.mfReply), None)
+  (cr: ClientReply)  => replying(sv, List())
+  (mf: Malformed)    => replying(sv, repliesOf(mf.mfReply))
+
+fun replying(sv: Server, replies: List<String>): (:Server, :Next<List<String>>) => (sv, More<List<String>>(replies))
 
 fun repliesOf(reply: String|None): List<String> => match(reply)
   (r: String) => List(r)
   ()          => List()
 
-fun request(sv: Server, rq: Request): Step => match(sv.svPhase)
+fun request(sv: Server, cp: Captured, rq: Request): (:Server, :Next<List<String>>) => match(sv.svPhase)
   (w: Waiting)  => rq.rqMethod == "initialize"
-    ? Step(with sv(svPhase = Running(), svRoot = workspaceRoot(rq.rqParams)),
-           List(resultReply(rq.rqId, initializeResult())), None)
-    : Step(sv, List(errorReply(rq.rqId, serverNotInitializedCode(), "the server is not initialized")), None)
-  (r: Running)  => running(sv, rq)
-  (d: ShutDown) => Step(sv, List(errorReply(rq.rqId, invalidRequestCode(), "the server is shutting down")), None)
+    ? replying(with sv(svPhase = Running(), svRoot = workspaceRoot(rq.rqParams)),
+               List(resultReply(rq.rqId, initializeResult())))
+    : replying(sv, List(errorReply(rq.rqId, serverNotInitializedCode(), "the server is not initialized")))
+  (r: Running)  => running(sv, cp, rq)
+  (other)       => replying(sv, List(errorReply(rq.rqId, invalidRequestCode(), "the server is shutting down")))
 
-fun running(sv: Server, rq: Request): Step => match(rq.rqMethod)
-  ("shutdown")                => Step(with sv(svPhase = ShutDown()), List(resultReply(rq.rqId, JsonNull())), None)
-  ("textDocument/diagnostic") => analysed(sv) |> (fresh) => Step(fresh, List(diagnosticReply(fresh, rq)), None)
-  (other)                     => Step(sv, List(errorReply(rq.rqId, methodNotFoundCode(), "unknown method: " + other)), None)
+fun running(sv: Server, cp: Captured, rq: Request): (:Server, :Next<List<String>>) => match(rq.rqMethod)
+  ("shutdown")                => replying(with sv(svPhase = ShutDown()), List(resultReply(rq.rqId, JsonNull())))
+  ("textDocument/diagnostic") => analysed(sv, cp) |> (fresh) => replying(fresh, List(diagnosticReply(fresh, rq)))
+  (other)                     => replying(sv, List(errorReply(rq.rqId, methodNotFoundCode(), "unknown method: " + other)))
 
 # Notifications get no reply. Unknown ones are ignored, as the protocol asks.
-fun notification(sv: Server, nt: Notification): Step => match(nt.ntMethod)
-  ("exit")                   => Step(sv, List(), sv.svPhase is ShutDown ? 0 : 1)
-  ("textDocument/didOpen")   => Step(opened(sv, nt.ntParams), List(), None)
-  ("textDocument/didChange") => Step(changed(sv, nt.ntParams), List(), None)
-  ("textDocument/didClose")  => Step(closed(sv, nt.ntParams), List(), None)
-  (other)                    => Step(sv, List(), None)
+fun notification(sv: Server, nt: Notification): (:Server, :Next<List<String>>) => match(nt.ntMethod)
+  ("exit")                   => (with sv(svPhase = Exited(sv.svPhase is ShutDown ? 0 : 1)), Done<List<String>>())
+  ("textDocument/didOpen")   => replying(opened(sv, nt.ntParams), List())
+  ("textDocument/didChange") => replying(changed(sv, nt.ntParams), List())
+  ("textDocument/didClose")  => replying(closed(sv, nt.ntParams), List())
+  (other)                    => replying(sv, List())
 
 # The workspace folder: the first of `workspaceFolders`, else `rootUri`.
 fun workspaceRoot(params: JsonValue): String|None => match(field(params, "workspaceFolders"))
@@ -116,25 +123,41 @@ fun initializeResult(): JsonValue
 
 # ── analysis, on demand ──────────────────────────────────────────────────────
 
-# The server with an analysis of its latest edit: the stored one when it is
-# that, else a new one.
-fun analysed(sv: Server): Server => match(sv.svReport)
-  (r: Report) => r.rpEdit == sv.svEdits ? sv : reanalysed(sv)
-  ()          => reanalysed(sv)
+# Whether handling `m` analyses: a request for diagnostics while running,
+# when the stored analysis is older than the latest edit.
+fun needsAnalysis(sv: Server, m: Message): Bool => match(sv.svPhase, m)
+  (r: Running, rq: Request) => rq.rqMethod == "textDocument/diagnostic" && !isFresh(sv)
+  (p, other)                => false
 
-fun reanalysed(sv: Server): Server
-  let libs = match(sv.svLibs)
-    (l: Libraries) => l
-    (why: String)  => why
-    ()             => loadLibraries()
-  let srcs = match(sv.svRoot)
-    (root: String) => programSources(root, openTexts(sv.svDocs))
-    ()             => List<LibSource>()
+fun isFresh(sv: Server): Bool => match(sv.svReport)
+  (r: Report) => r.rpEdit == sv.svEdits
+  ()          => false
+
+# What the analysis `m` needs reads from disk, if it needs one.
+fun captured(sv: Server, m: Message): Captured
+  if !needsAnalysis(sv, m)
+    ret Captured(None, None)
+  let libs = sv.svLibs is None ? availableLibraries(List()) : None
+  ret match(sv.svRoot)
+    (root: String) => Captured(libs, programSources(root, openTexts(sv.svDocs)))
+    ()             => Captured(libs, List<LibSource>())
+
+# The server with an analysis of its latest edit, when the sources for one
+# were captured; else as it is.
+fun analysed(sv: Server, cp: Captured): Server => match(cp.cpSrcs)
+  (srcs: List<LibSource>) => reanalysed(withLibraries(sv, cp.cpLibs), srcs)
+  ()                      => sv
+
+fun withLibraries(sv: Server, found: LibResult|None): Server => match(found)
+  (r: LibResult) => with sv(svLibs = librariesFrom(r))
+  ()             => sv
+
+fun reanalysed(sv: Server, srcs: List<LibSource>): Server
   let texts = fold(srcs, Dict<String, String>(), (d, x) => put(d, x.libFileName, x.libText))
-  ret match(libs)
-    (l: Libraries) => with sv(svLibs = l, svReport = Report(sv.svEdits, programDiagnostics(l, srcs, defaultWarnings()), texts))
-    (why: String)  => with sv(svLibs = why,
-                              svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), "the libraries cannot be loaded: " + why))), texts))
+  ret match(sv.svLibs)
+    (l: Libraries) => with sv(svReport = Report(sv.svEdits, programDiagnostics(l, srcs, defaultWarnings()), texts))
+    (why: String)  => with sv(svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), "the libraries cannot be loaded: " + why))), texts))
+    ()             => with sv(svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), "the libraries were not read"))), texts))
 
 fun openTexts(docs: Dict<String, Doc>): Dict<String, String> =>
   fold(keys(docs), Dict<String, String>(), (d, k) => put(d, k, (get(docs, k) ?? Doc("", 0)).docText))
@@ -144,30 +167,23 @@ fun defaultWarnings(): Set<String> => match(resolveEnabledWarnings(List()))
   (e: WrErr)  => Set()
 
 
-# ── the loop ─────────────────────────────────────────────────────────────────
+# ── the session ──────────────────────────────────────────────────────────────
 
 fun [impure] lspMain(): Int
-  ret serve(stdin(), stdout(), freshServer())
+  let s = serve(stdin(), stdout(), freshServer(), readDecoded, captured, step, writeMessage)
+  ret closeBoth(s.input, s.output, exitCode(s.state, s.failure))
 
-fun [tail] serve(input: IO, output: IO, sv: Server): Int
-  let r = readMessage(input)
-  let s = stepOn(sv, r.v)
-  let w = writeReplies(output, s.stReplies)
-  ret match(w.v, s.stExit)
-    (failed: IOError, x)   => closeBoth(r.io, w.io, 1)
-    (ok: None, code: Int)  => closeBoth(r.io, w.io, code)
-    (ok: None, n: None)    => serve(r.io, w.io, s.stState)
+fun readDecoded(io: IO): (:IO, :Next<Message>)
+  let r = readMessage(io)
+  ret match(r.v)
+    (m: More<String>)   => (r.io, More<Message>(decodeMessage(m.value)))
+    (d: Done<String>)   => (r.io, Done<Message>())
+    (f: Failed<String>) => (r.io, Failed<Message>(f.why))
 
-fun stepOn(sv: Server, in: Incoming): Step => match(in)
-  (m: InMessage) => step(sv, decodeMessage(m.inBody))
-  (e: InEnd)     => Step(sv, List(), 1)
-  (b: InBroken)  => Step(sv, List(), 1)
-
-fun [tail] writeReplies(io: IO, replies: List<String>): (io: IO, v: IOError|None) => match(head(replies))
-  (body: String) => writeMessage(io, body) |> (w) => match(w.v)
-    (e: IOError) => (w.io, e)
-    (n: Int)     => writeReplies(w.io, dropOne(replies))
-  ()             => (io, None)
+# 0 only for an `exit` after `shutdown`.
+fun exitCode(sv: Server, failure: String|None): Int => match(sv.svPhase, failure)
+  (x: Exited, n: None) => x.exCode
+  (p, f)               => 1
 
 # Both handles are released whatever their close reports: the session is over.
 fun closeBoth(input: IO, output: IO, code: Int): Int => match(input.close())

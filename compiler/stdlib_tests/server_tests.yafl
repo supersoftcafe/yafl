@@ -1,0 +1,77 @@
+# Tests for System::Server (stdlib/System/Server): the loop that reads a
+# message, captures what handling it needs, handles it, and writes the
+# replies, until the input ends or a stage stops it.
+#
+# Both ends are lists: a message is read from the head of one, and a reply is
+# appended to the other.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::ServerTests
+
+import System
+import System::Containers
+import System::Server
+import System::Test
+
+
+# ── the server under test ────────────────────────────────────────────────────
+
+# "!why" cannot be read, and fails with `why`.
+fun readFrom(input: List<String>): (:List<String>, :Next<String>) => match(head(input))
+  (m: String) => startsWith(m, "!")
+    ? (dropOne(input), Failed<String>(slice(m, 1, length(m))))
+    : (dropOne(input), More<String>(m))
+  ()          => (input, Done<String>())
+
+# The state counts the messages handled; what is captured is that count.
+fun countSoFar(count: Int, m: String): String => String(count)
+
+# "quit" stops the server, "silent" has no reply, and anything else is
+# echoed with what was captured for it.
+fun handled(count: Int, seen: String, m: String): (:Int, :Next<List<String>>)
+  ret m == "quit" ? (count, Done<List<String>>())
+    : m == "silent" ? (count + 1, More<List<String>>(List()))
+    : (count + 1, More<List<String>>(List(m + "@" + seen)))
+
+# The reply "unwritable@N" cannot be written.
+fun writeTo(output: List<String>, reply: String): (:List<String>, :String|None)
+  ret startsWith(reply, "unwritable")
+    ? (output, "full")
+    : (append(output, reply), None)
+
+fun served(input: List<String>): (input: List<String>, output: List<String>, state: Int, failure: String|None)
+  ret serve(input, List<String>(), 0, readFrom, countSoFar, handled, writeTo)
+
+fun failureOf(f: String|None): String => f ?? "<none>"
+
+
+# ── tests ────────────────────────────────────────────────────────────────────
+
+fun [test("each message is handled in turn until the input ends")] untilTheInputEnds(): None|TestFailure
+  let r = served(List("a", "b"))
+  ret assertEqStr(join(r.output, ","), "a@0,b@1", "replies")
+   ?? assertEqInt(r.state, 2, "final state")
+   ?? assertEqStr(failureOf(r.failure), "<none>", "failure")
+
+fun [test("a handler that stops leaves the rest of the input unread")] handlerStops(): None|TestFailure
+  let r = served(List("a", "quit", "b"))
+  ret assertEqStr(join(r.output, ","), "a@0", "replies")
+   ?? assertEqStr(join(r.input, ","), "b", "unread")
+   ?? assertEqStr(failureOf(r.failure), "<none>", "failure")
+
+fun [test("a message that cannot be read stops the server with why")] readFails(): None|TestFailure
+  let r = served(List("a", "!broken", "b"))
+  ret assertEqStr(join(r.output, ","), "a@0", "replies")
+   ?? assertEqStr(join(r.input, ","), "b", "unread")
+   ?? assertEqStr(failureOf(r.failure), "broken", "failure")
+
+fun [test("a reply that cannot be written stops the server with why")] writeFails(): None|TestFailure
+  let r = served(List("a", "unwritable", "b"))
+  ret assertEqStr(join(r.output, ","), "a@0", "replies")
+   ?? assertEqStr(join(r.input, ","), "b", "unread")
+   ?? assertEqStr(failureOf(r.failure), "full", "failure")
+
+fun [test("a message may have no reply")] noReply(): None|TestFailure
+  let r = served(List("silent", "a"))
+  ret assertEqStr(join(r.output, ","), "a@1", "replies")

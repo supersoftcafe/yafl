@@ -30,8 +30,8 @@ import Bootstrap::Types
 class [final] Libraries(lbLayers: List<List<PStmt>>, lbOwners: List<Owner>,
                         lbBase: RRoot|None, lbIndex: List<NsEntry>)
 
-# The installed libraries, converged; or why they cannot be.
-fun loadLibraries(): Libraries|String => match(availableLibraries(List()))
+# The installed libraries, as read, converged; or why they cannot be.
+fun librariesFrom(found: LibResult): Libraries|String => match(found)
   (e: LibsErr) => e.libsWhy
   (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
     (why: String)        => why

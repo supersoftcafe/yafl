@@ -7,43 +7,41 @@
 #
 # Content-Length counts BYTES, and IO.read(length) reads bytes, so the body is
 # read exactly. Any other header (the spec allows Content-Type) is ignored.
+#
+# A message read is a body, Done() when the client closed the stream between
+# messages, or Failed(why) when the stream broke inside one or its header
+# cannot be read.
 
 namespace Bootstrap::Lsp
 
 import System
 import System::IO
+import System::Server
 
 
 # ── reading ──────────────────────────────────────────────────────────────────
 
-enum Incoming
-  enum InMessage(inBody: String)
-  # The client closed the stream between messages.
-  enum InEnd()
-  # The stream broke inside a message, or its header cannot be read.
-  enum InBroken(inWhy: String)
-
-fun readMessage(io: IO): (io: IO, v: Incoming)
+fun readMessage(io: IO): (io: IO, v: Next<String>)
   let h = readHeaders(io, None, true)
   ret match(h.v)
-    (n: Int)      => readBody(h.io, n, "")
-    (i: Incoming) => (h.io, i)
+    (n: Int)          => readBody(h.io, n, "")
+    (x: Next<String>) => (h.io, x)
 
 # Header lines up to the empty line that ends them: the Content-Length, or
 # why there is none. `first`: nothing of this message has been read yet, so
 # the end of the stream here is a clean end.
-fun [tail] readHeaders(io: IO, length: Int|None, first: Bool): (io: IO, v: Int|Incoming)
+fun [tail] readHeaders(io: IO, length: Int|None, first: Bool): (io: IO, v: Int|Next<String>)
   let r = readLine(io, 8192)
   ret match(r.v)
-    (e: EOFError) => (r.io, first ? InEnd() : InBroken("the stream ended inside a header"))
-    (e: IOError)  => (r.io, InBroken("the header cannot be read"))
+    (e: EOFError) => (r.io, first ? Done<String>() : Failed<String>("the stream ended inside a header"))
+    (e: IOError)  => (r.io, Failed<String>("the header cannot be read"))
     (line: String) => trimEnd(line) == ""
       ? (r.io, headersEnd(length))
       : readHeaders(r.io, headerLength(trimEnd(line), length), false)
 
-fun headersEnd(length: Int|None): Int|Incoming => match(length)
+fun headersEnd(length: Int|None): Int|Next<String> => match(length)
   (n: Int) => n
-  ()       => InBroken("a message has no Content-Length")
+  ()       => Failed<String>("a message has no Content-Length")
 
 fun headerLength(line: String, length: Int|None): Int|None
   ret startsWith(line, "Content-Length:")
@@ -51,16 +49,20 @@ fun headerLength(line: String, length: Int|None): Int|None
     : length
 
 # Exactly `n` bytes: a read may return fewer than it was asked for.
-fun [tail] readBody(io: IO, n: Int, acc: String): (io: IO, v: Incoming)
+fun [tail] readBody(io: IO, n: Int, acc: String): (io: IO, v: Next<String>)
   if System::length(acc) >= n
-    ret (io, InMessage(acc))
+    ret (io, More<String>(acc))
   let r = io.read(n - System::length(acc))
   ret match(r.v)
     (part: String) => readBody(r.io, n, acc + part)
-    (e: IOError)   => (r.io, InBroken("the stream ended inside a message"))
+    (e: IOError)   => (r.io, Failed<String>("the stream ended inside a message"))
 
 
 # ── writing ──────────────────────────────────────────────────────────────────
 
-fun writeMessage(io: IO, body: String): (io: IO, v: Int|IOError)
-  ret writeAll(io, "Content-Length: " + String(System::length(body)) + "\r\n\r\n" + body)
+# Why the message cannot be written, if it cannot.
+fun writeMessage(io: IO, body: String): (io: IO, v: String|None)
+  let w = writeAll(io, "Content-Length: " + String(System::length(body)) + "\r\n\r\n" + body)
+  ret match(w.v)
+    (n: Int)     => (w.io, None)
+    (e: IOError) => (w.io, "the reply cannot be written")
