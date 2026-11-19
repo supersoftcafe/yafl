@@ -640,16 +640,21 @@ class _Failed:
     warnings: list[Error]
 
 
-def __iterate_and_compile(layers: list[list[s.Statement]],
-                          owners: "list[library_rules.Owner] | None" = None, just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
-                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([]),
-                          inline: "InlineOptions" = None) -> tuple[str, list[Error]] | _Failed:
-    """`layers`: the program's statements, one list per library in
-    dependency order and the program's own last (#136); `owners`, who
-    declares each (None: one program and no libraries). Returns (c_code,
-    warnings) on success, or _Failed on failure."""
-    if owners is None:
-        owners = [library_rules.Owner(None, frozenset())] * len(layers)
+@dataclasses.dataclass(frozen=True)
+class _Analysed:
+    """The front end's result on a clean program (#26): the converged
+    statements and the warnings. Every error a program can have is found by
+    `__analyse`; one found later is a compiler bug."""
+    statements: list[s.Statement]
+    warnings: list[Error]
+
+
+def __analyse(layers: list[list[s.Statement]], owners: "list[library_rules.Owner]",
+              enabled_warnings: frozenset[str]) -> _Analysed | _Failed:
+    """The front end on a program's layers, as data: convergence and the
+    checks on the converged tree. The compile carries on from _Analysed;
+    an editor reports either. Raises ConvergenceError when a convergence
+    does not settle."""
     # Regex literals: validate at compile time and intern each distinct
     # pattern as one shared `$regexes::` global. Before convergence — the
     # created globals need typing like any other statement. They lead the
@@ -657,9 +662,14 @@ def __iterate_and_compile(layers: list[list[s.Statement]],
     layers, regex_errors = lowering.regexes.fix_global_regexes(layers)
     if regex_errors:
         return _Failed(regex_errors, [])
-    converged = __converge_layers(layers)
-    # Rule 2 (#136): no orphan instances. On the converged layers, where
-    # every instance's interface and types have resolved.
+    return __check_converged(__converge_layers(layers), owners, enabled_warnings)
+
+
+def __check_converged(converged: list[list[s.Statement]], owners: "list[library_rules.Owner]",
+                      enabled_warnings: frozenset[str]) -> _Analysed | _Failed:
+    """Rule 2 (#136): no orphan instances. On the converged layers, where
+    every instance's interface and types have resolved. Then global lambdas
+    become functions and the affine drops go in."""
     orphans = [err for owner, layer in zip(owners, converged)
                for err in library_rules.orphan_errors(owner, layer)]
     if orphans:
@@ -679,9 +689,14 @@ def __iterate_and_compile(layers: list[list[s.Statement]],
     new_statements, dropped = lowering.drops.insert_drops(new_statements)
     if dropped:
         new_statements, resolver, _passes = __converge(new_statements)
+    return __checked_program(new_statements, resolver, enabled_warnings)
 
-    mains = [stmt for stmt in new_statements if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
 
+def __checked_program(new_statements: list[s.Statement], resolver: g.Resolver,
+                      enabled_warnings: frozenset[str]) -> _Analysed | _Failed:
+    """The check phase, after the drops re-convergence: diagnostics, then
+    linearity on a clean check. Once the diagnostics pass, their warnings
+    ride along whatever fails later."""
     failures, warnings = __collect_diagnostics(new_statements, resolver, enabled_warnings)
     if failures:
         return _Failed(failures, [])
@@ -692,6 +707,24 @@ def __iterate_and_compile(layers: list[list[s.Statement]],
     linearity_errors = lowering.linearity.check_linearity(new_statements, resolver)
     if linearity_errors:
         return _Failed(linearity_errors, warnings)
+    return _Analysed(new_statements, warnings)
+
+
+def __iterate_and_compile(layers: list[list[s.Statement]],
+                          owners: "list[library_rules.Owner] | None" = None, just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
+                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([]),
+                          inline: "InlineOptions" = None) -> tuple[str, list[Error]] | _Failed:
+    """`layers`: the program's statements, one list per library in
+    dependency order and the program's own last (#136); `owners`, who
+    declares each (None: one program and no libraries). Returns (c_code,
+    warnings) on success, or _Failed on failure."""
+    if owners is None:
+        owners = [library_rules.Owner(None, frozenset())] * len(layers)
+    analysed = __analyse(layers, owners, enabled_warnings)
+    if isinstance(analysed, _Failed):
+        return analysed
+    new_statements, warnings = analysed.statements, analysed.warnings
+    mains = [stmt for stmt in new_statements if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
 
     # [hashed] functions split into wrapper + $hraw sibling — needs converged
     # types (the parameter's EnumSpec), and must precede monomorphisation so

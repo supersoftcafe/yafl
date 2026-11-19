@@ -435,7 +435,7 @@ enum PmRes
 # phase collected, carried forward so a successful build can still print
 # them — mirrors compiler.py's compile_project returning `warnings`
 # alongside the C code, printed by main.py after the fact. Fixes a
-# divergence: this driver used to compute warnings in postmonoGate and drop
+# divergence: this driver used to compute warnings in its check phase and drop
 # them on success, while main.py always printed them. GatedResult is used
 # only by the compile path (the CLI and the project modes), never by the dump
 # modes that share plain PmRes/PmOk.
@@ -451,51 +451,14 @@ fun postmonoRes(text): PmRes => match(parseMulti(text))
   ()                   => PmText("parse error\n", 1)
 
 # Dump-mode telescoping only: never runs the check phase, so it never needs
-# warnings carried forward. The compile path goes through
-# postmonoRes2Gated instead — see the comment there for why the two split.
+# warnings carried forward. The compile path goes through `analyse` instead,
+# which runs the checks and returns their diagnostics as data.
 fun postmonoRes2(stmts0: List<PStmt>): PmRes
   let lowered = lowerLambdaGlobals(stmts0)
   let d0 = insertDrops(lowered, rootResolver(lowered))
   ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
     (ok: CvOk)       => postmonoRes3(ok.cvStatements)
     (dv: CvDiverged) => PmText(printedDiagnostics(dv.cvErrs), 2)
-
-# The gated path: runs the user-facing CHECK PHASE — diagnostics then
-# linearity — at compiler.py's exact position (after the drops
-# re-convergence), same as postmonoRes2 used to when
-# called with `gated=true`. Split into its own function (rather than a Bool
-# flag) because its result type differs: GatedResult carries the check
-# phase's warnings forward through postmonoRes3's shared dump-mode chain,
-# which plain PmRes has no room for.
-#
-# Without the check phase the C path ran NO checks at all: `let x =
-# System::nosuchname` compiled to C and exited 0 where Python printed "Failed
-# to resolve" and exited 1. Byte-identical output means nothing if the two
-# compilers disagree about which programs are legal, and every
-# invalid-program shape tried — bare undefined name, undefined call, undefined
-# name inside a generic call, plain type mismatch — leaked through this hole.
-fun postmonoRes2Gated(stmts0: List<PStmt>, enabledWarnings: Set<String>): GatedResult
-  let lowered = lowerLambdaGlobals(stmts0)
-  let d0 = insertDrops(lowered, rootResolver(lowered))
-  ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
-    (ok: CvOk)       => postmonoGate(ok.cvStatements, enabledWarnings)
-    (dv: CvDiverged) => GatedResult(PmText(printedDiagnostics(dv.cvErrs), 2), noErrs())
-
-# compiler.py: `failures, warnings = __collect_diagnostics(...)` then
-# `if failures: return failures`, and linearity right after on a clean check.
-# A failure is a REFUSAL — code 1, no C — matching main.py, which exits 1 when
-# compile_project hands back no code so a build system cannot pick up a stale
-# object file. Once the diagnostics pass, their warnings ride along in
-# GatedResult whatever fails later, and are reported (compiler.py's _Failed).
-fun postmonoGate(stmts, enabledWarnings: Set<String>): GatedResult
-  let r = rootResolver(stmts)
-  let d = collectDiagnostics(stmts, r, enabledWarnings)
-  if !isEmpty(d.dFails)
-    ret GatedResult(PmText(printedDiagnostics(d.dFails), 1), noErrs())
-  let lin = checkLinearity(stmts, r)
-  if !isEmpty(lin)
-    ret GatedResult(PmText(printedDiagnostics(lin), 1), d.dWarns)
-  ret GatedResult(postmonoRes3(stmts), d.dWarns)
 
 fun postmonoRes3(stmts0: List<PStmt>): PmRes
   # [hashed] split — needs converged types, and precedes monomorphisation so
@@ -674,26 +637,70 @@ fun [tail] convergeLayers(layers: List<List<PStmt>>, base: RRoot|None,
 # compile error.
 fun noProgramCode(code: Int) => code == 0 ? 1 : code
 
+# ── analysis ─────────────────────────────────────────────────────────────────
+# The front end on a program's layers, as data (#26): the converged program
+# with its warnings, or the diagnostics that stop it. Every error a program can
+# have is found here; one found later is a compiler bug. The compile carries
+# on from AnOk and prints an AnFailed; an editor reports either.
+enum Analysis
+  enum AnOk(anStmts: List<PStmt>, anWarns: Set<PErr>)
+  # anCode: 2 when a convergence did not settle (a compiler bug), else 1.
+  enum AnFailed(anErrs: Set<PErr>, anWarns: Set<PErr>, anCode: Int)
+
 # Regex literals are validated and interned BEFORE convergence (__iterate_and_compile):
 # the globals they become need typing like any other statement. They lead the
 # program, so they join the lowest layer, where every layer can see them.
-fun convergeToPostmono(layers: List<List<PStmt>>, owners: List<Owner>,
-                       enabledWarnings: Set<String>): GatedResult
+fun analyse(layers: List<List<PStmt>>, owners: List<Owner>,
+            enabledWarnings: Set<String>): Analysis
   let rx = fixGlobalRegexes(layers)
   if !isEmpty(rx.rlErrs)
-    ret GatedResult(PmText(printedDiagnostics(rx.rlErrs), 1), noErrs())
+    ret AnFailed(rx.rlErrs, noErrs(), 1)
   ret match(convergeLayers(rx.rlLayers, None, List()))
-    (converged: List<List<PStmt>>) => orphanGate(converged, owners, enabledWarnings)
-    (d: CvDiverged)                => GatedResult(PmText(printedDiagnostics(d.cvErrs), 2), noErrs())
+    (converged: List<List<PStmt>>) => checkConverged(converged, owners, enabledWarnings)
+    (d: CvDiverged)                => AnFailed(d.cvErrs, noErrs(), 2)
 
 # Rule 2 (#136): no orphan instances. On the converged layers, where every
-# instance's interface and types have resolved.
-fun orphanGate(converged: List<List<PStmt>>, owners: List<Owner>,
-               enabledWarnings: Set<String>): GatedResult
+# instance's interface and types have resolved. Then global lambdas become
+# functions and the affine drops go in, which needs one more convergence.
+fun checkConverged(converged: List<List<PStmt>>, owners: List<Owner>,
+                   enabledWarnings: Set<String>): Analysis
   let orphans = zipFold(owners, converged, Set<PErr>(), (acc, o, l) => union(acc, orphanErrors(o, l)))
   if !isEmpty(orphans)
-    ret GatedResult(PmText(printedDiagnostics(orphans), 1), noErrs())
-  ret postmonoRes2Gated(flatMap(converged, (l) => l), enabledWarnings)
+    ret AnFailed(orphans, noErrs(), 1)
+  let lowered = lowerLambdaGlobals(flatMap(converged, (l) => l))
+  let d0 = insertDrops(lowered, rootResolver(lowered))
+  ret match(d0.dsChanged ? converge(d0.dsStmts) : CvOk(d0.dsStmts, 0))
+    (ok: CvOk)       => checkedProgram(ok.cvStatements, enabledWarnings)
+    (dv: CvDiverged) => AnFailed(dv.cvErrs, noErrs(), 2)
+
+# The CHECK PHASE, at compiler.py's exact position (after the drops
+# re-convergence): `failures, warnings = __collect_diagnostics(...)` then
+# `if failures: return failures`, and linearity right after on a clean check.
+# A failure is a REFUSAL — code 1, no C — matching main.py, which exits 1 when
+# compile_project hands back no code so a build system cannot pick up a stale
+# object file. Once the diagnostics pass, their warnings ride along whatever
+# fails later, and are reported (compiler.py's _Failed). When the diagnostics
+# themselves fail, their failures already include the warnings.
+#
+# Without the check phase the C path ran NO checks at all: `let x =
+# System::nosuchname` compiled to C and exited 0 where Python printed "Failed
+# to resolve" and exited 1. Byte-identical output means nothing if the two
+# compilers disagree about which programs are legal.
+fun checkedProgram(stmts: List<PStmt>, enabledWarnings: Set<String>): Analysis
+  let r = rootResolver(stmts)
+  let d = collectDiagnostics(stmts, r, enabledWarnings)
+  if !isEmpty(d.dFails)
+    ret AnFailed(d.dFails, noErrs(), 1)
+  let lin = checkLinearity(stmts, r)
+  if !isEmpty(lin)
+    ret AnFailed(lin, d.dWarns, 1)
+  ret AnOk(stmts, d.dWarns)
+
+# The compile path: the analysis, then the rest of the pipeline on AnOk.
+fun convergeToPostmono(layers: List<List<PStmt>>, owners: List<Owner>,
+                       enabledWarnings: Set<String>): GatedResult => match(analyse(layers, owners, enabledWarnings))
+  (ok: AnOk)     => GatedResult(postmonoRes3(ok.anStmts), ok.anWarns)
+  (f: AnFailed)  => GatedResult(PmText(printedDiagnostics(f.anErrs), f.anCode), f.anWarns)
 
 # Parts are parsed in CANONICAL ORDER — sorted by file name — so the emitted C
 # cannot depend on the order the caller happened to feed them in. Python
