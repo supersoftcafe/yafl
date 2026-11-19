@@ -1,0 +1,80 @@
+# bootstrap/lsp/protocol.yafl — JSON-RPC 2.0, as the Language Server Protocol
+# uses it (#26): a body becomes a Message, and replies become bodies.
+#
+# A message with a `method` and an `id` is a request, which gets exactly one
+# reply; with a `method` and no `id` it is a notification, which gets none. A
+# message with no `method` is a client's reply to a server request; this
+# server sends none, so those are ignored.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::Json
+
+import Bootstrap::StdlibCandidates
+
+
+enum Message
+  enum Request(rqId: JsonValue, rqMethod: String, rqParams: JsonValue)
+  enum Notification(ntMethod: String, ntParams: JsonValue)
+  enum ClientReply()
+  # A body that is not a message: its reply, when one can be addressed.
+  enum Malformed(mfReply: String|None)
+
+fun decode(body: String): Message => match(parse(body))
+  (e: JsonParseError) => Malformed(errorReply(JsonNull(), parseErrorCode(), "the message is not JSON"))
+  (v: JsonValue)      => decodeValue(v)
+
+fun decodeValue(v: JsonValue): Message => match(field(v, "method"))
+  (m: JsonStr)   => match(field(v, "id"))
+    (id: JsonValue) => Request(id, m.strValue, field(v, "params") ?? JsonNull())
+    ()              => Notification(m.strValue, field(v, "params") ?? JsonNull())
+  (o: JsonValue) => match(field(v, "id"))
+    (id: JsonValue) => Malformed(errorReply(id, invalidRequestCode(), "the method is not a string"))
+    ()              => Malformed(None)
+  ()             => match(field(v, "id"))
+    (id: JsonValue) => ClientReply()
+    ()              => Malformed(None)
+
+
+# ── replies ──────────────────────────────────────────────────────────────────
+
+fun resultReply(id: JsonValue, result: JsonValue): String
+  ret stringify(JsonObj(List(JsonPair("jsonrpc", JsonStr("2.0")), JsonPair("id", id),
+                             JsonPair("result", result))), false)
+
+fun errorReply(id: JsonValue, code: Int, message: String): String
+  ret stringify(JsonObj(List(JsonPair("jsonrpc", JsonStr("2.0")), JsonPair("id", id),
+                             JsonPair("error", JsonObj(List(JsonPair("code", JsonInt(code)),
+                                                            JsonPair("message", JsonStr(message))))))),
+                false)
+
+fun notificationBody(method: String, params: JsonValue): String
+  ret stringify(JsonObj(List(JsonPair("jsonrpc", JsonStr("2.0")), JsonPair("method", JsonStr(method)),
+                             JsonPair("params", params))), false)
+
+# JSON-RPC's codes, and the ones LSP adds.
+fun parseErrorCode() => -32700
+fun invalidRequestCode() => -32600
+fun methodNotFoundCode() => -32601
+fun serverNotInitializedCode() => -32002
+
+
+# ── reading JSON ─────────────────────────────────────────────────────────────
+
+# The value under `key` in an object; None when `v` is not an object or has
+# no such key.
+fun field(v: JsonValue, key: String): JsonValue|None => match(v)
+  (o: JsonObj)   => match(firstWhere(o.pairs, (p) => p.key == key))
+    (p: JsonPair) => p.value
+    ()            => None
+  (x: JsonValue) => None
+
+fun stringField(v: JsonValue, key: String): String|None => match(field(v, key))
+  (s: JsonStr) => s.strValue
+  ()           => None
+
+fun intField(v: JsonValue, key: String): Int|None => match(field(v, key))
+  (i: JsonInt) => i.intValue
+  ()           => None

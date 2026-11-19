@@ -1,0 +1,66 @@
+# bootstrap/lsp/framing.yafl — the Language Server Protocol's base protocol
+# (#26): each message is a header part and a JSON body.
+#
+#   Content-Length: 52\r\n
+#   \r\n
+#   {"jsonrpc":"2.0","id":1,"method":"initialize",...}
+#
+# Content-Length counts BYTES, and IO.read(length) reads bytes, so the body is
+# read exactly. Any other header (the spec allows Content-Type) is ignored.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::IO
+
+
+# ── reading ──────────────────────────────────────────────────────────────────
+
+enum Incoming
+  enum InMessage(inBody: String)
+  # The client closed the stream between messages.
+  enum InEnd()
+  # The stream broke inside a message, or its header cannot be read.
+  enum InBroken(inWhy: String)
+
+fun readMessage(io: IO): (io: IO, v: Incoming)
+  let h = readHeaders(io, None, true)
+  ret match(h.v)
+    (n: Int)      => readBody(h.io, n, "")
+    (i: Incoming) => (h.io, i)
+
+# Header lines up to the empty line that ends them: the Content-Length, or
+# why there is none. `first`: nothing of this message has been read yet, so
+# the end of the stream here is a clean end.
+fun [tail] readHeaders(io: IO, length: Int|None, first: Bool): (io: IO, v: Int|Incoming)
+  let r = readLine(io, 8192)
+  ret match(r.v)
+    (e: EOFError) => (r.io, first ? InEnd() : InBroken("the stream ended inside a header"))
+    (e: IOError)  => (r.io, InBroken("the header cannot be read"))
+    (line: String) => trimEnd(line) == ""
+      ? (r.io, headersEnd(length))
+      : readHeaders(r.io, headerLength(trimEnd(line), length), false)
+
+fun headersEnd(length: Int|None): Int|Incoming => match(length)
+  (n: Int) => n
+  ()       => InBroken("a message has no Content-Length")
+
+fun headerLength(line: String, length: Int|None): Int|None
+  ret startsWith(line, "Content-Length:")
+    ? parseInt(trim(slice(line, 15, System::length(line))))
+    : length
+
+# Exactly `n` bytes: a read may return fewer than it was asked for.
+fun [tail] readBody(io: IO, n: Int, acc: String): (io: IO, v: Incoming)
+  if System::length(acc) >= n
+    ret (io, InMessage(acc))
+  let r = io.read(n - System::length(acc))
+  ret match(r.v)
+    (part: String) => readBody(r.io, n, acc + part)
+    (e: IOError)   => (r.io, InBroken("the stream ended inside a message"))
+
+
+# ── writing ──────────────────────────────────────────────────────────────────
+
+fun writeMessage(io: IO, body: String): (io: IO, v: Int|IOError)
+  ret writeAll(io, "Content-Length: " + String(System::length(body)) + "\r\n\r\n" + body)

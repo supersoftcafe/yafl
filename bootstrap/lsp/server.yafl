@@ -1,0 +1,105 @@
+# bootstrap/lsp/server.yafl — `yaflc --lsp` (#26): a language server on stdin
+# and stdout.
+#
+# The server is a pure fold, step(state, message) → (state, replies), and the
+# loop around it is the only code that does IO: it reads one message, steps,
+# writes the replies, and goes round again until the session ends.
+#
+# The lifecycle: requests before `initialize` are refused; after `shutdown`
+# only `exit` is accepted; `exit` ends the session, with 0 when `shutdown`
+# came first and 1 when it did not. A stream that closes or breaks without an
+# `exit` also ends it, with 1.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::IO
+import System::Json
+
+
+# ── state ────────────────────────────────────────────────────────────────────
+
+enum Phase
+  enum Waiting()     # before `initialize`
+  enum Running()
+  enum ShutDown()    # after `shutdown`, waiting for `exit`
+
+class [final] Server(svPhase: Phase)
+
+fun freshServer(): Server => Server(Waiting())
+
+# What one message does: the state after it, the bodies to send, and the exit
+# code when it ends the session.
+class [final] Step(stState: Server, stReplies: List<String>, stExit: Int|None)
+
+
+# ── the fold ─────────────────────────────────────────────────────────────────
+
+fun step(sv: Server, m: Message): Step => match(m)
+  (rq: Request)      => request(sv, rq)
+  (nt: Notification) => notification(sv, nt)
+  (cr: ClientReply)  => Step(sv, List(), None)
+  (mf: Malformed)    => Step(sv, repliesOf(mf.mfReply), None)
+
+fun repliesOf(reply: String|None): List<String> => match(reply)
+  (r: String) => List(r)
+  ()          => List()
+
+fun request(sv: Server, rq: Request): Step => match(sv.svPhase)
+  (w: Waiting)  => rq.rqMethod == "initialize"
+    ? Step(with sv(svPhase = Running()), List(resultReply(rq.rqId, initializeResult())), None)
+    : Step(sv, List(errorReply(rq.rqId, serverNotInitializedCode(), "the server is not initialized")), None)
+  (r: Running)  => running(sv, rq)
+  (d: ShutDown) => Step(sv, List(errorReply(rq.rqId, invalidRequestCode(), "the server is shutting down")), None)
+
+fun running(sv: Server, rq: Request): Step => match(rq.rqMethod)
+  ("shutdown") => Step(with sv(svPhase = ShutDown()), List(resultReply(rq.rqId, JsonNull())), None)
+  (other)      => Step(sv, List(errorReply(rq.rqId, methodNotFoundCode(), "unknown method: " + other)), None)
+
+# Notifications get no reply. Unknown ones are ignored, as the protocol asks.
+fun notification(sv: Server, nt: Notification): Step
+  ret nt.ntMethod == "exit"
+    ? Step(sv, List(), sv.svPhase is ShutDown ? 0 : 1)
+    : Step(sv, List(), None)
+
+# Positions are UTF-16 units, the protocol's default and the only encoding
+# every client supports.
+fun initializeResult(): JsonValue
+  ret JsonObj(List(JsonPair("capabilities", JsonObj(List(JsonPair("positionEncoding", JsonStr("utf-16"))))),
+                   JsonPair("serverInfo", JsonObj(List(JsonPair("name", JsonStr("yaflc")))))))
+
+
+# ── the loop ─────────────────────────────────────────────────────────────────
+
+fun [impure] lspMain(): Int
+  ret serve(stdin(), stdout(), freshServer())
+
+fun [tail] serve(input: IO, output: IO, sv: Server): Int
+  let r = readMessage(input)
+  let s = stepOn(sv, r.v)
+  let w = writeReplies(output, s.stReplies)
+  ret match(w.v, s.stExit)
+    (failed: IOError, x)   => closeBoth(r.io, w.io, 1)
+    (ok: None, code: Int)  => closeBoth(r.io, w.io, code)
+    (ok: None, n: None)    => serve(r.io, w.io, s.stState)
+
+fun stepOn(sv: Server, in: Incoming): Step => match(in)
+  (m: InMessage) => step(sv, decode(m.inBody))
+  (e: InEnd)     => Step(sv, List(), 1)
+  (b: InBroken)  => Step(sv, List(), 1)
+
+fun [tail] writeReplies(io: IO, replies: List<String>): (io: IO, v: IOError|None) => match(head(replies))
+  (body: String) => writeMessage(io, body) |> (w) => match(w.v)
+    (e: IOError) => (w.io, e)
+    (n: Int)     => writeReplies(w.io, dropOne(replies))
+  ()             => (io, None)
+
+# Both handles are released whatever their close reports: the session is over.
+fun closeBoth(input: IO, output: IO, code: Int): Int => match(input.close())
+  (e: IOError) => closeThen(output, code)
+  ()           => closeThen(output, code)
+
+fun closeThen(io: IO, code: Int): Int => match(io.close())
+  (e: IOError) => code
+  ()           => code
