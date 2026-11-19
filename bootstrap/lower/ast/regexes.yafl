@@ -7,6 +7,7 @@
 #
 #     let $regexes::regex@N: System::Regex = Regex("pattern")
 #
+# in the layer that uses it (#26); a library's are `regex@<library>@N`.
 # Identical literals dedup, and a literal inside a loop never reconstructs its
 # Regex: the global's non-trivial initialiser auto-promotes to `[lazy]`, so
 # each pattern compiles once per process, on first use. Runs BEFORE the
@@ -25,24 +26,37 @@ import Bootstrap::StdlibCandidates
 import Bootstrap::Types
 
 
-# rlLayers: the program's layers (#136), each rewritten in place; the globals
-# lead the first, where every layer can see them.
+# rlLayers: the program's layers (#136), each with its own literals' globals.
 class [final] RegexLowering(rlLayers: List<List<PStmt>>, rlErrs: Set<PErr>)
 
-fun fixGlobalRegexes(layers: List<List<PStmt>>): RegexLowering
-  let found = fold(layers, List<PeRegex>(), (acc, l) => foldStmts(l, rxIdNames, rxCollect, acc))
+# `libraries`: the library that declares each layer (None: the program). Each
+# layer's literals become globals of that layer, so a layer never changes
+# because another one did (#26).
+fun fixGlobalRegexes(layers: List<List<PStmt>>, libraries: List<String|None>): RegexLowering
+  let results = zipFold(layers, libraries, List<(layer: List<PStmt>, errs: Set<PErr>)>(),
+                        (acc, layer, library) => append(acc, rxLayer(layer, library)))
+  ret RegexLowering(map(results, (x) => x.layer),
+                    fold(results, Set<PErr>(), (a, x) => union(a, x.errs)))
+
+fun rxLayer(layer: List<PStmt>, library: String|None): (layer: List<PStmt>, errs: Set<PErr>)
+  let found = foldStmts(layer, rxIdNames, rxCollect, List<PeRegex>())
   if isEmpty(found)
-    ret RegexLowering(layers, Set())
+    ret (layer = layer, errs = Set<PErr>())
   # Sorted before numbering, like $strings: discovery order must never reach
   # the generated names.
   let patterns = sort(Set(map(found, (r) => r.pattern)))
   let errs = rxErrors(patterns, found, Set())
   if !isEmpty(errs)
-    ret RegexLowering(layers, errs)
-  let rewritten = map(layers, (l) => rwStmts(l, rwOnExpr((x) => rxReplace(x, patterns))))
-  ret RegexLowering(prepend(concat(rxGlobals(patterns, 0, List()), head(rewritten) ?? List()),
-                            dropOne(rewritten)),
-                    Set())
+    ret (layer = layer, errs = errs)
+  ret (layer = concat(rxGlobals(patterns, library, 0, List()),
+                      rwStmts(layer, rwOnExpr((x) => rxReplace(x, patterns, library)))),
+       errs = Set<PErr>())
+
+# Named by the layer's owner and the pattern's number in that layer: two
+# layers using one pattern each have a global of their own.
+fun rxName(library: String|None, index: Int): String => match(library)
+  (lib: String) => "$regexes::regex@" + lib + "@" + String(index)
+  ()            => "$regexes::regex@" + String(index)
 
 fun rxIdNames(acc, st: PStmt): List<PeRegex> => acc
 
@@ -66,21 +80,21 @@ fun firstLine(rs: List<PeRegex>, pattern: String): PLine => match(firstWhere(rs,
 fun regexLine(index: Int) => PLine("$regexes", index + 1, 1)
 
 # The index travels in the accumulator beside the statements.
-fun rxGlobals(ps: List<String>, index: Int, acc: List<PStmt>): List<PStmt>
+fun rxGlobals(ps: List<String>, library: String|None, index: Int, acc: List<PStmt>): List<PStmt>
   ret fold(ps, (out = acc, i = index),
            (st, p) =>
-             (out = append(st.out, rxGlobal(p, st.i)), i = st.i + 1)).out
+             (out = append(st.out, rxGlobal(p, library, st.i)), i = st.i + 1)).out
 
-fun rxGlobal(p: String, index: Int): PStmt
-  ret PsLet("$regexes::regex@" + String(index), List(), List(),
+fun rxGlobal(p: String, library: String|None, index: Int): PStmt
+  ret PsLet(rxName(library, index), List(), List(),
             SNamed("System::Regex", List(), regexLine(index)),
             PeCall(PeName("System::Regex", List(), regexLine(index), None),
                    PeTuple(list1(PTupEnt("", false, PeStr(p, regexLine(index)))), regexLine(index)),
                    regexLine(index), None),
             "", List(), regexLine(index), false, List<PStmt>())
 
-fun rxReplace(x, patterns: List<String>) => match(x)
-  (r: PeRegex) => PeName("$regexes::regex@" + String(rxIndexOf(patterns, r.pattern, 0)),
+fun rxReplace(x, patterns: List<String>, library: String|None) => match(x)
+  (r: PeRegex) => PeName(rxName(library, rxIndexOf(patterns, r.pattern, 0)),
                          List(), regexLine(rxIndexOf(patterns, r.pattern, 0)), None)
   (o: PExpr)   => None
 

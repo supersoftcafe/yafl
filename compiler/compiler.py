@@ -657,9 +657,9 @@ def __analyse(layers: list[list[s.Statement]], owners: "list[library_rules.Owner
     does not settle."""
     # Regex literals: validate at compile time and intern each distinct
     # pattern as one shared `$regexes::` global. Before convergence — the
-    # created globals need typing like any other statement. They lead the
-    # program, so they join the lowest layer, where every layer can see them.
-    layers, regex_errors = lowering.regexes.fix_global_regexes(layers)
+    # created globals need typing like any other statement. Each layer's
+    # globals join that layer (#26).
+    layers, regex_errors = lowering.regexes.fix_global_regexes(layers, [o.library for o in owners])
     if regex_errors:
         return _Failed(regex_errors, [])
     return __check_converged(__converge_layers(layers), owners, enabled_warnings)

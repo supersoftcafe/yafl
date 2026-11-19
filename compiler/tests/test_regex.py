@@ -61,3 +61,49 @@ class TestRegexCompileTime(TestCase):
                        "let b = re\"(a)\\1\"\n"
                        "fun main(): Int\n  ret matches(b, \"aa\") ? 0 : 1\n")
         self.assertIn("regex", errs.lower())
+
+
+# A library layer and the program above it, sharing one pattern.
+_LIBRARY = """namespace Lib
+import System
+
+let digits = re"[0-9]+"
+"""
+
+_PROGRAM = """namespace Test
+import System
+
+let number = re"[0-9]+"
+let word   = re"[a-z]+"
+"""
+
+
+def _layer_names(layer) -> list[str]:
+    return [st.name for st in layer if st.name.startswith("$regexes::")]
+
+
+class TestRegexGlobalsPerLayer(TestCase):
+    """Each layer's literals become globals of that layer (#26): a language
+    server re-converges only the layers an edit reaches, so a regex written
+    in the program must not change a library's layer."""
+
+    def _layers(self, program: str):
+        import compiler as c
+        import lowering.regexes as rx
+        parse = c.__dict__["__tokenize_and_parse"]
+        library, e1 = parse([c.Input(_LIBRARY, "lib.yafl")])
+        user, e2 = parse([c.Input(program, "main.yafl")])
+        self.assertEqual([], e1 + e2)
+        layers, errors = rx.fix_global_regexes([library, user], ["lib", None])
+        self.assertEqual([], errors)
+        return layers
+
+    def test_each_layer_holds_its_own_globals(self):
+        library, user = self._layers(_PROGRAM)
+        self.assertEqual(["$regexes::regex@lib@0"], _layer_names(library))
+        self.assertEqual(["$regexes::regex@0", "$regexes::regex@1"], _layer_names(user))
+
+    def test_a_program_regex_leaves_the_library_alone(self):
+        with_regexes, _ = self._layers(_PROGRAM)
+        without, _ = self._layers("namespace Test\nimport System\n")
+        self.assertEqual(with_regexes, without)

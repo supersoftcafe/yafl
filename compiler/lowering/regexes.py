@@ -6,7 +6,8 @@ shared per-pattern global:
 
     let $regexes::regex@N: System::Regex = Regex("pattern")
 
-One global per DISTINCT pattern — identical literals dedup, and a literal
+in the layer that uses it (#26); a library's are `regex@<library>@N`. One
+global per DISTINCT pattern in a layer — identical literals dedup, and a literal
 inside a loop can never reconstruct its Regex: the global's non-trivial
 initialiser auto-promotes to `[lazy]`, so each pattern compiles exactly once
 per process, on first use. Mirrors lowering/strings.py; must run BEFORE the
@@ -124,9 +125,22 @@ def _validate(pattern: str) -> str | None:
     return None
 
 
-def fix_global_regexes(layers: list[list[s.Statement]]) -> tuple[list[list[s.Statement]], list[Error]]:
-    """`layers`: the program's layers (#136), each rewritten in place; the
-    globals lead the first, where every layer can see them."""
+def fix_global_regexes(layers: list[list[s.Statement]],
+                       libraries: list[str | None]) -> tuple[list[list[s.Statement]], list[Error]]:
+    """`layers`: the program's layers (#136); `libraries`, the library that
+    declares each (None: the program). Each layer's literals become globals
+    of that layer, so a layer never changes because another one did (#26)."""
+    results = [__rx_layer(layer, library) for layer, library in zip(layers, libraries)]
+    return [layer for layer, _ in results], [err for _, errs in results for err in errs]
+
+
+def __rx_name(library: str | None, index: int) -> str:
+    """Named by the layer's owner and the pattern's number in that layer: two
+    layers using one pattern each have a global of their own."""
+    return f"$regexes::regex@{index}" if library is None else f"$regexes::regex@{library}@{index}"
+
+
+def __rx_layer(layer: list[s.Statement], library: str | None) -> tuple[list[s.Statement], list[Error]]:
     # Collect every regex literal (with a line_ref for error reporting).
     found: dict[str, LineRef] = {}
 
@@ -135,26 +149,25 @@ def fix_global_regexes(layers: list[list[s.Statement]]) -> tuple[list[list[s.Sta
             found.setdefault(thing.pattern, thing.line_ref)
         return rw.UNCHANGED
 
-    for layer in layers:
-        for x in layer:
-            x.search_and_replace(g.ResolverRoot([]), collect)
+    for x in layer:
+        x.search_and_replace(g.ResolverRoot([]), collect)
     if not found:
-        return layers, []
+        return layer, []
 
     errors = [Error(lr, f"invalid regex: {msg}")
               for pattern, lr in sorted(found.items())
               if (msg := _validate(pattern)) is not None]
     if errors:
-        return layers, errors
+        return layer, errors
 
-    # One shared global per distinct pattern. Sorted before numbering, like
+    # One global per distinct pattern. Sorted before numbering, like
     # $strings — set/dict order must never reach name generation.
     def create_global(index: int, pattern: str) -> s.LetStatement:
         lr = LineRef("$regexes", index + 1, 1)
         init = e.CallExpression(lr,
             e.NamedExpression(lr, "System::Regex"),
             e.TupleExpression(lr, [e.TupleEntryExpression(None, e.StringExpression(lr, pattern))]))
-        return s.LetStatement(lr, f"$regexes::regex@{index}", ImportGroup(()), {}, (),
+        return s.LetStatement(lr, __rx_name(library, index), ImportGroup(()), {}, (),
                               init, t.NamedSpec(lr, "System::Regex"))
 
     global_statements = {pattern: create_global(index, pattern)
@@ -167,5 +180,4 @@ def fix_global_regexes(layers: list[list[s.Statement]]) -> tuple[list[list[s.Sta
             return references[thing.pattern]
         return thing
 
-    rewritten = [[x.search_and_replace(g.ResolverRoot([]), replace) for x in layer] for layer in layers]
-    return [list(global_statements.values()) + rewritten[0]] + rewritten[1:], []
+    return list(global_statements.values()) + [x.search_and_replace(g.ResolverRoot([]), replace) for x in layer], []

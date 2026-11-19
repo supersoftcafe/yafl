@@ -648,11 +648,11 @@ enum Analysis
   enum AnFailed(anErrs: Set<PErr>, anWarns: Set<PErr>, anCode: Int)
 
 # Regex literals are validated and interned BEFORE convergence (__iterate_and_compile):
-# the globals they become need typing like any other statement. They lead the
-# program, so they join the lowest layer, where every layer can see them.
+# the globals they become need typing like any other statement. Each layer's
+# globals join that layer (#26).
 fun analyse(layers: List<List<PStmt>>, owners: List<Owner>,
             enabledWarnings: Set<String>): Analysis
-  let rx = fixGlobalRegexes(layers)
+  let rx = fixGlobalRegexes(layers, map(owners, (o) => o.owLibrary))
   if !isEmpty(rx.rlErrs)
     ret AnFailed(rx.rlErrs, noErrs(), 1)
   ret match(convergeLayers(rx.rlLayers, None, List()))
