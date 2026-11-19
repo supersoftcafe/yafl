@@ -266,10 +266,15 @@ more test.c
 
 ## Editor support
 
-`vscode-yafl/` is a small, purely declarative Visual Studio Code extension for
-`.yafl` files: a TextMate grammar for syntax highlighting (kept in step with
-`compiler/parsing/tokenizer.py`), comment/bracket/indentation configuration, and
-a handful of snippets. It carries no language server and no bundled code.
+The compiler is a language server: `yaflc --lsp` speaks the Language Server
+Protocol on stdin and stdout, giving an editor every error and warning as you
+type, go to definition and find references. See
+[docs/language-server.md](docs/language-server.md).
+
+`vscode-yafl/` is the Visual Studio Code extension for `.yafl` files: a
+language client that runs `yaflc --lsp`, a TextMate grammar for syntax
+highlighting (kept in step with `compiler/parsing/tokenizer.py`),
+comment/bracket/indentation configuration, and a handful of snippets.
 
 It builds with its own standalone CMake project (like `examples/`, it is not part
 of the top-level build):
@@ -277,12 +282,13 @@ of the top-level build):
 cmake -S vscode-yafl -B vscode-yafl/build
 cmake --build vscode-yafl/build --target install-extension
 ```
-`install-extension` symlinks `vscode-yafl/` into `~/.vscode/extensions/yafl-0.1.0`
-(override the parent directory with `-DYAFL_VSCODE_EXTENSIONS_DIR=...`); run
+`install-extension` installs the client's npm dependencies (needs Node.js), then
+symlinks `vscode-yafl/` into `~/.vscode/extensions/yafl-0.2.0` (override the
+parent directory with `-DYAFL_VSCODE_EXTENSIONS_DIR=...`); run
 **Developer: Reload Window** in VS Code afterwards. Because it is a symlink,
-later grammar edits take effect on the next reload with no rebuild. Other
-targets: `uninstall-extension`, and `package-vsix` to build a `.vsix` via
-`npx @vscode/vsce` (needs Node.js). See `vscode-yafl/README.md` for details.
+later edits take effect on the next reload with no rebuild. Other targets:
+`uninstall-extension`, and `package-vsix` to build a `.vsix` via
+`npx @vscode/vsce`. See `vscode-yafl/README.md` for details.
 
 
 

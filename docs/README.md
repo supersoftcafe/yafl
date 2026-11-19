@@ -8,6 +8,7 @@ This folder contains design and reference documentation for YAFL. These document
 | [Language Guide](guide.md) | Narrative walkthrough of the language, from first program to advanced features |
 | [Language Reference](reference.md) | Authoritative reference for every language construct and built-in type |
 | [Source layout](style.md) | The one layout `yaflc --format` puts source in: blank lines, `=>` or `ret`, wrapping, ternaries, pipelines, comments |
+| [Language server](language-server.md) | `yaflc --lsp`: what it serves, what the program is, how libraries and analysis work, and the `System::Server` loop it runs on |
 | [Roadmap](roadmap.md) | Planned features and upcoming language additions |
 | [Internals](internals.md) | In-progress design notes on the garbage collector and runtime internals |
 | [Parser proposal](parser-proposal.md) | Design note: a self-hosted YAFL parser in the `parselib` combinator style |
