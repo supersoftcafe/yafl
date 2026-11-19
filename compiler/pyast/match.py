@@ -1136,8 +1136,11 @@ class MatchExpression(e.Expression):
         return em.finish(result_var)
 
     def __else_arm(self) -> MatchArm | None:
+        """The arm with no pattern at ANY position. `(n, r: String)` is not
+        one: its second position still tests."""
         return next((arm for arm in self.arms
-                     if arm.type_spec is None and not arm.literals), None)
+                     if arm.type_spec is None and not arm.literals
+                     and all(pos.type_spec is None for pos in arm.extra)), None)
 
     def __gen_primitive_match(self, em: _Emitter, subj_bundle, subj_type) -> None:
         """Literal-arm match on a primitive subject: Int (bigint), String (str),

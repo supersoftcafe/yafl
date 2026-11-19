@@ -21,6 +21,13 @@
 #     the repr decides, not the caller.
 #   * arity — the grammar cannot check it, since it does not know the subject
 #     count; the check phase does.
+#   * the else arm — an arm with no pattern at ANY position, `(n, r)` as much
+#     as `()`, is the fallback, generated once. Generating it as an arm too
+#     emitted its body twice, and a call inlined into it defined the same
+#     names twice.
+#     An arm that tests a LATER position, `(n, r: String)`, is not the else
+#     arm, however few patterns it has: taking it for one ran its body
+#     whenever every arm failed.
 #
 # One namespace per test: each program as written, its `main` renamed
 # `program`, checked by the [test] beside it.
@@ -212,3 +219,41 @@ fun program(): System::Int
 
 fun [test("a generic body's second position keeps its type")] check(): None|TestFailure
     ret assertEqInt(program(), 32, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::AnArmWithNoPatternIsTheElseArm
+
+import System
+import System::Test
+
+enum Pos(file: System::String, line: System::Int)
+
+fun pick(a: System::Int|System::String|System::None, b: System::String|System::None): System::Int
+  ret match(a, b)
+    (i: System::Int, r)      => i
+    (why: System::String, r) => Pos(why, 1).line
+    (n, r)                   => Pos("", 2).line + 10
+
+fun program(): System::Int
+  ret pick(5, None) + pick("x", None) * 100 + pick(None, "y") * 1000
+
+fun [test("an arm with no pattern at any position is the else arm")] check(): None|TestFailure
+    ret assertEqInt(program(), 12105, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::AnArmTestingALaterPositionIsNotTheElseArm
+
+import System
+import System::Test
+
+fun pick(a: System::Int|System::None, b: System::String|System::None): System::Int
+  ret match(a, b)
+    (n, r: System::String) => 1
+    (i: System::Int, r)    => 2
+    ()                     => 3
+
+fun program(): System::Int
+  ret pick(None, "s") + pick(5, None) * 10 + pick(None, None) * 100
+
+fun [test("an arm testing a later position is not the else arm")] check(): None|TestFailure
+    ret assertEqInt(program(), 321, "program()")
