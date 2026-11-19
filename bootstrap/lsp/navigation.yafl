@@ -9,6 +9,13 @@
 # unique name it resolved to. A declaration counts as a use of itself, so
 # asking from it finds the same name.
 #
+# Two kinds of name are not in the converged tree as written. A type alias
+# (`String`) becomes the type it names and an enum (`IOError`) its declared
+# spec, both carrying the DECLARATION's position, so the use is gone. Type
+# names are taken from the parsed program instead, each resolved in the scope
+# of the statement it is in. And a match arm's name is declared by the arm,
+# which is not a statement.
+#
 # Positions in the tree are the compiler's: a declaration's is where its
 # statement starts (`fun area` is at `fun`), a use's where it is written (a
 # qualified `System::length` is at `System`). The name itself is looked for
@@ -42,24 +49,47 @@ class [final] Use(useAt: PLine, useKey: String)
 fun declarations(stmts: List<PStmt>, pathOf: (:String): String,
                  acc: Dict<String, Place>): Dict<String, Place>
   ret foldStmts(stmts, (d: Dict<String, Place>, st: PStmt) => declared(d, st, pathOf),
-                (d: Dict<String, Place>, x: PExpr) => d, acc)
+                (d: Dict<String, Place>, x: PExpr) => armsDeclared(d, x, pathOf), acc)
 
 fun declared(d: Dict<String, Place>, st: PStmt, pathOf: (:String): String): Dict<String, Place>
-  let name = stmtName(st)
-  ret isUnique(name) && get(d, name) is None
-    ? put(d, name, Place(pathOf(stmtLine(st).plFile), stmtLine(st)))
-    : d
+  ret placed(d, stmtName(st), stmtLine(st), pathOf)
 
-# Every use in `stmts`, and every declaration as a use of itself.
-fun uses(stmts: List<PStmt>): List<Use>
-  ret walkStmts(stmts, emptyResolverGlobal, List<Use>(),
+fun placed(d: Dict<String, Place>, name: String, at: PLine, pathOf: (:String): String): Dict<String, Place>
+  ret isUnique(name) && get(d, name) is None ? put(d, name, Place(pathOf(at.plFile), at)) : d
+
+# A match's arms each declare their names, at every position.
+fun armsDeclared(d: Dict<String, Place>, x: PExpr, pathOf: (:String): String): Dict<String, Place> => match(x)
+  (m: PeMatch) => fold(m.arms, d, (d2: Dict<String, Place>, a: PArm) =>
+                    fold(a.armExtra, placed(d2, a.armName, a.parmLine, pathOf),
+                         (d3: Dict<String, Place>, p: PPos) => placed(d3, p.posName, p.pposLine, pathOf)))
+  (other)      => d
+
+# Every use in the converged `stmts`, and every declaration as a use of
+# itself; with the type names in `parsed`, resolved over `root`.
+fun uses(stmts: List<PStmt>, parsed: List<PStmt>, root: Resolver): List<Use>
+  ret walkStmts(stmts, emptyResolverGlobal, typeUses(parsed, root),
                 Walk<List<Use>>((u, r, x) => (s = usedIn(u, x), r = None),
                                 (u, r, st) => (s = noted(u, stmtName(st), stmtLine(st)), r = None),
                                 (u, r, sp) => (s = usedType(u, sp), r = None))).s
 
 fun usedIn(u: List<Use>, x: PExpr): List<Use> => match(x)
-  (n: PeName) => noted(u, n.refName, n.penLine)
-  (d: PeDot)  => noted(u, d.member, d.pedLine)
+  (n: PeName)  => noted(u, n.refName, n.penLine)
+  (d: PeDot)   => noted(u, d.member, d.pedLine)
+  (m: PeMatch) => fold(m.arms, u, (u2: List<Use>, a: PArm) =>
+                    fold(a.armExtra, noted(u2, a.armName, a.parmLine),
+                         (u3: List<Use>, p: PPos) => noted(u3, p.posName, p.pposLine)))
+  (other)      => u
+
+# Every type named in a parsed statement, in that statement's scope: its
+# namespace and imports.
+fun typeUses(parsed: List<PStmt>, root: Resolver): List<Use>
+  ret fold(parsed, List<Use>(), (u: List<Use>, st: PStmt) =>
+    scopeResolver(st, root) |> (r) => foldAllSpecs(List(st), (u2: List<Use>, sp: Spec) => namedType(u2, sp, r), u))
+
+fun namedType(u: List<Use>, sp: Spec, r: Resolver): List<Use> => match(sp)
+  (n: SNamed) => match(soleItem(findType(r, n.snName)))
+    (f: Found) => noted(u, f.fName, n.snLine)
+    ()         => u
   (other)     => u
 
 fun usedType(u: List<Use>, sp: Spec): List<Use> => match(sp)

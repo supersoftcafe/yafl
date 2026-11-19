@@ -132,15 +132,19 @@ fun checkedProgram(libs: Libraries, root: String, stmts: List<PStmt>, enabled: S
   if !isEmpty(rx.rlErrs)
     ret examined(rx.rlErrs)
   ret match(converge(head(rx.rlLayers) ?? List(), libs.lbBase))
-    (ok: CvOk)      => indexed(root, ok.cvStatements, match(checkConverged(append(libs.lbLayers, ok.cvStatements),
+    (ok: CvOk)      => indexed(libs, root, stmts, ok.cvStatements, match(checkConverged(append(libs.lbLayers, ok.cvStatements),
                                                                           append(libs.lbOwners, programOwner(libs.lbIndex)), enabled))
       (a: AnOk)     => a.anWarns
       (f: AnFailed) => union(f.anErrs, f.anWarns))
-    (d: CvDiverged) => indexed(root, d.cvLast, d.cvErrs)
+    (d: CvDiverged) => indexed(libs, root, stmts, d.cvLast, d.cvErrs)
 
-# The diagnostics, with the converged program's uses and declarations.
-fun indexed(root: String, converged: List<PStmt>, errs: Set<PErr>): Examined
-  ret Examined(errs, uses(converged), declarations(converged, (unit: String) => root + "/" + unit, Dict()))
+# The diagnostics, with the program's uses and declarations: from the
+# converged statements, and the type names from the parsed ones.
+fun indexed(libs: Libraries, root: String, parsed: List<PStmt>, converged: List<PStmt>,
+            errs: Set<PErr>): Examined
+  let resolver = rootResolver(converged, libs.lbBase)
+  ret Examined(errs, uses(converged, parsed, resolver),
+               declarations(converged, (unit: String) => root + "/" + unit, Dict()))
 
 # The program owns every namespace that no library lists (placedProject).
 fun programOwner(idx: List<NsEntry>): Owner => Owner(None, Set(map(idx, (e) => e.nsName)))

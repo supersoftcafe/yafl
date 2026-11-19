@@ -355,6 +355,25 @@ class TestNavigation(TestCase):
         self.assertIn("/compiler/stdlib/System/", got[2]["uri"])
         self.assertEqual("length", self._text(got[2]))
 
+    def test_definitions_of_types_and_arm_names(self):
+        # A type alias and an enum resolve to what they name, which is
+        # declared elsewhere: the name as written is what leads there.
+        self._write("main.yafl", "namespace Main\nimport System\nimport System::IO\n"
+                                 "fun describe(v: String|IOError): Int\n"
+                                 "  ret match(v)\n"
+                                 "    (s: String)  => length(s)\n"
+                                 "    (e: IOError) => e.code\n")
+        got = self._session(
+            self._at(2, "textDocument/definition", "main.yafl", 3, 16),   # String, an alias
+            self._at(3, "textDocument/definition", "main.yafl", 3, 23),   # IOError, an enum
+            self._at(4, "textDocument/definition", "main.yafl", 6, 20),   # e, an arm's name
+            self._at(5, "textDocument/definition", "main.yafl", 6, 8))    # IOError in an arm
+        self.assertEqual("String", self._text(got[2]))
+        self.assertEqual("IOError", self._text(got[3]))
+        self.assertIn("/compiler/stdlib/System/", got[3]["uri"])
+        self.assertEqual((self._uri("main.yafl"), 6, "e"), self._where(got[4]))
+        self.assertEqual("IOError", self._text(got[5]))
+
     def test_references(self):
         self._write("main.yafl", self._MAIN)
         self._write("lib/helper.yafl", self._HELPER)
