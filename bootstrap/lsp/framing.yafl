@@ -60,9 +60,16 @@ fun [tail] readBody(io: IO, n: Int, acc: String): (io: IO, v: Next<String>)
 
 # ── writing ──────────────────────────────────────────────────────────────────
 
-# Why the message cannot be written, if it cannot.
+# Why the message cannot be written, if it cannot. It is flushed: the client
+# waits for it before it sends more.
 fun writeMessage(io: IO, body: String): (io: IO, v: String|None)
   let w = writeAll(io, "Content-Length: " + String(System::length(body)) + "\r\n\r\n" + body)
   ret match(w.v)
-    (n: Int)     => (w.io, None)
+    (n: Int)     => flushed(w.io)
     (e: IOError) => (w.io, "the reply cannot be written")
+
+fun flushed(io: IO): (io: IO, v: String|None)
+  let f = io.flush()
+  ret match(f.v)
+    (e: IOError) => (f.io, "the reply cannot be sent")
+    ()           => (f.io, None)

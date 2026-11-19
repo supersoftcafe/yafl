@@ -36,6 +36,16 @@ def _replies(out: bytes) -> list[dict]:
     return replies
 
 
+def _ask(p: subprocess.Popen, message: dict) -> dict:
+    """Send one request to a running server and read its reply."""
+    p.stdin.write(_frame(message))
+    p.stdin.flush()
+    head = b""
+    while not head.endswith(b"\r\n\r\n"):
+        head += p.stdout.read(1)
+    return json.loads(p.stdout.read(int(head.split(b":")[1])))
+
+
 _INITIALIZE = _request(1, "initialize", {"processId": None, "rootUri": None, "capabilities": {}})
 
 
@@ -78,6 +88,20 @@ class TestLifecycle(TestCase):
         code, replies = self._session(_INITIALIZE)
         self.assertEqual(1, code)
         self.assertEqual([1], [r["id"] for r in replies])
+
+    def test_a_reply_arrives_while_the_input_stays_open(self):
+        # An editor waits for each reply before it sends more.
+        import select
+        p = subprocess.Popen([shared_bootstrap_binary(), "--lsp"], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with p:
+            try:
+                p.stdin.write(_frame(_INITIALIZE))
+                p.stdin.flush()
+                ready, _, _ = select.select([p.stdout], [], [], 30)
+                self.assertTrue(ready, "no reply while the input is open")
+            finally:
+                p.kill()
 
     def test_unknown_methods(self):
         # A request gets an error; a notification is ignored.
@@ -347,3 +371,56 @@ class TestNavigation(TestCase):
         caps = got[1]["capabilities"]
         self.assertTrue(caps["definitionProvider"])
         self.assertTrue(caps["referencesProvider"])
+
+
+class TestPackagedLibraries(TestCase):
+    """A library installed as a `.yl` keeps its sources inside the zip; the
+    server writes them out, under its own temp folder, for as long as it runs,
+    so a definition in one can be opened."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._dir = tempfile.TemporaryDirectory()
+        base = Path(self._dir.name).resolve()
+        self.root, self.libs = base / "work", base / "libs"
+        self.root.mkdir()
+        self.libs.mkdir()
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _package(self) -> None:
+        import zipfile
+        with zipfile.ZipFile(self.libs / "zed.yl", "w") as z:
+            z.writestr("yafl.toml", 'name = "zed"\nnamespaces = ["Zed"]\n')
+            z.writestr("Zed/zed.yafl", "namespace Zed\nimport System\n\nfun zedValue(): Int\n  ret 7\n")
+
+    def test_a_definition_in_a_packaged_library(self):
+        import os
+        from urllib.parse import unquote, urlparse
+        self._package()
+        (self.root / "main.yafl").write_text("namespace Main\nimport System\nimport Zed\n"
+                                             "fun main(): Int\n  ret zedValue()\n")
+        env = dict(os.environ, YAFL_PATH=str(self.libs))
+        with subprocess.Popen([shared_bootstrap_binary(), "--lsp"], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env) as p:
+            try:
+                _ask(p, _request(1, "initialize", {"rootUri": self.root.as_uri(), "capabilities": {}}))
+                found = _ask(p, _request(2, "textDocument/definition", {
+                    "textDocument": {"uri": (self.root / "main.yafl").as_uri()},
+                    "position": {"line": 4, "character": 7}}))["result"]
+                # Read while the server runs: its temp folder goes when it exits.
+                path = unquote(urlparse(found["uri"]).path)
+                self.assertTrue(path.endswith("/libs/zed/Zed/zed.yafl"), path)
+                start, end = found["range"]["start"], found["range"]["end"]
+                with open(path, encoding="utf-8") as f:
+                    line = f.read().split("\n")[start["line"]]
+                self.assertEqual("zedValue", line[start["character"]:end["character"]])
+                _ask(p, _request(3, "shutdown"))
+                p.stdin.write(_frame(_notification("exit")))
+                p.stdin.close()
+                self.assertEqual(0, p.wait(timeout=60))
+            finally:
+                if p.poll() is None:
+                    p.kill()

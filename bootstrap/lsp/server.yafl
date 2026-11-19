@@ -56,9 +56,10 @@ class [final] Report(rpEdit: Int, rpErrs: Set<PErr>, rpTexts: Dict<String, Strin
 fun freshServer(): Server => Server(Waiting(), None, Dict(), 0, None, None)
 
 # What an analysis reads from disk: the installed libraries, when they have
-# not been read yet, and the program's sources. None when a message needs no
-# analysis.
-class [final] Captured(cpLibs: LibResult|None, cpSrcs: List<LibSource>|None)
+# not been read yet, with the folder holding each one's files; and the
+# program's sources. None when a message needs no analysis.
+class [final] Captured(cpLibs: LibResult|None, cpFolders: Dict<String, String>,
+                       cpSrcs: List<LibSource>|None)
 
 
 # ── the step ─────────────────────────────────────────────────────────────────
@@ -146,20 +147,23 @@ fun isFresh(sv: Server): Bool => match(sv.svReport)
 # What the analysis `m` needs reads from disk, if it needs one.
 fun captured(sv: Server, m: Message): Captured
   if !needsAnalysis(sv, m)
-    ret Captured(None, None)
+    ret Captured(None, Dict(), None)
   let libs = sv.svLibs is None ? availableLibraries(List()) : None
+  let folders = match(libs)
+    (ok: LibsOk) => libraryFolders(ok.libsFound)
+    (other)      => Dict<String, String>()
   ret match(sv.svRoot)
-    (root: String) => Captured(libs, programSources(root, openTexts(sv.svDocs)))
-    ()             => Captured(libs, List<LibSource>())
+    (root: String) => Captured(libs, folders, programSources(root, openTexts(sv.svDocs)))
+    ()             => Captured(libs, folders, List<LibSource>())
 
 # The server with an analysis of its latest edit, when the sources for one
 # were captured; else as it is.
 fun analysed(sv: Server, cp: Captured): Server => match(cp.cpSrcs)
-  (srcs: List<LibSource>) => reanalysed(withLibraries(sv, cp.cpLibs), srcs)
+  (srcs: List<LibSource>) => reanalysed(withLibraries(sv, cp), srcs)
   ()                      => sv
 
-fun withLibraries(sv: Server, found: LibResult|None): Server => match(found)
-  (r: LibResult) => with sv(svLibs = librariesFrom(r))
+fun withLibraries(sv: Server, cp: Captured): Server => match(cp.cpLibs)
+  (r: LibResult) => with sv(svLibs = librariesFrom(r, cp.cpFolders))
   ()             => sv
 
 fun reanalysed(sv: Server, srcs: List<LibSource>): Server

@@ -28,27 +28,28 @@ import Bootstrap::Types
 # lbLayers: each library's converged statements, in dependency order; lbBase,
 # the root over all of them; lbIndex, which library owns which namespace.
 # lbPlaces: their declarations by unique name; lbTexts: the text of each of
-# their files, by path. A library read from a `.yl` has no files, so none of
-# its declarations has a place.
+# their files, by path. A library's files are in its folder, or, for one read
+# from a `.yl`, wherever its sources were written out (sourceFolder).
 class [final] Libraries(lbLayers: List<List<PStmt>>, lbOwners: List<Owner>,
                         lbBase: RRoot|None, lbIndex: List<NsEntry>,
                         lbPlaces: Dict<String, Place>, lbTexts: Dict<String, String>)
 
 # The installed libraries, as read, converged; or why they cannot be.
-fun librariesFrom(found: LibResult): Libraries|String => match(found)
+# `folders`: the folder holding each library's files, by library root.
+fun librariesFrom(found: LibResult, folders: Dict<String, String>): Libraries|String => match(found)
   (e: LibsErr) => e.libsWhy
   (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
     (why: String)        => why
-    (idx: List<NsEntry>) => parsedLibraries(ok.libsFound, idx)
+    (idx: List<NsEntry>) => parsedLibraries(ok.libsFound, idx, folders)
 
-fun parsedLibraries(libs: List<Library>, idx: List<NsEntry>): Libraries|String
+fun parsedLibraries(libs: List<Library>, idx: List<NsEntry>, folders: Dict<String, String>): Libraries|String
   ret match(parseLibraries(libs, List()))
     (pe: LoadErrors)             => "an installed library does not parse"
     (layers: List<List<PStmt>>) => match(libraryLayers(libs, layers, idx))
       (why: String)           => why
-      (ordered: List<Loaded>) => convergedLibraries(ordered, idx)
+      (ordered: List<Loaded>) => convergedLibraries(ordered, idx, folders)
 
-fun convergedLibraries(ordered: List<Loaded>, idx: List<NsEntry>): Libraries|String
+fun convergedLibraries(ordered: List<Loaded>, idx: List<NsEntry>, folders: Dict<String, String>): Libraries|String
   let rx = fixGlobalRegexes(map(ordered, (x) => x.ldStmts),
                             map(ordered, (x) => libraryName(x.ldLib)))
   if !isEmpty(rx.rlErrs)
@@ -56,22 +57,50 @@ fun convergedLibraries(ordered: List<Loaded>, idx: List<NsEntry>): Libraries|Str
   ret match(convergeLayers(rx.rlLayers, None, List()))
     (converged: List<List<PStmt>>) => Libraries(converged, map(ordered, (x) => libraryOwner(x.ldLib)),
                                                 baseOf(converged), idx,
-                                                libraryPlaces(ordered, converged),
-                                                libraryTexts(ordered))
+                                                libraryPlaces(ordered, converged, folders),
+                                                libraryTexts(ordered, folders))
     (d: CvDiverged)                => "the installed libraries do not converge"
 
 fun libraryName(l: Library): String|None => l.libManifest.libName
 
-fun libraryPlaces(ordered: List<Loaded>, converged: List<List<PStmt>>): Dict<String, Place>
+fun libraryPlaces(ordered: List<Loaded>, converged: List<List<PStmt>>,
+                  folders: Dict<String, String>): Dict<String, Place>
   ret zipFold(ordered, converged, Dict<String, Place>(),
-              (d: Dict<String, Place>, x: Loaded, layer: List<PStmt>) => x.ldLib.libIsZip
-                ? d
-                : declarations(layer, (unit: String) => x.ldLib.libRoot + "/" + unit, d))
+              (d: Dict<String, Place>, x: Loaded, layer: List<PStmt>) => match(get(folders, x.ldLib.libRoot))
+                (dir: String) => declarations(layer, (unit: String) => dir + "/" + unit, d)
+                ()            => d)
 
-fun libraryTexts(ordered: List<Loaded>): Dict<String, String>
-  ret fold(filter(ordered, (x) => !x.ldLib.libIsZip), Dict<String, String>(),
-           (d: Dict<String, String>, x: Loaded) => fold(x.ldLib.libSources, d,
-             (d2: Dict<String, String>, src: LibSource) => put(d2, x.ldLib.libRoot + "/" + src.libFileName, src.libText)))
+fun libraryTexts(ordered: List<Loaded>, folders: Dict<String, String>): Dict<String, String>
+  ret fold(ordered, Dict<String, String>(), (d: Dict<String, String>, x: Loaded) => match(get(folders, x.ldLib.libRoot))
+    (dir: String) => fold(x.ldLib.libSources, d,
+                          (d2: Dict<String, String>, src: LibSource) => put(d2, dir + "/" + src.libFileName, src.libText))
+    ()            => d)
+
+
+# ── where a library's files are ──────────────────────────────────────────────
+# A folder library's files are its own. A `.yl`'s sources are inside the zip,
+# where an editor cannot open them, so they are written out where its native
+# artefacts go (driver/libraries.yafl): `<process temp folder>/libs/<name>/`.
+# That folder belongs to this server and goes when it exits.
+
+# The folder holding each library's files, by library root; a library whose
+# sources cannot be written out has none.
+fun libraryFolders(libs: List<Library>): Dict<String, String>
+  ret fold(libs, Dict<String, String>(), (d: Dict<String, String>, l: Library) => match(sourceFolder(l))
+    (dir: String) => put(d, l.libRoot, dir)
+    ()            => d)
+
+fun sourceFolder(lib: Library): String|None
+  if !lib.libIsZip
+    ret lib.libRoot
+  ret match(tempDir())
+    (base: String) => writtenSources(lib, base + "/libs/" + lib.libManifest.libName)
+    ()             => None
+
+fun writtenSources(lib: Library, dir: String): String|None
+  let failed = fold(lib.libSources, false,
+                    (f: Bool, src: LibSource) => f || writeWholeFile(dir + "/" + src.libFileName, src.libText) is String)
+  ret failed ? None : dir
 
 # The root over every layer, each on the ones beneath it.
 fun baseOf(layers: List<List<PStmt>>): RRoot|None =>
