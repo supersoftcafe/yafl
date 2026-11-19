@@ -69,3 +69,27 @@ fun program(): System::Int
 
 fun [test("missing path returns file not found error")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Fs::AFlushedWriteIsInTheFileBeforeClose
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  let path = (tempDir() ?? "") + "/flushed.txt"
+  ret match(create(path))
+    (e: IOError) => 9
+    (io: IO)     => afterFlush(path, writeAll(io, "abc"))
+
+# What another handle reads from the file while the writer is still open.
+fun afterFlush(path: System::String, w: (io: IO, v: System::Int|IOError)): System::Int
+  let f = w.io.flush()
+  let seen = withFile(open_read(path), readAll)
+  ret match(f.io.close(), f.v, seen)
+    (c, n: System::None, s: System::String) => s == "abc" ? 0 : 1
+    (c, x, y)                               => 2
+
+fun [test("a flushed write is in the file before the handle closes")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

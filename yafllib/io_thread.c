@@ -250,6 +250,11 @@ static void* _io_thread_main(void* arg) {
             errno = 0;
             size_t n = fwrite(io->buf, 1, (size_t)io->buf_tail, io->file);
             job->raw_result = (n < (size_t)io->buf_tail) ? -errno : (int32_t)n;
+            // A stream we opened is unbuffered. One we didn't (stdout/stderr)
+            // keeps libc's buffer, which must be emptied too, or what was
+            // flushed sits there until close.
+            if (job->raw_result >= 0 && !io->owned && fflush(io->file) != 0)
+                job->raw_result = -errno;
         } break;
 
         case IO_OP_OPEN: {
