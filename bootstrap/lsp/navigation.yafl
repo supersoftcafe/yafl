@@ -105,8 +105,12 @@ fun isUnique(name: String): Bool => contains(name, "@")
 
 # ── where a name is written ──────────────────────────────────────────────────
 
-# The name `key` declares, as written.
-fun writtenName(key: String): String => bareOfUnique(key)
+# The name `key` declares, as written: an operator, `` `+` ``, is written `+`
+# where it is used.
+fun writtenName(key: String): String
+  let bare = bareOfUnique(key)
+  let n = System::length(bare)
+  ret n > 2 && startsWith(bare, "`") && endsWith(bare, "`") ? slice(bare, 1, n - 1) : bare
 
 # Where the name is written, from `at` on, and its length in characters.
 fun nameSpan(text: String, at: PLine, key: String): PLine|None => namedAt(text, at, writtenName(key))

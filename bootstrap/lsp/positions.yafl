@@ -83,15 +83,24 @@ fun [tail] charsBetween(text: String, off: Int, end: Int, acc: Int): Int
     (d: (cp: System::Int32, next: Int)) => charsBetween(text, d.next, end, acc + 1)
     ()                                  => acc
 
-# The offset of the first whole-word `name` in [from, end), or -1.
+# The offset of the first whole `name` in [from, end), or -1. A name is whole
+# when the bytes either side cannot continue it: a word is not inside a longer
+# word, nor an operator inside a longer operator (`>` in `>=`).
 fun [tail] wordIn(text: String, name: String, from: Int, end: Int): Int
   let i = indexOf(text, name, from)
   if i < 0 || i + System::length(name) > end
     ret -1
-  let before = i > 0 && isWordByte(System::byteAt(text, i - 1))
+  let operator = !isWordByte(System::byteAt(name, 0))
+  let before = i > 0 && continues(System::byteAt(text, i - 1), operator)
   let after = i + System::length(name) < System::length(text)
-              && isWordByte(System::byteAt(text, i + System::length(name)))
+              && continues(System::byteAt(text, i + System::length(name)), operator)
   ret before || after ? wordIn(text, name, i + 1, end) : i
+
+fun continues(b: System::Int32, operator: Bool): Bool => operator ? isOperatorByte(b) : isWordByte(b)
 
 fun isWordByte(b: System::Int32): Bool
   ret b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
+
+fun isOperatorByte(b: System::Int32): Bool
+  ret b == '+' || b == '-' || b == '*' || b == '/' || b == '%' || b == '<' || b == '>' || b == '='
+      || b == '!' || b == '&' || b == '|' || b == '^' || b == '~' || b == '?' || b == ':'

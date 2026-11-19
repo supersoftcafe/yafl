@@ -13,6 +13,7 @@ import pyast.match as m
 import pyast.statement as s
 import pyast.typespec as t
 import parsing.parselib as p
+
 import pyast.utils
 
 
@@ -613,9 +614,22 @@ def __invert_operand(expr: e.Expression) -> e.Expression | None:
     return None
 
 
-def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
-    def accumulate(left: e.Expression, entry: tuple[str, e.Expression]):
-        op, right = entry
+def __at_line(result: p.Result[str], tokens: list[p.Token]) -> p.Result[tuple[str, p.LineRef]]:
+    """An operator with where it is written: its name is a use there. (`&`
+    flattens it into the entry: `(op, line, right)`.)"""
+    return p.Result((result.value, result.line_ref), result.tokens, result.line_ref, result.errors)
+
+
+def __operator(w: str | list[str]) -> p.Parser[tuple[str, p.LineRef]]:
+    return p.sym(w) >> __at_line
+
+
+def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, p.LineRef, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+    """`a op b` → `op`(a, b). The call is where the expression starts; the
+    operator's name is where the operator is written, so each operator of a
+    chain is a use of its own."""
+    def accumulate(left: e.Expression, entry: tuple[str, p.LineRef, e.Expression]):
+        op, op_line, right = entry
         line = tokens[0].line_ref
         # `a & ~b` is `&~` — recognise it here so it lowers to the runtime's
         # single-pass andnot rather than a separate complement then and. AND is
@@ -624,7 +638,7 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
         if op == "&":
             def _andnot(x: e.Expression, y: e.Expression) -> e.Expression:
                 return e.CallExpression(line,
-                    e.NamedExpression(line, "`&~`"),
+                    e.NamedExpression(op_line, "`&~`"),
                     e.TupleExpression(line, [
                             e.TupleEntryExpression(None, x),
                             e.TupleEntryExpression(None, y)
@@ -636,7 +650,7 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
             if inner_left is not None:
                 return _andnot(right, inner_left)          # ~a & b -> `&~`(b, a)
         return e.CallExpression(line,
-            e.NamedExpression(line, f"`{op}`"),
+            e.NamedExpression(op_line, f"`{op}`"),
             e.TupleExpression(line, [
                     e.TupleEntryExpression(None, left),
                     e.TupleEntryExpression(None, right)
@@ -646,19 +660,19 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, e.E
     return p.Result(expr, result.tokens, result.line_ref, result.errors)
 
 
-def __to_bind_or_pipeline(result: p.Result[tuple[e.Expression, list[tuple[str, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
+def __to_bind_or_pipeline(result: p.Result[tuple[e.Expression, list[tuple[str, p.LineRef, e.Expression]]]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     """The shared `?>`/`|>` level: fold left, dispatching per operator —
     `?>` is an ordinary operator call, `|>` is the pipeline stage lowering
     (placeholder substitution / lambda beta-redex, __pipe_stage)."""
     pipeline_errors: list[p.Error] = []
 
-    def accumulate(left: e.Expression, entry: tuple[str, e.Expression]) -> e.Expression:
-        op, right = entry
+    def accumulate(left: e.Expression, entry: tuple[str, p.LineRef, e.Expression]) -> e.Expression:
+        op, op_line, right = entry
         if op == "|>":
             return __pipe_stage(left, right, pipeline_errors)
         line = tokens[0].line_ref
         return e.CallExpression(line,
-            e.NamedExpression(line, f"`{op}`"),
+            e.NamedExpression(op_line, f"`{op}`"),
             e.TupleExpression(line, [
                     e.TupleEntryExpression(None, left),
                     e.TupleEntryExpression(None, right)]))
@@ -1241,17 +1255,17 @@ __parse_unary   = (((p.discard_sym("with") & __parse_invoke).build(__to_with))
                  | (p.discard_sym("!") & __parse_invoke).build(__to_not)
                  | (p.discard_sym("~") & __parse_invoke).build(__to_invert)
                  | __parse_invoke)
-__parse_divmul  = (__parse_unary    & p.many(p.sym(["%", "/", "*"]) & __parse_unary     )) >> __to_call_operators
-__parse_addsub  = (__parse_divmul   & p.many(p.sym(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
+__parse_divmul  = (__parse_unary    & p.many(__operator(["%", "/", "*"]) & __parse_unary     )) >> __to_call_operators
+__parse_addsub  = (__parse_divmul   & p.many(__operator(["+", "-"])      & __parse_divmul    )) >> __to_call_operators
 # Shifts bind looser than +/- but tighter than the bitwise/comparison ops
 # (C order: `a + b << c` is `(a + b) << c`).
-__parse_shift   = (__parse_addsub   & p.many(p.sym(["<<", ">>"])    & __parse_addsub    )) >> __to_call_operators
+__parse_shift   = (__parse_addsub   & p.many(__operator(["<<", ">>"])    & __parse_addsub    )) >> __to_call_operators
 # Bitwise operators bind tighter than comparison (so `a & b == c` is
 # `(a & b) == c`, avoiding C's footgun) with the usual & > ^ > | order.
-__parse_bitand  = (__parse_shift    & p.many(p.sym("&")             & __parse_shift     )) >> __to_call_operators
-__parse_bitxor  = (__parse_bitand   & p.many(p.sym("^")             & __parse_bitand    )) >> __to_call_operators
-__parse_bitor   = (__parse_bitxor   & p.many(p.sym("|")             & __parse_bitxor    )) >> __to_call_operators
-__parse_compare = (__parse_bitor    & p.many(p.sym(["<", "==", ">", "!=", "<=", ">="]) & __parse_bitor)) >> __to_call_operators
+__parse_bitand  = (__parse_shift    & p.many(__operator("&")             & __parse_shift     )) >> __to_call_operators
+__parse_bitxor  = (__parse_bitand   & p.many(__operator("^")             & __parse_bitand    )) >> __to_call_operators
+__parse_bitor   = (__parse_bitxor   & p.many(__operator("|")             & __parse_bitxor    )) >> __to_call_operators
+__parse_compare = (__parse_bitor    & p.many(__operator(["<", "==", ">", "!=", "<=", ">="]) & __parse_bitor)) >> __to_call_operators
 # `is`/`!is` type test: binds looser than the comparison operators, tighter than
 # `?>`/`&&`/`||`. The right operand is a TYPE (so `is` is a contextual keyword —
 # an identifier in operator position — needing no tokeniser change).
@@ -1261,7 +1275,7 @@ __parse_is      = (__parse_compare  & p.maybe(p.maybe(p.sym("!")) & p.ident("is"
 # every ML-family pipe), so `n - 1 |> f` pipes `n - 1`, not `1`; it once sat
 # between unary and `*`, which silently turned `n - 1 |> (m) => self(m, …)`
 # into `n - self(1, …)` — a non-tail self-call.
-__parse_bind    = (__parse_is       & p.many(p.sym(["?>", "|>"])     & __parse_is        )) >> __to_bind_or_pipeline
+__parse_bind    = (__parse_is       & p.many(__operator(["?>", "|>"])     & __parse_is        )) >> __to_bind_or_pipeline
 # Short-circuit logical operators: `&&` binds tighter than `||`, both looser than
 # the comparison/bind level and tighter than the ternary `?:`. They are parse-time
 # sugar for the ternary (see __to_logical_and/__to_logical_or), so short-circuit

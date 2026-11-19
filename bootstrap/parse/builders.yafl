@@ -25,19 +25,22 @@ fun twoEntryTuple(a, b, lr)
 fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr, None)
 
 # ── __to_call_operators / __fold_binary: `a op b` → `op`(a, b), andNot fold ──
+# The call is at `lr`, where the expression starts; the operator's name is at
+# `opLr`, where the operator is written, so each operator of a chain is a
+# use of its own.
 
-fun foldBinary(op, lhs, rhs, lr)
+fun foldBinary(op, opLr: PLine, lhs, rhs, lr)
   if op == "&"
     ret match(invertOperand(rhs))
-      (ir: PExpr) => andNot(lhs, ir, lr)
+      (ir: PExpr) => andNot(lhs, ir, opLr, lr)
       ()          => match(invertOperand(lhs))
-        (il: PExpr) => andNot(rhs, il, lr)
-        ()          => opCall(op, lhs, rhs, lr)
-  ret opCall(op, lhs, rhs, lr)
+        (il: PExpr) => andNot(rhs, il, opLr, lr)
+        ()          => opCall(op, opLr, lhs, rhs, lr)
+  ret opCall(op, opLr, lhs, rhs, lr)
 
-fun opCall(op, lhs, rhs, lr) => callNamed("`" + op + "`", twoEntryTuple(lhs, rhs, lr), lr)
+fun opCall(op, opLr: PLine, lhs, rhs, lr) => PeCall(PeName("`" + op + "`", List(), opLr), twoEntryTuple(lhs, rhs, lr), lr, None)
 
-fun andNot(a, b, lr) => opCall("&~", a, b, lr)
+fun andNot(a, b, opLr: PLine, lr) => opCall("&~", opLr, a, b, lr)
 
 # A `~x` operand's inner expression, when the expression is exactly the
 # complement call the unary parser built (`` `~` ``(x)).

@@ -374,6 +374,29 @@ class TestNavigation(TestCase):
         self.assertEqual((self._uri("main.yafl"), 6, "e"), self._where(got[4]))
         self.assertEqual("IOError", self._text(got[5]))
 
+    def test_operators(self):
+        # An operator leads to the function it calls, from where it is
+        # written: each `+` of a chain is a use of its own.
+        self._write("main.yafl", "namespace Main\nimport System\n"
+                                 "class V(x: Int)\n"
+                                 "fun `+`(a: V, b: V): V\n  ret V(a.x + b.x)\n"
+                                 "fun `-`(a: V): V\n  ret V(0 - a.x)\n"
+                                 "fun sum(p: V, q: V, r: V): V\n  ret p + q + -r\n"
+                                 "fun big(n: Int): Bool\n  ret n > 0\n")
+        main = self._uri("main.yafl")
+        got = self._session(
+            self._at(2, "textDocument/definition", "main.yafl", 8, 12),   # the second `+`
+            self._at(3, "textDocument/definition", "main.yafl", 8, 14),   # unary `-`
+            self._at(4, "textDocument/definition", "main.yafl", 10, 8),   # `>` on Int, in System
+            self._at(5, "textDocument/references", "main.yafl", 8, 8,
+                     context={"includeDeclaration": False}))
+        self.assertEqual((main, 3, "+"), self._where(got[2]))
+        self.assertEqual((main, 5, "-"), self._where(got[3]))
+        self.assertEqual(">", self._text(got[4]))
+        self.assertIn("/compiler/stdlib/System/", got[4]["uri"])
+        self.assertEqual([(8, 8), (8, 12)],
+                         sorted((x["range"]["start"]["line"], x["range"]["start"]["character"]) for x in got[5]))
+
     def test_references(self):
         self._write("main.yafl", self._MAIN)
         self._write("lib/helper.yafl", self._HELPER)
