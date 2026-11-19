@@ -1,8 +1,7 @@
 # bootstrap/lsp/workspace.yafl — the program the server analyses (#26): every
 # `.yafl` under the workspace root, each named by its path relative to the
-# root, as `yaflc <dir>` names a project's units. An open document's text
-# replaces what is on disk. A folder holding a `yafl.toml` is a library, not
-# part of the program, and is left out.
+# root, exactly the units `yaflc <dir>` compiles (projectInputs). An open
+# document's text replaces what is on disk.
 #
 # The client names files by `file://` URI; the compiler by unit name.
 
@@ -55,11 +54,13 @@ fun rootOf(uri: String): String|None => match(uriPath(uri))
 # ── the program's sources ────────────────────────────────────────────────────
 
 # Every unit, each with the text an open document gives it or else the text
-# on disk. A file that cannot be read is left out.
-fun programSources(root: String, open: Dict<String, String>): List<LibSource>
-  let onDisk = map(programPaths(root, List()), (p) => relativeTo(root, p))
-  let units = sort(fold(onDisk, keys(open), (acc: Set<String>, u: String) => add(acc, u)))
-  ret fold(units, List<LibSource>(), (acc, u) => withSource(acc, root, u, open))
+# on disk; or why the workspace cannot be listed. A file that cannot be read
+# is left out.
+fun programSources(root: String, open: Dict<String, String>): List<LibSource>|String => match(yaflPaths(root, List()))
+  (why: String)         => why
+  (paths: List<String>) => map(paths, (p) => relativeTo(root, p))
+    |> (onDisk) => sort(fold(onDisk, keys(open), (acc: Set<String>, u: String) => add(acc, u)))
+    |> (units) => fold(units, List<LibSource>(), (acc, u) => withSource(acc, root, u, open))
 
 fun withSource(acc: List<LibSource>, root: String, unit: String, open: Dict<String, String>): List<LibSource>
   ret match(get(open, unit))
@@ -67,13 +68,3 @@ fun withSource(acc: List<LibSource>, root: String, unit: String, open: Dict<Stri
     ()             => match(readWholeFile(root + "/" + unit))
       (t: String)  => append(acc, LibSource(unit, t))
       (e: IOError) => acc
-
-fun programPaths(dir: String, acc: List<String>): List<String> => match(listDir(dir))
-  (e: IOError)         => acc
-  (names: Set<String>) => fold(sort(names), acc, (a, n) => programEntry(dir + "/" + n, n, a))
-
-fun programEntry(path: String, name: String, acc: List<String>): List<String>
-  ret isDotEntry(name) ? acc
-    : isDirectory(path) ? (isRegularFile(path + "/yafl.toml") ? acc : programPaths(path, acc))
-    : endsWith(name, ".yafl") ? append(acc, path)
-    : acc

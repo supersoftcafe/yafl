@@ -253,12 +253,15 @@ class TestDiagnostics(TestCase):
         self.assertEqual([], items[2])
         self.assertIn("Failed to resolve helper", " ".join(m for *_, m in self._summary(items[3])))
 
-    def test_a_library_folder_is_not_the_program(self):
+    def test_every_folder_in_the_workspace_is_the_program(self):
+        # As `yaflc <folder>` compiles it: a nested folder is part of the
+        # program, whatever else it holds.
         self._write("main.yafl", self._CLEAN)
-        self._write("mylib/yafl.toml", 'name = "mylib"\nnamespaces = ["MyLib"]\n')
-        self._write("mylib/broken.yafl", "namespace MyLib\nfun broken(: Int\n")
-        items = self._session(self._pull(2, "main.yafl"))[2]
-        self.assertEqual([], items)
+        self._write("sub/yafl.toml", 'name = "sub"\nnamespaces = ["Sub"]\n')
+        self._write("sub/broken.yafl", "namespace Main\nfun broken(: Int\n")
+        items = self._session(self._pull(2, "sub/broken.yafl"))[2]
+        self.assertEqual(1, len(items))
+        self.assertEqual(1, items[0]["range"]["start"]["line"])
 
     def test_a_document_outside_the_workspace_has_none(self):
         self._write("main.yafl", "namespace Main\nimport System\nfun main(): Int\n  ret nosuch\n")

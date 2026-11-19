@@ -59,7 +59,7 @@ fun freshServer(): Server => Server(Waiting(), None, Dict(), 0, None, None)
 # not been read yet, with the folder holding each one's files; and the
 # program's sources. None when a message needs no analysis.
 class [final] Captured(cpLibs: LibResult|None, cpFolders: Dict<String, String>,
-                       cpSrcs: List<LibSource>|None)
+                       cpSrcs: List<LibSource>|String|None)
 
 
 # ── the step ─────────────────────────────────────────────────────────────────
@@ -157,9 +157,12 @@ fun captured(sv: Server, m: Message): Captured
     ()             => Captured(libs, folders, List<LibSource>())
 
 # The server with an analysis of its latest edit, when the sources for one
-# were captured; else as it is.
+# were captured; else as it is. A workspace that cannot be listed is the
+# analysis's one error, as it is a compile's.
 fun analysed(sv: Server, cp: Captured): Server => match(cp.cpSrcs)
   (srcs: List<LibSource>) => reanalysed(withLibraries(sv, cp), srcs)
+  (why: String)           => with sv(svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), why))),
+                                                       Dict(), List(), Dict()))
   ()                      => sv
 
 fun withLibraries(sv: Server, cp: Captured): Server => match(cp.cpLibs)

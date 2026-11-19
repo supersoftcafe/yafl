@@ -22,10 +22,10 @@ compiler and two to the client.
 ## The program
 
 The workspace folder is the program: every `.yafl` file under it, each named by
-its path relative to the folder, as `yaflc <folder>` names a project's units.
-A folder holding a `yafl.toml` is a library, not part of the program, and is
-left out. A document the editor has open replaces the file on disk, until it
-is closed. A document outside the workspace folder has no diagnostics.
+its path relative to the folder, exactly the units `yaflc <folder>` compiles.
+Libraries are what is installed, outside it. A document the editor has open
+replaces the file on disk, until it is closed. A document outside the
+workspace folder has no diagnostics.
 
 ## The libraries
 
