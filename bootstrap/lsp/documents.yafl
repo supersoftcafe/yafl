@@ -14,7 +14,7 @@ import System::Json
 fun opened(sv: Server, params: JsonValue): Server
   let doc = field(params, "textDocument") ?? JsonNull()
   ret match(unitIn(sv, doc), stringField(doc, "text"))
-    (unit: String, text: String) => recorded(sv, unit, Doc(text, intField(doc, "version") ?? 0))
+    (unit: String, text: String) => recorded(sv, unit, text)
     (u, t)                       => sv
 
 # Full sync: each change carries the whole text, and the last one is the
@@ -25,7 +25,7 @@ fun changed(sv: Server, params: JsonValue): Server
     (changes: JsonArr) => fold<JsonValue, String|None>(changes.elements, None, (t, c) => stringField(c, "text") ?? t)
     ()                 => None
   ret match(unitIn(sv, doc), text)
-    (unit: String, t: String) => recorded(sv, unit, Doc(t, intField(doc, "version") ?? 0))
+    (unit: String, t: String) => recorded(sv, unit, t)
     (u, t)                    => sv
 
 fun closed(sv: Server, params: JsonValue): Server
@@ -33,10 +33,12 @@ fun closed(sv: Server, params: JsonValue): Server
     (unit: String) => with sv(svDocs = remove(sv.svDocs, unit), svEdits = sv.svEdits + 1)
     ()             => sv
 
-fun recorded(sv: Server, unit: String, doc: Doc): Server
-  ret with sv(svDocs = put(sv.svDocs, unit, doc), svEdits = sv.svEdits + 1)
+fun recorded(sv: Server, unit: String, text: String): Server
+  ret with sv(svDocs = put(sv.svDocs, unit, text), svEdits = sv.svEdits + 1)
 
 # The unit a `textDocument` names, when it lies in the workspace.
-fun unitIn(sv: Server, doc: JsonValue): String|None => match(sv.svRoot, stringField(doc, "uri"))
-  (root: String, uri: String) => unitOf(root, uri)
-  (r, u)                      => None
+fun unitIn(sv: Server, doc: JsonValue): String|None => unitOfUri(sv, stringField(doc, "uri") ?? "")
+
+fun unitOfUri(sv: Server, uri: String): String|None => match(sv.svRoot)
+  (root: String) => unitOf(root, uri)
+  ()             => None

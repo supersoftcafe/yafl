@@ -46,18 +46,51 @@ def _ask(p: subprocess.Popen, message: dict) -> dict:
     return json.loads(p.stdout.read(int(head.split(b":")[1])))
 
 
+def _serve(stream: bytes, timeout: int = 60, env: dict | None = None) -> subprocess.CompletedProcess:
+    """One session of the server on `stream`, run to its end."""
+    return subprocess.run([shared_bootstrap_binary(), "--lsp"], input=stream,
+                          capture_output=True, timeout=timeout, env=env)
+
+
+class _Workspace(TestCase):
+    """A workspace folder of its own for each test, and a session over it:
+    initialised on the folder, `messages`, then shut down."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._dir = tempfile.TemporaryDirectory()
+        self.root = Path(self._dir.name).resolve() / "work"
+        self.root.mkdir()
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _write(self, unit: str, text: str) -> None:
+        path = self.root / unit
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def _uri(self, unit: str) -> str:
+        return (self.root / unit).as_uri()
+
+    def _replies(self, *messages: dict, env: dict | None = None) -> list[dict]:
+        stream = [_request(1, "initialize", {"rootUri": self.root.as_uri(), "capabilities": {}}),
+                  _notification("initialized"), *messages,
+                  _request(99, "shutdown"), _notification("exit")]
+        p = _serve(b"".join(_frame(m) for m in stream), timeout=300, env=env)
+        self.assertEqual(0, p.returncode, p.stderr)
+        return _replies(p.stdout)
+
+
 _INITIALIZE = _request(1, "initialize", {"processId": None, "rootUri": None, "capabilities": {}})
 
 
 class TestLifecycle(TestCase):
 
-    def _serve(self, stream: bytes) -> tuple[int, list[dict]]:
-        p = subprocess.run([shared_bootstrap_binary(), "--lsp"], input=stream,
-                           capture_output=True, timeout=60)
-        return p.returncode, _replies(p.stdout)
-
     def _session(self, *messages: dict) -> tuple[int, list[dict]]:
-        return self._serve(b"".join(_frame(m) for m in messages))
+        p = _serve(b"".join(_frame(m) for m in messages))
+        return p.returncode, _replies(p.stdout)
 
     def test_a_session_ends_cleanly(self):
         code, replies = self._session(_INITIALIZE, _notification("initialized"),
@@ -116,8 +149,7 @@ class TestLifecycle(TestCase):
 class TestFraming(TestCase):
 
     def _serve(self, stream: bytes) -> tuple[int, list[dict]]:
-        p = subprocess.run([shared_bootstrap_binary(), "--lsp"], input=stream,
-                           capture_output=True, timeout=60)
+        p = _serve(stream)
         return p.returncode, _replies(p.stdout)
 
     def test_content_length_counts_bytes(self):
@@ -133,6 +165,14 @@ class TestFraming(TestCase):
         code, replies = self._serve(
             _frame(_INITIALIZE, b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
             + _frame(_request(2, "shutdown")) + _frame(_notification("exit")))
+        self.assertEqual(0, code)
+        self.assertEqual([1, 2], [r["id"] for r in replies])
+
+    def test_a_header_name_is_not_case_sensitive(self):
+        body = json.dumps(_request(2, "shutdown")).encode()
+        code, replies = self._serve(_frame(_INITIALIZE)
+                                    + b"content-length: %d\r\n\r\n" % len(body) + body
+                                    + _frame(_notification("exit")))
         self.assertEqual(0, code)
         self.assertEqual([1, 2], [r["id"] for r in replies])
 
@@ -152,38 +192,13 @@ class TestFraming(TestCase):
         self.assertEqual([1], [r["id"] for r in replies])
 
 
-class TestDiagnostics(TestCase):
+class TestDiagnostics(_Workspace):
     """Pull diagnostics over a workspace folder: files on disk, documents the
     editor has open, and the libraries beneath them."""
 
-    def setUp(self):
-        import tempfile
-        from pathlib import Path
-        self._dir = tempfile.TemporaryDirectory()
-        self.root = Path(self._dir.name).resolve()
-
-    def tearDown(self):
-        self._dir.cleanup()
-
-    def _write(self, unit: str, text: str) -> str:
-        path = self.root / unit
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        return path.as_uri()
-
-    def _uri(self, unit: str) -> str:
-        return (self.root / unit).as_uri()
-
-    def _session(self, *messages: dict) -> dict:
+    def _session(self, *messages: dict, env: dict | None = None) -> dict:
         """Each diagnostic reply's items, by request id."""
-        stream = [_request(1, "initialize", {"rootUri": self.root.as_uri(), "capabilities": {}}),
-                  _notification("initialized"), *messages,
-                  _request(99, "shutdown"), _notification("exit")]
-        p = subprocess.run([shared_bootstrap_binary(), "--lsp"],
-                           input=b"".join(_frame(m) for m in stream),
-                           capture_output=True, timeout=300)
-        self.assertEqual(0, p.returncode, p.stderr)
-        return {r["id"]: r["result"]["items"] for r in _replies(p.stdout)
+        return {r["id"]: r["result"]["items"] for r in self._replies(*messages, env=env)
                 if isinstance(r.get("result"), dict) and "items" in r["result"]}
 
     def _pull(self, id_, unit: str) -> dict:
@@ -263,6 +278,20 @@ class TestDiagnostics(TestCase):
         self.assertEqual(1, len(items))
         self.assertEqual(1, items[0]["range"]["start"]["line"])
 
+    def test_a_library_that_cannot_load_says_where(self):
+        # Shown in every document, since the library's file is not one the
+        # editor has; each error with its file and position.
+        import os
+        libs = self.root.parent / "libs"
+        (libs / "broken").mkdir(parents=True)
+        (libs / "broken" / "yafl.toml").write_text('name = "broken"\nnamespaces = ["Broken"]\n')
+        (libs / "broken" / "broken.yafl").write_text("namespace Broken\nfun broken(: Int\n")
+        self._write("main.yafl", self._CLEAN)
+        items = self._session(self._pull(2, "main.yafl"), env=dict(os.environ, YAFL_PATH=str(libs)))[2]
+        self.assertEqual(1, len(items))
+        self.assertIn("does not parse", items[0]["message"])
+        self.assertIn("broken.yafl[2:", items[0]["message"])
+
     def test_a_document_outside_the_workspace_has_none(self):
         self._write("main.yafl", "namespace Main\nimport System\nfun main(): Int\n  ret nosuch\n")
         items = self._session(_request(2, "textDocument/diagnostic",
@@ -270,37 +299,13 @@ class TestDiagnostics(TestCase):
         self.assertEqual([], items)
 
 
-class TestNavigation(TestCase):
+class TestNavigation(_Workspace):
     """Go to definition and find references, over a workspace folder and the
     libraries beneath it."""
 
-    def setUp(self):
-        import tempfile
-        from pathlib import Path
-        self._dir = tempfile.TemporaryDirectory()
-        self.root = Path(self._dir.name).resolve()
-
-    def tearDown(self):
-        self._dir.cleanup()
-
-    def _write(self, unit: str, text: str) -> None:
-        path = self.root / unit
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-
-    def _uri(self, unit: str) -> str:
-        return (self.root / unit).as_uri()
-
     def _session(self, *messages: dict) -> dict:
         """Each reply's result, by request id."""
-        stream = [_request(1, "initialize", {"rootUri": self.root.as_uri(), "capabilities": {}}),
-                  _notification("initialized"), *messages,
-                  _request(99, "shutdown"), _notification("exit")]
-        p = subprocess.run([shared_bootstrap_binary(), "--lsp"],
-                           input=b"".join(_frame(m) for m in stream),
-                           capture_output=True, timeout=300)
-        self.assertEqual(0, p.returncode, p.stderr)
-        return {r["id"]: r.get("result") for r in _replies(p.stdout)}
+        return {r["id"]: r.get("result") for r in self._replies(*messages)}
 
     def _at(self, id_, method: str, unit: str, line: int, character: int, **extra) -> dict:
         return _request(id_, method, {"textDocument": {"uri": self._uri(unit)},
@@ -418,22 +423,15 @@ class TestNavigation(TestCase):
         self.assertTrue(caps["referencesProvider"])
 
 
-class TestPackagedLibraries(TestCase):
+class TestPackagedLibraries(_Workspace):
     """A library installed as a `.yl` keeps its sources inside the zip; the
     server writes them out, under its own temp folder, for as long as it runs,
     so a definition in one can be opened."""
 
     def setUp(self):
-        import tempfile
-        from pathlib import Path
-        self._dir = tempfile.TemporaryDirectory()
-        base = Path(self._dir.name).resolve()
-        self.root, self.libs = base / "work", base / "libs"
-        self.root.mkdir()
+        super().setUp()
+        self.libs = self.root.parent / "libs"
         self.libs.mkdir()
-
-    def tearDown(self):
-        self._dir.cleanup()
 
     def _package(self) -> None:
         import zipfile

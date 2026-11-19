@@ -39,10 +39,29 @@ fun hexValue(b: System::Int32): System::Int32
     : b >= 'A' && b <= 'F' ? b - 'A' + 10i32
     : -1i32
 
-# The unit name of the document at `uri`: its path relative to `root`; None
-# when it lies outside the root.
+# The `file://` URI of a path, every byte but a plain one %XX-escaped.
+fun pathUri(path: String): String => "file://" + percentEncoded(path, 0, "")
+
+fun [tail] percentEncoded(s: String, i: Int, out: String): String
+  if i >= System::length(s)
+    ret out
+  let b = System::byteAt(s, i)
+  let plain = isWordByte(b) || b == '/' || b == '.' || b == '-' || b == '~'
+  ret percentEncoded(s, i + 1, plain ? out + asciiToString(b) : out + "%" + hexByte(b))
+
+fun hexByte(b: System::Int32): String
+  ret asciiToString(hexDigit(b / 16i32)) + asciiToString(hexDigit(b % 16i32))
+
+fun hexDigit(n: System::Int32): System::Int32 => n < 10i32 ? '0' + n : 'A' + n - 10i32
+
+# The unit name of the file at `path`: its path relative to `root`; None when
+# it lies outside the root.
+fun unitAt(root: String, path: String): String|None
+  ret startsWith(path, root + "/") ? slice(path, System::length(root) + 1, System::length(path)) : None
+
+# The unit name of the document at `uri`.
 fun unitOf(root: String, uri: String): String|None => match(uriPath(uri))
-  (path: String) => startsWith(path, root + "/") ? slice(path, System::length(root) + 1, System::length(path)) : None
+  (path: String) => unitAt(root, path)
   ()             => None
 
 # A workspace root without the trailing `/` a client may send.

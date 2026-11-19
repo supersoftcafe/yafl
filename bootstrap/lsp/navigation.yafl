@@ -44,6 +44,21 @@ class [final] Place(pcPath: String, pcAt: PLine)
 # A name the program uses: where, and the unique name it resolved to.
 class [final] Use(useAt: PLine, useKey: String)
 
+# The uses, two ways: by where they are (`unit:line`), for the use under a
+# cursor; and by the name they resolved to, for its references.
+class [final] Uses(usByLine: Dict<String, List<Use>>, usByKey: Dict<String, List<Use>>)
+
+fun noUses(): Uses => Uses(Dict(), Dict())
+
+fun usesIndexed(all: List<Use>): Uses
+  ret fold(all, noUses(), (ix: Uses, u: Use) =>
+    Uses(listed(ix.usByLine, lineKey(u.useAt.plFile, u.useAt.plLine), u), listed(ix.usByKey, u.useKey, u)))
+
+fun listed(d: Dict<String, List<Use>>, k: String, u: Use): Dict<String, List<Use>>
+  ret put(d, k, append(get(d, k) ?? List(), u))
+
+fun lineKey(unit: String, line: Int): String => unit + ":" + String(line)
+
 # Every declaration in `stmts`, at any depth, by unique name. `pathOf` gives
 # the file a unit name is.
 fun declarations(stmts: List<PStmt>, pathOf: (:String): String,
@@ -66,11 +81,12 @@ fun armsDeclared(d: Dict<String, Place>, x: PExpr, pathOf: (:String): String): D
 
 # Every use in the converged `stmts`, and every declaration as a use of
 # itself; with the type names in `parsed`, resolved over `root`.
-fun uses(stmts: List<PStmt>, parsed: List<PStmt>, root: Resolver): List<Use>
+fun uses(stmts: List<PStmt>, parsed: List<PStmt>, root: Resolver): Uses
   ret walkStmts(stmts, emptyResolverGlobal, typeUses(parsed, root),
                 Walk<List<Use>>((u, r, x) => (s = usedIn(u, x), r = None),
                                 (u, r, st) => (s = noted(u, stmtName(st), stmtLine(st)), r = None),
                                 (u, r, sp) => (s = usedType(u, sp), r = None))).s
+    |> (all) => usesIndexed(all)
 
 fun usedIn(u: List<Use>, x: PExpr): List<Use> => match(x)
   (n: PeName)  => noted(u, n.refName, n.penLine)
@@ -117,27 +133,28 @@ fun nameSpan(text: String, at: PLine, key: String): PLine|None => namedAt(text, 
 
 fun nameLength(key: String): Int => charsBetween(writtenName(key), 0, System::length(writtenName(key)), 0)
 
-# A client location for the name `key` written from `at` in the file at
-# `path`; None when it is not written there.
-fun location(path: String, text: String, at: PLine, key: String): JsonValue|None
-  ret match(nameSpan(text, at, key))
-    (n: PLine) => JsonObj(List(JsonPair("uri", JsonStr(pathUri(path))),
-                               JsonPair("range", lspRange(text, n.plLine, n.plCol, nameLength(key)))))
-    ()         => None
+# A name as written in a file: the file's path and text, where the name
+# starts, and how many characters it has.
+class [final] Spot(spPath: String, spText: String, spAt: PLine, spLength: Int)
 
-fun pathUri(path: String): String => "file://" + percentEncoded(path, 0, "")
+# The spot of the name `key`, written from `at` in the file at `path`; None
+# when it is not written there.
+fun spotOf(path: String, text: String, at: PLine, key: String): Spot|None => match(nameSpan(text, at, key))
+  (n: PLine) => Spot(path, text, n, nameLength(key))
+  ()         => None
 
-fun [tail] percentEncoded(s: String, i: Int, out: String): String
-  if i >= System::length(s)
-    ret out
-  let b = System::byteAt(s, i)
-  let plain = isWordByte(b) || b == '/' || b == '.' || b == '-' || b == '~'
-  ret percentEncoded(s, i + 1, plain ? out + asciiToString(b) : out + "%" + hexByte(b))
+fun spotLocation(s: Spot): JsonValue
+  ret JsonObj(List(JsonPair("uri", JsonStr(pathUri(s.spPath))),
+                   JsonPair("range", lspRange(s.spText, s.spAt.plLine, s.spAt.plCol, s.spLength))))
 
-fun hexByte(b: System::Int32): String
-  ret asciiToString(hexDigit(b / 16i32)) + asciiToString(hexDigit(b % 16i32))
+# In file order, then line, then column.
+fun spotLess(a: Spot, b: Spot): Bool
+  ret a.spPath != b.spPath ? a.spPath < b.spPath
+    : a.spAt.plLine != b.spAt.plLine ? a.spAt.plLine < b.spAt.plLine
+    : a.spAt.plCol < b.spAt.plCol
 
-fun hexDigit(n: System::Int32): System::Int32 => n < 10i32 ? '0' + n : 'A' + n - 10i32
+fun sameSpot(a: Spot, b: Spot): Bool
+  ret a.spPath == b.spPath && a.spAt.plLine == b.spAt.plLine && a.spAt.plCol == b.spAt.plCol
 
 
 # ── the requests ─────────────────────────────────────────────────────────────
@@ -146,14 +163,14 @@ fun hexDigit(n: System::Int32): System::Int32 => n < 10i32 ? '0' + n : 'A' + n -
 fun useAtCursor(sv: Server, r: Report, params: JsonValue): Use|None
   let uri = stringField(field(params, "textDocument") ?? JsonNull(), "uri") ?? ""
   let pos = field(params, "position") ?? JsonNull()
-  ret match(unitIn(sv, JsonObj(List(JsonPair("uri", JsonStr(uri))))), intField(pos, "line"), intField(pos, "character"))
+  ret match(unitOfUri(sv, uri), intField(pos, "line"), intField(pos, "character"))
     (unit: String, row: Int, units: Int) => useIn(r, unit, row, units)
     (u, row, units)                       => None
 
 fun useIn(r: Report, unit: String, row: Int, units: Int): Use|None
   let text = get(r.rpTexts, unit) ?? ""
   let col = compilerColumn(text, row, units)
-  ret firstWhere(r.rpUses, (u) => u.useAt.plFile == unit && u.useAt.plLine == row + 1 && covers(text, u, col))
+  ret firstWhere(get(r.rpUses.usByLine, lineKey(unit, row + 1)) ?? List(), (u) => covers(text, u, col))
 
 fun covers(text: String, u: Use, col: Int): Bool => match(nameSpan(text, u.useAt, u.useKey))
   (n: PLine) => col >= n.plCol && col < n.plCol + nameLength(u.useKey)
@@ -170,7 +187,7 @@ fun placeOf(sv: Server, r: Report, key: String): Place|None => match(get(r.rpPla
 # library's.
 fun textAt(sv: Server, r: Report, path: String): String
   let unit = match(sv.svRoot)
-    (root: String) => startsWith(path, root + "/") ? slice(path, System::length(root) + 1, System::length(path)) : ""
+    (root: String) => unitAt(root, path) ?? ""
     ()             => ""
   ret match(get(r.rpTexts, unit))
     (t: String) => t
@@ -178,22 +195,23 @@ fun textAt(sv: Server, r: Report, path: String): String
       (l: Libraries) => get(l.lbTexts, path) ?? ""
       (other)        => ""
 
-fun placeLocation(sv: Server, r: Report, p: Place, key: String): JsonValue|None
-  ret location(p.pcPath, textAt(sv, r, p.pcPath), p.pcAt, key)
+fun placeSpot(sv: Server, r: Report, p: Place, key: String): Spot|None
+  ret spotOf(p.pcPath, textAt(sv, r, p.pcPath), p.pcAt, key)
 
-fun useLocation(sv: Server, r: Report, u: Use): JsonValue|None
-  let root = sv.svRoot ?? ""
-  ret location(root + "/" + u.useAt.plFile, get(r.rpTexts, u.useAt.plFile) ?? "", u.useAt, u.useKey)
+fun useSpot(sv: Server, r: Report, u: Use): Spot|None
+  ret spotOf((sv.svRoot ?? "") + "/" + u.useAt.plFile, get(r.rpTexts, u.useAt.plFile) ?? "", u.useAt, u.useKey)
 
 fun definitionReply(sv: Server, rq: Request): String
   let found = match(sv.svReport)
     (r: Report) => match(useAtCursor(sv, r, rq.rqParams))
       (u: Use) => match(placeOf(sv, r, u.useKey))
-        (p: Place) => placeLocation(sv, r, p, u.useKey)
+        (p: Place) => placeSpot(sv, r, p, u.useKey)
         ()         => None
       ()       => None
     ()          => None
-  ret resultReply(rq.rqId, found ?? JsonNull())
+  ret resultReply(rq.rqId, match(found)
+    (s: Spot) => spotLocation(s)
+    ()        => JsonNull())
 
 # Every use of the name at the position, in the program's units; with its
 # declaration only when the client asks for it.
@@ -204,22 +222,31 @@ fun referencesReply(sv: Server, rq: Request): String
   let found = match(sv.svReport)
     (r: Report) => match(useAtCursor(sv, r, rq.rqParams))
       (u: Use) => references(sv, r, u.useKey, withDecl)
-      ()       => List<JsonValue>()
-    ()          => List<JsonValue>()
-  ret resultReply(rq.rqId, JsonArr(found))
+      ()       => List<Spot>()
+    ()          => List<Spot>()
+  ret resultReply(rq.rqId, JsonArr(map(found, spotLocation)))
 
-fun references(sv: Server, r: Report, key: String, withDecl: Bool): List<JsonValue>
+# A declaration in the program is a use of itself, so it is among the uses;
+# one in a library is not.
+fun references(sv: Server, r: Report, key: String, withDecl: Bool): List<Spot>
   let decl = match(placeOf(sv, r, key))
-    (p: Place) => placeLocation(sv, r, p, key)
+    (p: Place) => placeSpot(sv, r, p, key)
     ()         => None
-  let declKey = match(decl)
-    (d: JsonValue) => stringify(d)
-    ()             => ""
-  let byKey = fold(filter(r.rpUses, (u) => u.useKey == key), Dict<String, JsonValue>(),
-                   (acc, u) => match(useLocation(sv, r, u))
-                     (l: JsonValue) => put(acc, stringify(l), l)
-                     ()             => acc)
+  let used = fold(get(r.rpUses.usByKey, key) ?? List(), List<Spot>(),
+                  (acc: List<Spot>, u: Use) => spotted(acc, useSpot(sv, r, u)))
   let all = match(decl)
-    (d: JsonValue) => withDecl ? put(byKey, declKey, d) : remove(byKey, declKey)
-    ()             => byKey
-  ret map(sort(keys(all)), (k) => get(all, k) ?? JsonNull())
+    (d: Spot) => withDecl ? append(used, d) : filter(used, (s) => !sameSpot(s, d))
+    ()        => used
+  ret distinctSpots(sortBy(all, spotLess))
+
+fun spotted(acc: List<Spot>, s: Spot|None): List<Spot> => match(s)
+  (found: Spot) => append(acc, found)
+  ()            => acc
+
+# Sorted spots without repeats: a spot equal to the one before it is dropped.
+fun distinctSpots(sorted: List<Spot>): List<Spot>
+  ret fold<Spot, (out: List<Spot>, prev: Spot|None)>(sorted, (out = List<Spot>(), prev = None), distinctStep).out
+
+fun distinctStep(st: (out: List<Spot>, prev: Spot|None), s: Spot): (out: List<Spot>, prev: Spot|None) => match(st.prev)
+  (p: Spot) => sameSpot(p, s) ? st : (out = append(st.out, s), prev = s)
+  ()        => (out = append(st.out, s), prev = s)

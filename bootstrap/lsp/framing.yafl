@@ -43,10 +43,21 @@ fun headersEnd(length: Int|None): Int|Next<String> => match(length)
   (n: Int) => n
   ()       => Failed<String>("a message has no Content-Length")
 
+# A header's name is not case-sensitive (`content-length:` is the same header).
 fun headerLength(line: String, length: Int|None): Int|None
-  ret startsWith(line, "Content-Length:")
-    ? parseInt(trim(slice(line, 15, System::length(line))))
+  let colon = findByte(line, ':', 0)
+  ret colon >= 0 && sameIgnoringCase(slice(line, 0, colon), "content-length", 0)
+    ? parseInt(trim(slice(line, colon + 1, System::length(line))))
     : length
+
+fun [tail] sameIgnoringCase(a: String, b: String, i: Int): Bool
+  if System::length(a) != System::length(b)
+    ret false
+  if i >= System::length(a)
+    ret true
+  ret lowered(System::byteAt(a, i)) == lowered(System::byteAt(b, i)) && sameIgnoringCase(a, b, i + 1)
+
+fun lowered(c: System::Int32): System::Int32 => c >= 'A' && c <= 'Z' ? c + 32i32 : c
 
 # Exactly `n` bytes: a read may return fewer than it was asked for.
 fun [tail] readBody(io: IO, n: Int, acc: String): (io: IO, v: Next<String>)
