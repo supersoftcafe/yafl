@@ -22,7 +22,7 @@ enum Message
   # A body that is not a message: its reply, when one can be addressed.
   enum Malformed(mfReply: String|None)
 
-fun decode(body: String): Message => match(parse(body))
+fun decodeMessage(body: String): Message => match(parse(body))
   (e: JsonParseError) => Malformed(errorReply(JsonNull(), parseErrorCode(), "the message is not JSON"))
   (v: JsonValue)      => decodeValue(v)
 

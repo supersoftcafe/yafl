@@ -1,0 +1,90 @@
+# bootstrap/lsp/analysis.yafl — what the server knows about the program (#26).
+#
+# The libraries are layers in dependency order, as a compile has them (#136),
+# but WHOLE: a compile prunes each to the namespaces its program reaches, and
+# an editor's program changes what it reaches with every import. They are
+# converged once, on the first analysis, and never again.
+#
+# The program is the top layer. An analysis parses it, converges it on the
+# libraries' root, and runs the checks on every layer, as `analyse` does for a
+# compile. A program that does not parse gets its parse errors and nothing
+# more.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Driver
+import Bootstrap::Frontend
+import Bootstrap::Lower::Ast
+import Bootstrap::Resolve
+import Bootstrap::Types
+
+
+# ── the libraries ────────────────────────────────────────────────────────────
+
+# lbLayers: each library's converged statements, in dependency order; lbBase,
+# the root over all of them; lbIndex, which library owns which namespace.
+class [final] Libraries(lbLayers: List<List<PStmt>>, lbOwners: List<Owner>,
+                        lbBase: RRoot|None, lbIndex: List<NsEntry>)
+
+# The installed libraries, converged; or why they cannot be.
+fun loadLibraries(): Libraries|String => match(availableLibraries(List()))
+  (e: LibsErr) => e.libsWhy
+  (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
+    (why: String)        => why
+    (idx: List<NsEntry>) => parsedLibraries(ok.libsFound, idx)
+
+fun parsedLibraries(libs: List<Library>, idx: List<NsEntry>): Libraries|String
+  ret match(parseLibraries(libs, List()))
+    (pe: LoadErrors)             => "an installed library does not parse"
+    (layers: List<List<PStmt>>) => match(libraryLayers(libs, layers, idx))
+      (why: String)           => why
+      (ordered: List<Loaded>) => convergedLibraries(ordered, idx)
+
+fun convergedLibraries(ordered: List<Loaded>, idx: List<NsEntry>): Libraries|String
+  let rx = fixGlobalRegexes(map(ordered, (x) => x.ldStmts),
+                            map(ordered, (x) => libraryName(x.ldLib)))
+  if !isEmpty(rx.rlErrs)
+    ret "an installed library has an invalid regex"
+  ret match(convergeLayers(rx.rlLayers, None, List()))
+    (converged: List<List<PStmt>>) => Libraries(converged, map(ordered, (x) => libraryOwner(x.ldLib)),
+                                                baseOf(converged), idx)
+    (d: CvDiverged)                => "the installed libraries do not converge"
+
+fun libraryName(l: Library): String|None => l.libManifest.libName
+
+# The root over every layer, each on the ones beneath it.
+fun baseOf(layers: List<List<PStmt>>): RRoot|None =>
+  fold<List<PStmt>, RRoot|None>(layers, None, (b, l) => rootResolver(l, b))
+
+
+# ── the program ──────────────────────────────────────────────────────────────
+
+# Every diagnostic the program has: errors and warnings together, each
+# carrying the unit it is in.
+fun programDiagnostics(libs: Libraries, srcs: List<LibSource>, enabled: Set<String>): Set<PErr>
+  ret match(parseUnits(srcs))
+    (pe: LoadErrors)     => pe.peErrs
+    (stmts: List<PStmt>) => checkedProgram(libs, stmts, enabled)
+
+# Rule 1 (#136) first: the program declares into no namespace a library lists.
+# Then the program converges on the libraries, and the checks run over all.
+fun checkedProgram(libs: Libraries, stmts: List<PStmt>, enabled: Set<String>): Set<PErr>
+  let misplaced = programNamespaceErrors(listedNamespaces(libs.lbIndex), stmts)
+  if !isEmpty(misplaced)
+    ret misplaced
+  let rx = fixGlobalRegexes(List(stmts), List<String|None>(None))
+  if !isEmpty(rx.rlErrs)
+    ret rx.rlErrs
+  ret match(converge(head(rx.rlLayers) ?? List(), libs.lbBase))
+    (ok: CvOk)      => match(checkConverged(append(libs.lbLayers, ok.cvStatements),
+                                            append(libs.lbOwners, programOwner(libs.lbIndex)), enabled))
+      (a: AnOk)     => a.anWarns
+      (f: AnFailed) => union(f.anErrs, f.anWarns)
+    (d: CvDiverged) => d.cvErrs
+
+# The program owns every namespace that no library lists (placedProject).
+fun programOwner(idx: List<NsEntry>): Owner => Owner(None, Set(map(idx, (e) => e.nsName)))

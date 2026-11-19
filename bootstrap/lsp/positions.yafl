@@ -1,0 +1,36 @@
+# bootstrap/lsp/positions.yafl — the compiler counts lines and columns from 1,
+# columns in characters; LSP counts both from 0, and characters in UTF-16
+# units (#26). A character beyond U+FFFF is one column to the compiler and two
+# units to the client.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::Json
+
+
+# The position of the compiler's (line, col) in `text`.
+fun lspPosition(text: String, line: Int, col: Int): JsonValue
+  let row = line > 0 ? line - 1 : 0
+  ret JsonObj(List(JsonPair("line", JsonInt(row)),
+                   JsonPair("character", JsonInt(utf16Units(text, lineStart(text, row, 0), col - 1, 0)))))
+
+# The byte offset where line `row` (from 0) starts; the end of the text when
+# there are fewer lines.
+fun [tail] lineStart(text: String, row: Int, off: Int): Int
+  if row <= 0
+    ret off
+  let nl = findByte(text, '\n', off)
+  ret nl < 0 ? System::length(text) : lineStart(text, row - 1, nl + 1)
+
+# The UTF-16 units in the first `chars` characters from `off`, stopping at the
+# end of the line.
+fun [tail] utf16Units(text: String, off: Int, chars: Int, acc: Int): Int
+  if chars <= 0
+    ret acc
+  ret match(decode(text, off))
+    (d: (cp: System::Int32, next: Int)) => d.cp == '\n'
+      ? acc
+      : utf16Units(text, d.next, chars - 1, acc + (d.cp >= 0x10000i32 ? 2 : 1))
+    ()                                  => acc

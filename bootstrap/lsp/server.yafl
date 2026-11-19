@@ -1,14 +1,19 @@
 # bootstrap/lsp/server.yafl — `yaflc --lsp` (#26): a language server on stdin
 # and stdout.
 #
-# The server is a pure fold, step(state, message) → (state, replies), and the
-# loop around it is the only code that does IO: it reads one message, steps,
-# writes the replies, and goes round again until the session ends.
+# The server is a fold, step(state, message) → (state, replies), and the loop
+# around it does the protocol's IO: it reads one message, steps, writes the
+# replies, and goes round again until the session ends. The only other IO is
+# an analysis reading the files that are not open, and the libraries once.
 #
 # The lifecycle: requests before `initialize` are refused; after `shutdown`
 # only `exit` is accepted; `exit` ends the session, with 0 when `shutdown`
 # came first and 1 when it did not. A stream that closes or breaks without an
 # `exit` also ends it, with 1.
+#
+# Analysis is LAZY: an edit only replaces text. A request that needs an
+# analysis newer than the stored one runs it first, so a burst of edits costs
+# one analysis, and no answer comes from text older than the request.
 
 namespace Bootstrap::Lsp
 
@@ -16,6 +21,11 @@ import System
 import System::Containers
 import System::IO
 import System::Json
+
+import Bootstrap::Ast
+import Bootstrap::Driver
+import Bootstrap::Frontend
+import Bootstrap::Types
 
 
 # ── state ────────────────────────────────────────────────────────────────────
@@ -25,9 +35,20 @@ enum Phase
   enum Running()
   enum ShutDown()    # after `shutdown`, waiting for `exit`
 
-class [final] Server(svPhase: Phase)
+# svRoot: the workspace folder, the program's root. svDocs: the open
+# documents, by unit name. svEdits counts the edits so far, and an analysis is
+# of the edit it was made after. svLibs: the libraries once loaded, or why
+# they could not be.
+class [final] Server(svPhase: Phase, svRoot: String|None, svDocs: Dict<String, Doc>,
+                     svEdits: Int, svLibs: Libraries|String|None, svReport: Report|None)
 
-fun freshServer(): Server => Server(Waiting())
+class [final] Doc(docText: String, docVersion: Int)
+
+# An analysis: the edit it is of, what it found, and the text of every unit
+# it read, which its positions are counted in.
+class [final] Report(rpEdit: Int, rpErrs: Set<PErr>, rpTexts: Dict<String, String>)
+
+fun freshServer(): Server => Server(Waiting(), None, Dict(), 0, None, None)
 
 # What one message does: the state after it, the bodies to send, and the exit
 # code when it ends the session.
@@ -48,26 +69,79 @@ fun repliesOf(reply: String|None): List<String> => match(reply)
 
 fun request(sv: Server, rq: Request): Step => match(sv.svPhase)
   (w: Waiting)  => rq.rqMethod == "initialize"
-    ? Step(with sv(svPhase = Running()), List(resultReply(rq.rqId, initializeResult())), None)
+    ? Step(with sv(svPhase = Running(), svRoot = workspaceRoot(rq.rqParams)),
+           List(resultReply(rq.rqId, initializeResult())), None)
     : Step(sv, List(errorReply(rq.rqId, serverNotInitializedCode(), "the server is not initialized")), None)
   (r: Running)  => running(sv, rq)
   (d: ShutDown) => Step(sv, List(errorReply(rq.rqId, invalidRequestCode(), "the server is shutting down")), None)
 
 fun running(sv: Server, rq: Request): Step => match(rq.rqMethod)
-  ("shutdown") => Step(with sv(svPhase = ShutDown()), List(resultReply(rq.rqId, JsonNull())), None)
-  (other)      => Step(sv, List(errorReply(rq.rqId, methodNotFoundCode(), "unknown method: " + other)), None)
+  ("shutdown")                => Step(with sv(svPhase = ShutDown()), List(resultReply(rq.rqId, JsonNull())), None)
+  ("textDocument/diagnostic") => analysed(sv) |> (fresh) => Step(fresh, List(diagnosticReply(fresh, rq)), None)
+  (other)                     => Step(sv, List(errorReply(rq.rqId, methodNotFoundCode(), "unknown method: " + other)), None)
 
 # Notifications get no reply. Unknown ones are ignored, as the protocol asks.
-fun notification(sv: Server, nt: Notification): Step
-  ret nt.ntMethod == "exit"
-    ? Step(sv, List(), sv.svPhase is ShutDown ? 0 : 1)
-    : Step(sv, List(), None)
+fun notification(sv: Server, nt: Notification): Step => match(nt.ntMethod)
+  ("exit")                   => Step(sv, List(), sv.svPhase is ShutDown ? 0 : 1)
+  ("textDocument/didOpen")   => Step(opened(sv, nt.ntParams), List(), None)
+  ("textDocument/didChange") => Step(changed(sv, nt.ntParams), List(), None)
+  ("textDocument/didClose")  => Step(closed(sv, nt.ntParams), List(), None)
+  (other)                    => Step(sv, List(), None)
+
+# The workspace folder: the first of `workspaceFolders`, else `rootUri`.
+fun workspaceRoot(params: JsonValue): String|None => match(field(params, "workspaceFolders"))
+  (folders: JsonArr) => match(head(folders.elements))
+    (first: JsonValue) => match(stringField(first, "uri"))
+      (uri: String) => rootOf(uri)
+      ()            => None
+    ()                 => rootUriOf(params)
+  ()                 => rootUriOf(params)
+
+fun rootUriOf(params: JsonValue): String|None => match(stringField(params, "rootUri"))
+  (uri: String) => rootOf(uri)
+  ()            => None
 
 # Positions are UTF-16 units, the protocol's default and the only encoding
-# every client supports.
+# every client supports. Documents are sent whole on every change (sync kind
+# 1). Diagnostics are pulled, and an edit in one file can change another's.
 fun initializeResult(): JsonValue
-  ret JsonObj(List(JsonPair("capabilities", JsonObj(List(JsonPair("positionEncoding", JsonStr("utf-16"))))),
-                   JsonPair("serverInfo", JsonObj(List(JsonPair("name", JsonStr("yaflc")))))))
+  ret JsonObj(List(
+    JsonPair("capabilities", JsonObj(List(
+      JsonPair("positionEncoding", JsonStr("utf-16")),
+      JsonPair("textDocumentSync", JsonObj(List(JsonPair("openClose", JsonTrue()), JsonPair("change", JsonInt(1))))),
+      JsonPair("diagnosticProvider", JsonObj(List(JsonPair("interFileDependencies", JsonTrue()),
+                                                  JsonPair("workspaceDiagnostics", JsonFalse()))))))),
+    JsonPair("serverInfo", JsonObj(List(JsonPair("name", JsonStr("yaflc")))))))
+
+
+# ── analysis, on demand ──────────────────────────────────────────────────────
+
+# The server with an analysis of its latest edit: the stored one when it is
+# that, else a new one.
+fun analysed(sv: Server): Server => match(sv.svReport)
+  (r: Report) => r.rpEdit == sv.svEdits ? sv : reanalysed(sv)
+  ()          => reanalysed(sv)
+
+fun reanalysed(sv: Server): Server
+  let libs = match(sv.svLibs)
+    (l: Libraries) => l
+    (why: String)  => why
+    ()             => loadLibraries()
+  let srcs = match(sv.svRoot)
+    (root: String) => programSources(root, openTexts(sv.svDocs))
+    ()             => List<LibSource>()
+  let texts = fold(srcs, Dict<String, String>(), (d, x) => put(d, x.libFileName, x.libText))
+  ret match(libs)
+    (l: Libraries) => with sv(svLibs = l, svReport = Report(sv.svEdits, programDiagnostics(l, srcs, defaultWarnings()), texts))
+    (why: String)  => with sv(svLibs = why,
+                              svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), "the libraries cannot be loaded: " + why))), texts))
+
+fun openTexts(docs: Dict<String, Doc>): Dict<String, String> =>
+  fold(keys(docs), Dict<String, String>(), (d, k) => put(d, k, (get(docs, k) ?? Doc("", 0)).docText))
+
+fun defaultWarnings(): Set<String> => match(resolveEnabledWarnings(List()))
+  (ok: WrOk)  => ok.wrEnabled
+  (e: WrErr)  => Set()
 
 
 # ── the loop ─────────────────────────────────────────────────────────────────
@@ -85,7 +159,7 @@ fun [tail] serve(input: IO, output: IO, sv: Server): Int
     (ok: None, n: None)    => serve(r.io, w.io, s.stState)
 
 fun stepOn(sv: Server, in: Incoming): Step => match(in)
-  (m: InMessage) => step(sv, decode(m.inBody))
+  (m: InMessage) => step(sv, decodeMessage(m.inBody))
   (e: InEnd)     => Step(sv, List(), 1)
   (b: InBroken)  => Step(sv, List(), 1)
 

@@ -126,3 +126,118 @@ class TestFraming(TestCase):
         code, replies = self._serve(_frame(_INITIALIZE) + whole[:-3])
         self.assertEqual(1, code)
         self.assertEqual([1], [r["id"] for r in replies])
+
+
+class TestDiagnostics(TestCase):
+    """Pull diagnostics over a workspace folder: files on disk, documents the
+    editor has open, and the libraries beneath them."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._dir = tempfile.TemporaryDirectory()
+        self.root = Path(self._dir.name).resolve()
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _write(self, unit: str, text: str) -> str:
+        path = self.root / unit
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path.as_uri()
+
+    def _uri(self, unit: str) -> str:
+        return (self.root / unit).as_uri()
+
+    def _session(self, *messages: dict) -> dict:
+        """Each diagnostic reply's items, by request id."""
+        stream = [_request(1, "initialize", {"rootUri": self.root.as_uri(), "capabilities": {}}),
+                  _notification("initialized"), *messages,
+                  _request(99, "shutdown"), _notification("exit")]
+        p = subprocess.run([shared_bootstrap_binary(), "--lsp"],
+                           input=b"".join(_frame(m) for m in stream),
+                           capture_output=True, timeout=300)
+        self.assertEqual(0, p.returncode, p.stderr)
+        return {r["id"]: r["result"]["items"] for r in _replies(p.stdout)
+                if isinstance(r.get("result"), dict) and "items" in r["result"]}
+
+    def _pull(self, id_, unit: str) -> dict:
+        return _request(id_, "textDocument/diagnostic", {"textDocument": {"uri": self._uri(unit)}})
+
+    def _open(self, unit: str, text: str, version: int = 1) -> dict:
+        return _notification("textDocument/didOpen", {"textDocument": {
+            "uri": self._uri(unit), "languageId": "yafl", "version": version, "text": text}})
+
+    def _change(self, unit: str, text: str, version: int) -> dict:
+        return _notification("textDocument/didChange", {
+            "textDocument": {"uri": self._uri(unit), "version": version},
+            "contentChanges": [{"text": text}]})
+
+    _CLEAN = "namespace Main\nimport System\nfun main(): Int\n  ret 0\n"
+
+    @staticmethod
+    def _summary(items: list[dict]) -> list[tuple]:
+        return [(i["range"]["start"]["line"], i["range"]["start"]["character"],
+                 i["severity"], i["message"]) for i in items]
+
+    def test_a_file_on_disk_is_analysed(self):
+        self._write("main.yafl", "namespace Main\nimport System\nfun main(): Int\n  ret nosuch\n")
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        self.assertIn((3, 6, 1, "Failed to resolve nosuch"), self._summary(items))
+
+    def test_an_open_document_replaces_the_disk(self):
+        self._write("main.yafl", self._CLEAN)
+        items = self._session(self._pull(2, "main.yafl"),
+                              self._open("main.yafl", "namespace Main\nimport System\nfun main(): Int\n  ret nosuch\n"),
+                              self._pull(3, "main.yafl"),
+                              _notification("textDocument/didClose", {"textDocument": {"uri": self._uri("main.yafl")}}),
+                              self._pull(4, "main.yafl"))
+        self.assertEqual([], items[2])
+        self.assertIn("Failed to resolve nosuch", [m for *_, m in self._summary(items[3])])
+        self.assertEqual([], items[4])
+
+    def test_columns_are_utf16_units(self):
+        # `nosuch` is the 21st character of its line. The compiler counts the
+        # emoji before it as one column; the client counts it as two units.
+        self._write("main.yafl", "namespace Main\nimport System\nfun main(): Int\n"
+                                 "  ret length(\"\U0001F600\") + nosuch\n")
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        self.assertIn((3, 21, 1, "Failed to resolve nosuch"), self._summary(items))
+
+    def test_warnings_are_warnings(self):
+        self._write("main.yafl", "namespace Main\nimport System\nfun main(): Int\n  let unused = 1\n  ret 0\n")
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        self.assertEqual([(3, 6, 2, "'unused' is never used")], self._summary(items))
+
+    def test_a_document_that_does_not_parse_gets_its_parse_errors(self):
+        self._write("main.yafl", self._CLEAN)
+        items = self._session(self._change("main.yafl", "", 1),
+                              self._open("main.yafl", self._CLEAN),
+                              self._change("main.yafl", "namespace Main\nfun main(: Int\n", 2),
+                              self._pull(2, "main.yafl"))[2]
+        self.assertEqual(1, len(items))
+        self.assertEqual(1, items[0]["severity"])
+        self.assertEqual(1, items[0]["range"]["start"]["line"])
+
+    def test_an_edit_in_one_file_changes_another(self):
+        self._write("main.yafl", "namespace Main\nimport System\nfun main(): Int\n  ret helper()\n")
+        self._write("lib/helper.yafl", "namespace Main\nimport System\nfun helper(): Int\n  ret 0\n")
+        items = self._session(self._pull(2, "main.yafl"),
+                              self._open("lib/helper.yafl", "namespace Main\nimport System\nfun other(): Int\n  ret 0\n"),
+                              self._pull(3, "main.yafl"))
+        self.assertEqual([], items[2])
+        self.assertIn("Failed to resolve helper", " ".join(m for *_, m in self._summary(items[3])))
+
+    def test_a_library_folder_is_not_the_program(self):
+        self._write("main.yafl", self._CLEAN)
+        self._write("mylib/yafl.toml", 'name = "mylib"\nnamespaces = ["MyLib"]\n')
+        self._write("mylib/broken.yafl", "namespace MyLib\nfun broken(: Int\n")
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        self.assertEqual([], items)
+
+    def test_a_document_outside_the_workspace_has_none(self):
+        self._write("main.yafl", "namespace Main\nimport System\nfun main(): Int\n  ret nosuch\n")
+        items = self._session(_request(2, "textDocument/diagnostic",
+                                       {"textDocument": {"uri": "file:///elsewhere/x.yafl"}}))[2]
+        self.assertEqual([], items)
