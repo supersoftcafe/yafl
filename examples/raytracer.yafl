@@ -9,7 +9,7 @@
 #
 # Output: PPM P3 (ASCII) on stdout — `P3`, width height, 255, then `r g b`
 # triples, one pixel per line, top row first.
-namespace Main
+namespace Examples::RayTracer
 
 import System
 import System::Containers
