@@ -470,6 +470,18 @@ EXPORT object_t* io_write(object_t* self, str_t data) {
     return _io_dispatch_flush(io);
 }
 
+// io_flush sends everything written so far on its way, as far as the OS: a
+// reader at the other end (a pipe's, or another handle on the same file) sees
+// it without waiting for the buffer to fill or the handle to close. Always
+// dispatched, even with nothing in the handle's own buffer, since stdout and
+// stderr may hold bytes in libc's. Resolves to 0, or a negative errno.
+EXPORT object_t* io_flush(object_t* self) {
+    io_t* io = (io_t*)self;
+    if (io == NULL || io->file == NULL) return NULL;
+    if (!io->is_write) return integer_from_int32_noalloc(0);
+    return _io_dispatch_flush(io);
+}
+
 // Write a sub-range `data[offset .. offset+length)` without allocating a slice.
 // Same protocol as io_write: copies as many bytes as fit and returns that count
 // (0 + a flush task when the buffer is full); the caller advances `offset` by the

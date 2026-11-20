@@ -17,6 +17,8 @@
 # which die young. Files are checked in parallel (`powerMap`) with reports
 # collected and printed in file order, so output stays deterministic.
 #
+namespace Examples::YSpell
+
 import System
 import System::Args
 import System::Containers

@@ -577,7 +577,7 @@ fun [tail] bindPipeLoop(lhs, lr, ps): (v: PExpr|PFail, rest: Ps)
       ? (failAt("at most one `_` placeholder per pipeline stage", exprLine(rhs)), r.rest)
       : bindPipeLoop(op == "|>"
                        ? PePipe(lhs, rhs, exprLine(rhs))
-                       : foldBinary("?>", lhs, rhs, lr),
+                       : foldBinary("?>", lineAt(ps), lhs, rhs, lr),
                      lr, r.rest)
 
 # `L is R` / `L !is R` => match(L) (_: R) => Bool ; () => Bool — no Is node.
@@ -640,7 +640,7 @@ fun [tail] binLevelLoop(lhs, lr, ps, ops: String,
   let r = sub(bump(ps))
   ret match(r.v)
     (f: PFail)   => f.hard ? (f, r.rest) : (lhs, ps)
-    (rhs: PExpr) => binLevelLoop(foldBinary(t.text, lhs, rhs, lr), lr, r.rest, ops, sub)
+    (rhs: PExpr) => binLevelLoop(foldBinary(t.text, lineAt(ps), lhs, rhs, lr), lr, r.rest, ops, sub)
 
 fun parseCompare(ps: Ps): (v: PExpr|PFail, rest: Ps)
   ret binLevel(ps, " < == > != <= >= ", parseBitOr)

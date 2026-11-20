@@ -46,6 +46,25 @@ fun [test("strings parse, including escapes")] strings(): None|TestFailure
      ?? assertEqStr(_tag(parse("\"\"")), "str:", "empty string")
      ?? assertEqStr(_tag(parse("\"a\\\"b\"")), "str:a\"b", "escaped quote")
 
+# `\uXXXX` names a UTF-16 unit; a pair of them names one character beyond
+# the first 65,536. A lone half of a pair has no UTF-8 form, so it is an error.
+fun [test("unicode escapes decode to UTF-8")] unicodeEscapes(): None|TestFailure
+    ret assertEqStr(_tag(parse("\"\\u0041\"")), "str:A", "ASCII")
+     ?? assertEqStr(_tag(parse("\"\\u00e9t\\u00E9\"")), "str:" + Char(0xE9i32) + "t" + Char(0xE9i32), "two bytes, either case")
+     ?? assertEqStr(_tag(parse("\"\\u20ac\"")), "str:" + Char(0x20ACi32), "three bytes")
+     ?? assertEqStr(_tag(parse("\"\\ud83d\\ude00\"")), "str:" + Char(0x1F600i32), "a surrogate pair")
+     ?? assertEqStr(_tag(parse("\"\\ud83d\"")), "err", "a lone high half")
+     ?? assertEqStr(_tag(parse("\"\\ude00\"")), "err", "a lone low half")
+     ?? assertEqStr(_tag(parse("\"\\u12\"")), "err", "too few digits")
+     ?? assertEqStr(_tag(parse("\"\\u12g4\"")), "err", "not a hex digit")
+     ?? assertEqStr(_tag(parse("\"\\b\\f\"")), "str:" + Char(8i32) + Char(12i32), "short control escapes")
+
+# Every control character must be escaped, or the output is not JSON.
+fun [test("stringify escapes every control character")] stringifyControls(): None|TestFailure
+    ret assertEqStr(stringify(JsonStr(Char(1i32) + "a" + Char(31i32)), false), "\"\\u0001a\\u001f\"", "unnamed controls")
+     ?? assertEqStr(stringify(JsonStr("\n\r\t"), false), "\"\\n\\r\\t\"", "named controls")
+     ?? assertEqStr(_tag(parse(stringify(JsonStr(Char(8i32) + Char(0x20ACi32)), false))), "str:" + Char(8i32) + Char(0x20ACi32), "round trip")
+
 fun [test("arrays parse and report their length")] arrays(): None|TestFailure
     ret assertEqStr(_tag(parse("[]")), "arr:0", "empty array")
      ?? assertEqStr(_tag(parse("[1,2,3]")), "arr:3", "three elements")

@@ -1,0 +1,86 @@
+# bootstrap/lsp/framing.yafl — the Language Server Protocol's base protocol
+# (#26): each message is a header part and a JSON body.
+#
+#   Content-Length: 52\r\n
+#   \r\n
+#   {"jsonrpc":"2.0","id":1,"method":"initialize",...}
+#
+# Content-Length counts BYTES, and IO.read(length) reads bytes, so the body is
+# read exactly. Any other header (the spec allows Content-Type) is ignored.
+#
+# A message read is a body, Done() when the client closed the stream between
+# messages, or Failed(why) when the stream broke inside one or its header
+# cannot be read.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::IO
+import System::Server
+
+
+# ── reading ──────────────────────────────────────────────────────────────────
+
+fun readMessage(io: IO): (io: IO, v: Next<String>)
+  let h = readHeaders(io, None, true)
+  ret match(h.v)
+    (n: Int)          => readBody(h.io, n, "")
+    (x: Next<String>) => (h.io, x)
+
+# Header lines up to the empty line that ends them: the Content-Length, or
+# why there is none. `first`: nothing of this message has been read yet, so
+# the end of the stream here is a clean end.
+fun [tail] readHeaders(io: IO, length: Int|None, first: Bool): (io: IO, v: Int|Next<String>)
+  let r = readLine(io, 8192)
+  ret match(r.v)
+    (e: EOFError) => (r.io, first ? Done<String>() : Failed<String>("the stream ended inside a header"))
+    (e: IOError)  => (r.io, Failed<String>("the header cannot be read"))
+    (line: String) => trimEnd(line) == ""
+      ? (r.io, headersEnd(length))
+      : readHeaders(r.io, headerLength(trimEnd(line), length), false)
+
+fun headersEnd(length: Int|None): Int|Next<String> => match(length)
+  (n: Int) => n
+  ()       => Failed<String>("a message has no Content-Length")
+
+# A header's name is not case-sensitive (`content-length:` is the same header).
+fun headerLength(line: String, length: Int|None): Int|None
+  let colon = findByte(line, ':', 0)
+  ret colon >= 0 && sameIgnoringCase(slice(line, 0, colon), "content-length", 0)
+    ? parseInt(trim(slice(line, colon + 1, System::length(line))))
+    : length
+
+fun [tail] sameIgnoringCase(a: String, b: String, i: Int): Bool
+  if System::length(a) != System::length(b)
+    ret false
+  if i >= System::length(a)
+    ret true
+  ret lowered(System::byteAt(a, i)) == lowered(System::byteAt(b, i)) && sameIgnoringCase(a, b, i + 1)
+
+fun lowered(c: System::Int32): System::Int32 => c >= 'A' && c <= 'Z' ? c + 32i32 : c
+
+# Exactly `n` bytes: a read may return fewer than it was asked for.
+fun [tail] readBody(io: IO, n: Int, acc: String): (io: IO, v: Next<String>)
+  if System::length(acc) >= n
+    ret (io, More<String>(acc))
+  let r = io.read(n - System::length(acc))
+  ret match(r.v)
+    (part: String) => readBody(r.io, n, acc + part)
+    (e: IOError)   => (r.io, Failed<String>("the stream ended inside a message"))
+
+
+# ── writing ──────────────────────────────────────────────────────────────────
+
+# Why the message cannot be written, if it cannot. It is flushed: the client
+# waits for it before it sends more.
+fun writeMessage(io: IO, body: String): (io: IO, v: String|None)
+  let w = writeAll(io, "Content-Length: " + String(System::length(body)) + "\r\n\r\n" + body)
+  ret match(w.v)
+    (n: Int)     => flushed(w.io)
+    (e: IOError) => (w.io, "the reply cannot be written")
+
+fun flushed(io: IO): (io: IO, v: String|None)
+  let f = io.flush()
+  ret match(f.v)
+    (e: IOError) => (f.io, "the reply cannot be sent")
+    ()           => (f.io, None)

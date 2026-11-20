@@ -1,11 +1,11 @@
-namespace Test
+namespace Examples::HelloWorld
 
 import System
 
 fun createMessage(name: System::String): System::String
   ret "Hi " + name + ", how're you\n"
 
-let message: System::String = Test::createMessage("Jeff")
+let message: System::String = Examples::HelloWorld::createMessage("Jeff")
 
 fun main(): System::Int
   System::print(message)

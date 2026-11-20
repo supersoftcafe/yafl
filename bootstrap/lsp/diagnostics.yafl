@@ -1,0 +1,39 @@
+# bootstrap/lsp/diagnostics.yafl — `textDocument/diagnostic` (#26): the
+# client asks for one document's diagnostics, and gets every error and
+# warning the latest analysis found in it.
+#
+# The compiler gives a diagnostic a point, not a span, so its range is empty;
+# a client shows an empty range as the word at that point. A diagnostic with
+# no file (the libraries cannot be loaded) is shown in every document.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::Json
+
+import Bootstrap::Frontend
+import Bootstrap::Types
+
+
+fun diagnosticReply(sv: Server, rq: Request): String
+  let uri = stringField(field(rq.rqParams, "textDocument") ?? JsonNull(), "uri") ?? ""
+  let items = match(sv.svReport, sv.svRoot)
+    (r: Report, root: String) => match(unitOf(root, uri))
+      (unit: String) => itemsFor(r, unit)
+      ()             => List<JsonValue>()
+    (r, root)                 => List<JsonValue>()
+  ret resultReply(rq.rqId, JsonObj(List(JsonPair("kind", JsonStr("full")),
+                                        JsonPair("items", JsonArr(items)))))
+
+fun itemsFor(r: Report, unit: String): List<JsonValue>
+  let text = get(r.rpTexts, unit) ?? ""
+  ret sortBy(filter(r.rpErrs, (e) => e.errLine.plFile == unit || e.errLine.plFile == ""), errLess)
+    |> (es) => map(es, (e) => diagnostic(text, e))
+
+fun diagnostic(text: String, e: PErr): JsonValue
+  let at = lspPosition(text, e.errLine.plLine, e.errLine.plCol)
+  ret JsonObj(append(List(JsonPair("range", JsonObj(List(JsonPair("start", at), JsonPair("end", at)))),
+                          JsonPair("severity", JsonInt(e.errWarn ? 2 : 1)),
+                          JsonPair("source", JsonStr("yaflc"))),
+                     JsonPair("message", JsonStr(e.errMsg))))

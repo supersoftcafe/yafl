@@ -461,7 +461,10 @@ fun multiFallback(em, mt: PeMatch, resultType,
 fun multiArms(em: GEmit, as2: List<PArm>, subs: List<PExpr>, gens: List<GBundle>, resultType, r) =>
   fold(as2, em, (a, x) => isElseArm(x) ? a : multiArm(a, x, subs, gens, resultType, r))
 
-fun isElseArm(a: PArm) => isNoneSpec(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
+# An arm with no pattern at ANY position: the else arm, which the fallback
+# generates (match.py `all(pt is None for pt in pats)`). `(n, r)` is as much
+# an else arm as `()`.
+fun isElseArm(a: PArm) => isNoneSpec(a.armType) && all(a.armExtra, (p) => isNoneSpec(p.posType))
 
 # One multi-subject arm: a stage per position that carries a pattern, and the
 # per-position bindings concatenated. The RESOLVER for the body is the arm's
@@ -480,8 +483,16 @@ fun positionStages(pats: List<Spec|None>, subs: List<PExpr>, gens: List<GBundle>
   fold(pats, (subs = subs, gens = gens, acc = acc),
        (st, x) => (subs = dropOne(st.subs), gens = dropOne(st.gens), acc = appendStages(st.acc, stagesFor(x, head(st.subs), head(st.gens), r)))).acc
 
+# A position with no pattern tests nothing, so it adds no stage (match.py
+# `if pats[i] is not None`); only a position whose pattern cannot be tested
+# is the never-passing guard below.
 fun stagesFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
-              r): List<List<RParam>>|None => match(sub, g)
+              r): List<List<RParam>>|None => match(pat)
+  (p: Spec) => stagesOn(p, sub, g, r)
+  ()        => List<List<RParam>>()
+
+fun stagesOn(pat: Spec, sub: PExpr|None, g: GBundle|None,
+             r): List<List<RParam>>|None => match(sub, g)
   (e2: PExpr, b: GBundle) => match(exprType(e2, r))
     (st: Spec) => reprPositionStages(classifyRepr(st, r), mustResult(b), pat, r)
     ()         => None
@@ -589,7 +600,10 @@ fun genMatchDispatchOn(em0, mt: PeMatch, subjType, resultType,
 
 fun elseArmOf(mt: PeMatch) => elseArmLoop(mt.arms)
 
-fun elseArmLoop(as2: List<PArm>) => firstWhere(as2, (x) => (isNoneSpec(x.armType) && isEmpty(x.armLiterals)))
+# The arm with no pattern at ANY position (match.py `__else_arm`).
+# `(n, r: String)` is not one: its second position still tests.
+fun elseArmLoop(as2: List<PArm>) => firstWhere(as2, (x) => isNoneSpec(x.armType) && isEmpty(x.armLiterals)
+                                                         && all(x.armExtra, (p) => isNoneSpec(p.posType)))
 
 fun isNoneSpec(sp: Spec|None): Bool => match(sp)
   (s2: Spec) => false

@@ -23,6 +23,7 @@ class [foreign,final] _IO
   # Write data[offset .. offset+length) without slicing — used by writeAll's loop.
   fun [foreign("io_write_range"),impure] _write_range(data: String, offset: Int, length: Int): Int
   fun [foreign("io_close"),impure] _close(): Int|None
+  fun [foreign("io_flush"),impure] _flush(): Int
 
 
 # Errors. IOError carries the raw errno as `code`; specific variants name the
@@ -85,6 +86,13 @@ class [linear,final] IO(_io: _IO)
   # the byte count accepted (may be partial); the caller advances the offset.
   fun write(data: String, offset: Int, length: Int): (io: IO, v: Int|IOError)
     ret _write_result(this, _io._write_range(data, offset, length))
+
+  # Send everything written so far on its way, so a reader at the other end
+  # sees it now rather than when the buffer fills or the handle closes. A
+  # server answering over a pipe flushes after each reply.
+  fun flush(): (io: IO, v: IOError|None)
+    let c = _io._flush()
+    ret (this, c < 0 ? _error_from_code(c) : None)
 
   # [terminal] — this method is the IO handle's terminus: it consumes
   # `this` (the linear obligation ends here) and returns no IO.

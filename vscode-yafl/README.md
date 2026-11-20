@@ -1,6 +1,12 @@
 # YAFL for Visual Studio Code
 
-Declarative language support for [YAFL](../README.md) source files (`.yafl`):
+Language support for [YAFL](../README.md) source files (`.yafl`):
+
+- **A language client** (`extension.js`) — the compiler is the language
+  server: `yaflc --lsp`, started for the workspace when a `.yafl` file opens.
+  It gives every error and warning a compile would, as you type; go to
+  definition; and find references, into the libraries too. The compiler to run
+  is the `yafl.server.path` setting, `yaflc` on `PATH` by default.
 
 - **Syntax highlighting** — a TextMate grammar (`syntaxes/yafl.tmLanguage.json`)
   kept in step with the compiler tokenizer (`compiler/parsing/tokenizer.py`):
@@ -16,8 +22,9 @@ Declarative language support for [YAFL](../README.md) source files (`.yafl`):
 - **Snippets** (`snippets/yafl.json`) — skeletons for `namespace`, `fun`,
   `class`, `interface`, `enum`, and `match`.
 
-This is intentionally a *static* extension: no language server, no bundled
-JavaScript, no activation cost.
+The workspace folder is the program: every `.yafl` under it, as
+`yaflc <folder>` compiles it. The installed libraries are found as a compile
+finds them (`YAFL_PATH`, then the install's own).
 
 ## Build and install
 
@@ -29,21 +36,21 @@ cmake -S vscode-yafl -B vscode-yafl/build
 cmake --build vscode-yafl/build --target install-extension
 ```
 
-`install-extension` symlinks this directory into
-`~/.vscode/extensions/yafl-0.1.0` (override the parent with
+`install-extension` installs the client's npm dependencies (`npm ci`, from
+`package-lock.json`; needs Node.js), then symlinks this directory into
+`~/.vscode/extensions/yafl-0.2.0` (override the parent with
 `-DYAFL_VSCODE_EXTENSIONS_DIR=...`). Run **Developer: Reload Window** in VS Code
-afterwards. Because it is a symlink, later edits to the grammar take effect on
-the next reload with no rebuild.
+afterwards. Because it is a symlink, later edits take effect on the next reload
+with no rebuild.
 
 Other targets:
 
 | Target                 | Effect                                                        |
 |------------------------|-------------------------------------------------------------|
 | `uninstall-extension`  | Remove the symlink.                                          |
-| `package-vsix`         | Build `vscode-yafl-0.1.0.vsix` via `npx @vscode/vsce` (needs Node). |
+| `package-vsix`         | Build `vscode-yafl-0.2.0.vsix`, dependencies included, via `npx @vscode/vsce`. |
 
 ## Possible future work
 
-Anything type-aware — diagnostics, go-to-definition, hover types, completion,
-semantic highlighting, formatting — needs a language server and is deliberately
-out of scope here.
+Hover types, completion, semantic highlighting and formatting are the
+language server's to add; the client needs nothing new for them.

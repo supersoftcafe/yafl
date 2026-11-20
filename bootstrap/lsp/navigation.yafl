@@ -1,0 +1,252 @@
+# bootstrap/lsp/navigation.yafl — go to definition and find references (#26).
+#
+# Every declaration's name is unique once parsed: `name@hash`, the hash taken
+# from where it is declared. Convergence resolves each name the program uses
+# to the unique name it means — a function, a local, a parameter, a field or
+# member reached through `.`, a class or enum in a type. So the index is two
+# plain things: every DECLARATION by unique name (the libraries' once, the
+# program's with each analysis), and every USE in the program, each with the
+# unique name it resolved to. A declaration counts as a use of itself, so
+# asking from it finds the same name.
+#
+# Two kinds of name are not in the converged tree as written. A type alias
+# (`String`) becomes the type it names and an enum (`IOError`) its declared
+# spec, both carrying the DECLARATION's position, so the use is gone. Type
+# names are taken from the parsed program instead, each resolved in the scope
+# of the statement it is in. And a match arm's name is declared by the arm,
+# which is not a statement.
+#
+# Positions in the tree are the compiler's: a declaration's is where its
+# statement starts (`fun area` is at `fun`), a use's where it is written (a
+# qualified `System::length` is at `System`). The name itself is looked for
+# on that line, from there on; a use whose name is not there — something the
+# compiler wrote for the program, such as the `show` an interpolation calls —
+# is no use the client can point at.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::Json
+
+import Bootstrap::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+# ── the index ────────────────────────────────────────────────────────────────
+
+# A declaration: the file it is in, by path, and where its statement starts.
+class [final] Place(pcPath: String, pcAt: PLine)
+
+# A name the program uses: where, and the unique name it resolved to.
+class [final] Use(useAt: PLine, useKey: String)
+
+# The uses, two ways: by where they are (`unit:line`), for the use under a
+# cursor; and by the name they resolved to, for its references.
+class [final] Uses(usByLine: Dict<String, List<Use>>, usByKey: Dict<String, List<Use>>)
+
+fun noUses(): Uses => Uses(Dict(), Dict())
+
+fun usesIndexed(all: List<Use>): Uses
+  ret fold(all, noUses(), (ix: Uses, u: Use) =>
+    Uses(listed(ix.usByLine, lineKey(u.useAt.plFile, u.useAt.plLine), u), listed(ix.usByKey, u.useKey, u)))
+
+fun listed(d: Dict<String, List<Use>>, k: String, u: Use): Dict<String, List<Use>>
+  ret put(d, k, append(get(d, k) ?? List(), u))
+
+fun lineKey(unit: String, line: Int): String => unit + ":" + String(line)
+
+# Every declaration in `stmts`, at any depth, by unique name. `pathOf` gives
+# the file a unit name is.
+fun declarations(stmts: List<PStmt>, pathOf: (:String): String,
+                 acc: Dict<String, Place>): Dict<String, Place>
+  ret foldStmts(stmts, (d: Dict<String, Place>, st: PStmt) => declared(d, st, pathOf),
+                (d: Dict<String, Place>, x: PExpr) => armsDeclared(d, x, pathOf), acc)
+
+fun declared(d: Dict<String, Place>, st: PStmt, pathOf: (:String): String): Dict<String, Place>
+  ret placed(d, stmtName(st), stmtLine(st), pathOf)
+
+fun placed(d: Dict<String, Place>, name: String, at: PLine, pathOf: (:String): String): Dict<String, Place>
+  ret isUnique(name) && get(d, name) is None ? put(d, name, Place(pathOf(at.plFile), at)) : d
+
+# A match's arms each declare their names, at every position.
+fun armsDeclared(d: Dict<String, Place>, x: PExpr, pathOf: (:String): String): Dict<String, Place> => match(x)
+  (m: PeMatch) => fold(m.arms, d, (d2: Dict<String, Place>, a: PArm) =>
+                    fold(a.armExtra, placed(d2, a.armName, a.parmLine, pathOf),
+                         (d3: Dict<String, Place>, p: PPos) => placed(d3, p.posName, p.pposLine, pathOf)))
+  (other)      => d
+
+# Every use in the converged `stmts`, and every declaration as a use of
+# itself; with the type names in `parsed`, resolved over `root`.
+fun uses(stmts: List<PStmt>, parsed: List<PStmt>, root: Resolver): Uses
+  ret walkStmts(stmts, emptyResolverGlobal, typeUses(parsed, root),
+                Walk<List<Use>>((u, r, x) => (s = usedIn(u, x), r = None),
+                                (u, r, st) => (s = noted(u, stmtName(st), stmtLine(st)), r = None),
+                                (u, r, sp) => (s = usedType(u, sp), r = None))).s
+    |> (all) => usesIndexed(all)
+
+fun usedIn(u: List<Use>, x: PExpr): List<Use> => match(x)
+  (n: PeName)  => noted(u, n.refName, n.penLine)
+  (d: PeDot)   => noted(u, d.member, d.pedLine)
+  (m: PeMatch) => fold(m.arms, u, (u2: List<Use>, a: PArm) =>
+                    fold(a.armExtra, noted(u2, a.armName, a.parmLine),
+                         (u3: List<Use>, p: PPos) => noted(u3, p.posName, p.pposLine)))
+  (other)      => u
+
+# Every type named in a parsed statement, in that statement's scope: its
+# namespace and imports.
+fun typeUses(parsed: List<PStmt>, root: Resolver): List<Use>
+  ret fold(parsed, List<Use>(), (u: List<Use>, st: PStmt) =>
+    scopeResolver(st, root) |> (r) => foldAllSpecs(List(st), (u2: List<Use>, sp: Spec) => namedType(u2, sp, r), u))
+
+fun namedType(u: List<Use>, sp: Spec, r: Resolver): List<Use> => match(sp)
+  (n: SNamed) => match(soleItem(findType(r, n.snName)))
+    (f: Found) => noted(u, f.fName, n.snLine)
+    ()         => u
+  (other)     => u
+
+fun usedType(u: List<Use>, sp: Spec): List<Use> => match(sp)
+  (c: SClass) => noted(u, c.scName, c.scLine)
+  (e: SEnum)  => isEmpty(e.sePath) ? noted(u, e.seRoot, e.seLine) : u
+  (other)     => u
+
+fun noted(u: List<Use>, name: String, at: PLine): List<Use>
+  ret isUnique(name) ? append(u, Use(at, name)) : u
+
+fun isUnique(name: String): Bool => contains(name, "@")
+
+
+# ── where a name is written ──────────────────────────────────────────────────
+
+# The name `key` declares, as written: an operator, `` `+` ``, is written `+`
+# where it is used.
+fun writtenName(key: String): String
+  let bare = bareOfUnique(key)
+  let n = System::length(bare)
+  ret n > 2 && startsWith(bare, "`") && endsWith(bare, "`") ? slice(bare, 1, n - 1) : bare
+
+# Where the name is written, from `at` on, and its length in characters.
+fun nameSpan(text: String, at: PLine, key: String): PLine|None => namedAt(text, at, writtenName(key))
+
+fun nameLength(key: String): Int => charsBetween(writtenName(key), 0, System::length(writtenName(key)), 0)
+
+# A name as written in a file: the file's path and text, where the name
+# starts, and how many characters it has.
+class [final] Spot(spPath: String, spText: String, spAt: PLine, spLength: Int)
+
+# The spot of the name `key`, written from `at` in the file at `path`; None
+# when it is not written there.
+fun spotOf(path: String, text: String, at: PLine, key: String): Spot|None => match(nameSpan(text, at, key))
+  (n: PLine) => Spot(path, text, n, nameLength(key))
+  ()         => None
+
+fun spotLocation(s: Spot): JsonValue
+  ret JsonObj(List(JsonPair("uri", JsonStr(pathUri(s.spPath))),
+                   JsonPair("range", lspRange(s.spText, s.spAt.plLine, s.spAt.plCol, s.spLength))))
+
+# In file order, then line, then column.
+fun spotLess(a: Spot, b: Spot): Bool
+  ret a.spPath != b.spPath ? a.spPath < b.spPath
+    : a.spAt.plLine != b.spAt.plLine ? a.spAt.plLine < b.spAt.plLine
+    : a.spAt.plCol < b.spAt.plCol
+
+fun sameSpot(a: Spot, b: Spot): Bool
+  ret a.spPath == b.spPath && a.spAt.plLine == b.spAt.plLine && a.spAt.plCol == b.spAt.plCol
+
+
+# ── the requests ─────────────────────────────────────────────────────────────
+
+# The use at the request's position, in the unit it names.
+fun useAtCursor(sv: Server, r: Report, params: JsonValue): Use|None
+  let uri = stringField(field(params, "textDocument") ?? JsonNull(), "uri") ?? ""
+  let pos = field(params, "position") ?? JsonNull()
+  ret match(unitOfUri(sv, uri), intField(pos, "line"), intField(pos, "character"))
+    (unit: String, row: Int, units: Int) => useIn(r, unit, row, units)
+    (u, row, units)                       => None
+
+fun useIn(r: Report, unit: String, row: Int, units: Int): Use|None
+  let text = get(r.rpTexts, unit) ?? ""
+  let col = compilerColumn(text, row, units)
+  ret firstWhere(get(r.rpUses.usByLine, lineKey(unit, row + 1)) ?? List(), (u) => covers(text, u, col))
+
+fun covers(text: String, u: Use, col: Int): Bool => match(nameSpan(text, u.useAt, u.useKey))
+  (n: PLine) => col >= n.plCol && col < n.plCol + nameLength(u.useKey)
+  ()         => false
+
+# The declaration `key` names, in the program or a library.
+fun placeOf(sv: Server, r: Report, key: String): Place|None => match(get(r.rpPlaces, key))
+  (p: Place) => p
+  ()         => match(sv.svLibs)
+    (l: Libraries) => get(l.lbPlaces, key)
+    (other)        => None
+
+# The text of the file at `path`: a unit of the program's as analysed, or a
+# library's.
+fun textAt(sv: Server, r: Report, path: String): String
+  let unit = match(sv.svRoot)
+    (root: String) => unitAt(root, path) ?? ""
+    ()             => ""
+  ret match(get(r.rpTexts, unit))
+    (t: String) => t
+    ()          => match(sv.svLibs)
+      (l: Libraries) => get(l.lbTexts, path) ?? ""
+      (other)        => ""
+
+fun placeSpot(sv: Server, r: Report, p: Place, key: String): Spot|None
+  ret spotOf(p.pcPath, textAt(sv, r, p.pcPath), p.pcAt, key)
+
+fun useSpot(sv: Server, r: Report, u: Use): Spot|None
+  ret spotOf((sv.svRoot ?? "") + "/" + u.useAt.plFile, get(r.rpTexts, u.useAt.plFile) ?? "", u.useAt, u.useKey)
+
+fun definitionReply(sv: Server, rq: Request): String
+  let found = match(sv.svReport)
+    (r: Report) => match(useAtCursor(sv, r, rq.rqParams))
+      (u: Use) => match(placeOf(sv, r, u.useKey))
+        (p: Place) => placeSpot(sv, r, p, u.useKey)
+        ()         => None
+      ()       => None
+    ()          => None
+  ret resultReply(rq.rqId, match(found)
+    (s: Spot) => spotLocation(s)
+    ()        => JsonNull())
+
+# Every use of the name at the position, in the program's units; with its
+# declaration only when the client asks for it.
+fun referencesReply(sv: Server, rq: Request): String
+  let withDecl = match(field(field(rq.rqParams, "context") ?? JsonNull(), "includeDeclaration"))
+    (t: JsonTrue) => true
+    (other)       => false
+  let found = match(sv.svReport)
+    (r: Report) => match(useAtCursor(sv, r, rq.rqParams))
+      (u: Use) => references(sv, r, u.useKey, withDecl)
+      ()       => List<Spot>()
+    ()          => List<Spot>()
+  ret resultReply(rq.rqId, JsonArr(map(found, spotLocation)))
+
+# A declaration in the program is a use of itself, so it is among the uses;
+# one in a library is not.
+fun references(sv: Server, r: Report, key: String, withDecl: Bool): List<Spot>
+  let decl = match(placeOf(sv, r, key))
+    (p: Place) => placeSpot(sv, r, p, key)
+    ()         => None
+  let used = fold(get(r.rpUses.usByKey, key) ?? List(), List<Spot>(),
+                  (acc: List<Spot>, u: Use) => spotted(acc, useSpot(sv, r, u)))
+  let all = match(decl)
+    (d: Spot) => withDecl ? append(used, d) : filter(used, (s) => !sameSpot(s, d))
+    ()        => used
+  ret distinctSpots(sortBy(all, spotLess))
+
+fun spotted(acc: List<Spot>, s: Spot|None): List<Spot> => match(s)
+  (found: Spot) => append(acc, found)
+  ()            => acc
+
+# Sorted spots without repeats: a spot equal to the one before it is dropped.
+fun distinctSpots(sorted: List<Spot>): List<Spot>
+  ret fold<Spot, (out: List<Spot>, prev: Spot|None)>(sorted, (out = List<Spot>(), prev = None), distinctStep).out
+
+fun distinctStep(st: (out: List<Spot>, prev: Spot|None), s: Spot): (out: List<Spot>, prev: Spot|None) => match(st.prev)
+  (p: Spot) => sameSpot(p, s) ? st : (out = append(st.out, s), prev = s)
+  ()        => (out = append(st.out, s), prev = s)

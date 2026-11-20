@@ -1,4 +1,4 @@
-namespace Main
+namespace Examples::JsonPretty
 
 import System
 import System::Args

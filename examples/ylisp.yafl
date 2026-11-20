@@ -11,7 +11,7 @@
 # null? print.  Top-level forms evaluate in sequence; `define` extends the
 # global environment; closures capture their local chain and fall back to the
 # CALL-TIME globals, so top-level recursion just works.
-namespace Main
+namespace Examples::YLisp
 
 import System
 import System::IO

@@ -292,7 +292,7 @@ class TestBootstrapCli(TimedTestCase):
         (["-hO3"], 0, None), (["-hO9"], 0, None), (["-hc", "x"], 0, None),
         (["-O3", "-h", "-O9"], 0, None), (["-o=x", "-hx"], 0, None),
         (["--", "a"], 1, "a"), (["-O1", "--", "a", "-x"], 1, "a"), (["-o", "-x y", "a"], 1, "a"),
-        (["--pro", "a"], 1, "a"), (["--l=d", "a"], 1, "a"), (["-"], 1, "-"), (["-.5"], 1, "-.5"),
+        (["--pro", "a"], 1, "a"), (["--li=d", "a"], 1, "a"), (["-"], 1, "-"), (["-.5"], 1, "-.5"),
     )
 
     def _run_plain(self, argv: list[str], env: dict | None = None):

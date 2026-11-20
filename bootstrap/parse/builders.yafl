@@ -25,19 +25,22 @@ fun twoEntryTuple(a, b, lr)
 fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr, None)
 
 # ── __to_call_operators / __fold_binary: `a op b` → `op`(a, b), andNot fold ──
+# The call is at `lr`, where the expression starts; the operator's name is at
+# `opLr`, where the operator is written, so each operator of a chain is a
+# use of its own.
 
-fun foldBinary(op, lhs, rhs, lr)
+fun foldBinary(op, opLr: PLine, lhs, rhs, lr)
   if op == "&"
     ret match(invertOperand(rhs))
-      (ir: PExpr) => andNot(lhs, ir, lr)
+      (ir: PExpr) => andNot(lhs, ir, opLr, lr)
       ()          => match(invertOperand(lhs))
-        (il: PExpr) => andNot(rhs, il, lr)
-        ()          => opCall(op, lhs, rhs, lr)
-  ret opCall(op, lhs, rhs, lr)
+        (il: PExpr) => andNot(rhs, il, opLr, lr)
+        ()          => opCall(op, opLr, lhs, rhs, lr)
+  ret opCall(op, opLr, lhs, rhs, lr)
 
-fun opCall(op, lhs, rhs, lr) => callNamed("`" + op + "`", twoEntryTuple(lhs, rhs, lr), lr)
+fun opCall(op, opLr: PLine, lhs, rhs, lr) => PeCall(PeName("`" + op + "`", List(), opLr), twoEntryTuple(lhs, rhs, lr), lr, None)
 
-fun andNot(a, b, lr) => opCall("&~", a, b, lr)
+fun andNot(a, b, opLr: PLine, lr) => opCall("&~", opLr, a, b, lr)
 
 # A `~x` operand's inner expression, when the expression is exactly the
 # complement call the unary parser built (`` `~` ``(x)).
@@ -365,7 +368,9 @@ fun letName(p) => match(p)
   (l: PsLet) => l.lName
   (o: PStmt) => "_"
 
-# Where an expression starts, read from its shape: a call at its callee, a
+# Where an expression starts, read from its shape: a call at its callee, or at
+# its own position when that comes first (an operator is written between its
+# operands, and `a op b` sits where it starts, a leading bracket included); a
 # dot/ternary at its left/condition, a match at its subject, a pipeline where
 # its lowering starts — at the piped value when the stage binds it, else at the
 # stage it calls; anything else at its own position. parser.py's
@@ -373,8 +378,8 @@ fun letName(p) => match(p)
 # token Python's combinators keep, which is NOT the same where a bracketed
 # group leads a binary expression — `(a) == b`: the combinators drop the `(`
 # — so Python now uses this rule instead.)
-fun [tail] startLine(x) => match(x)
-  (c: PeCall)     => startLine(c.function)
+fun startLine(x: PExpr): PLine => match(x)
+  (c: PeCall)     => earlier(startLine(c.function), c.pecLine)
   (d: PeDot)      => startLine(d.base)
   (t3: PeTernary) => startLine(t3.condition)
   (pp: PePipe)    => startLine(pipeBindsSubject(pp.pipeStage) ? pp.pipeSubject : pp.pipeStage)
@@ -384,6 +389,9 @@ fun [tail] startLine(x) => match(x)
   # a dot's MEMBER position).
   (m2: PeMatch)   => startLine(m2.subject)
   (other)         => exprLine(x)
+
+fun earlier(a: PLine, b: PLine): PLine
+  ret b.plLine < a.plLine || (b.plLine == a.plLine && b.plCol < a.plCol) ? b : a
 
 fun exprLine(x) => match(x)
   (i: PeInt) => i.peiLine

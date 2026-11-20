@@ -109,14 +109,52 @@ fun [tail] _strBody(st: ParseState, out: String): (state: ParseState, v: JsonVal
   let lenS: Int = System::length(s)
   let delim: Int = System::findAny(s, "\"\\", st.pos)   # next " or \, or lenS
   let out1: String = delim > st.pos ? out + System::slice(s, st.pos, delim) : out
-  let frag: String = delim < lenS ? _escapeFrag(System::slice(s, delim + 1, delim + 2)) : ""
+  let esc = delim < lenS ? _escapeAt(s, delim + 1) : (text = "", next = delim)
   ret delim < lenS
     ? (System::byteAt(s, delim) == '"'
         ? (ParseState(s, delim + 1), JsonStr(out1))
-        : (System::length(frag) == 0
+        : (System::length(esc.text) == 0
             ? (ParseState(s, delim + 1), JsonParseError("unknown escape", delim + 1))
-            : _strBody(ParseState(s, delim + 2), out1 + frag)))
+            : _strBody(ParseState(s, esc.next), out1 + esc.text)))
     : (ParseState(s, lenS), JsonParseError("unterminated string", delim))
+
+# The escape whose letter is at `at`: its expansion, and where the string
+# continues. An empty expansion means the escape is malformed.
+fun _escapeAt(s: String, at: Int): (text: String, next: Int)
+  ret System::byteAt(s, at) == 'u'
+    ? _unicodeEscape(s, at + 1)
+    : (text = _escapeFrag(System::slice(s, at, at + 1)), next = at + 1)
+
+# `\uXXXX` names one UTF-16 unit. A unit in D800-DBFF is the first half of a
+# pair whose second half, DC00-DFFF, must follow as another `\uXXXX`; the two
+# name one character beyond FFFF. A half on its own has no UTF-8 form.
+fun _unicodeEscape(s: String, at: Int): (text: String, next: Int)
+  let hi: System::Int32 = _hex4(s, at)
+  let lo: System::Int32 = System::slice(s, at + 4, at + 6) == "\\u" ? _hex4(s, at + 6) : -1i32
+  ret hi < 0i32 || (hi >= 0xDC00i32 && hi < 0xE000i32)
+    ? (text = "", next = at)
+    : hi >= 0xD800i32 && hi < 0xDC00i32
+      ? (lo >= 0xDC00i32 && lo < 0xE000i32
+          ? (text = System::Char(0x10000i32 + (hi - 0xD800i32) * 0x400i32 + (lo - 0xDC00i32)), next = at + 10)
+          : (text = "", next = at))
+      : (text = System::Char(hi), next = at + 4)
+
+# The four hex digits at `at` as a number; -1 when there are not four.
+fun _hex4(s: String, at: Int): System::Int32
+  let d0: System::Int32 = _hexDigit(s, at)
+  let d1: System::Int32 = _hexDigit(s, at + 1)
+  let d2: System::Int32 = _hexDigit(s, at + 2)
+  let d3: System::Int32 = _hexDigit(s, at + 3)
+  ret d0 < 0i32 || d1 < 0i32 || d2 < 0i32 || d3 < 0i32
+    ? -1i32
+    : ((d0 * 16i32 + d1) * 16i32 + d2) * 16i32 + d3
+
+fun _hexDigit(s: String, at: Int): System::Int32
+  let b: System::Int32 = at < System::length(s) ? System::byteAt(s, at) : -1i32
+  ret b >= '0' && b <= '9' ? b - '0'
+    : b >= 'a' && b <= 'f' ? b - 'a' + 10i32
+    : b >= 'A' && b <= 'F' ? b - 'A' + 10i32
+    : -1i32
 
 # Caller has peeked but not consumed the opening quote.
 fun _parseString(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
@@ -247,21 +285,14 @@ fun parse(s: String): JsonValue|JsonParseError
 # Offset of the next byte in `s` (at or after `from`) that needs escaping
 # (`"`, `\`, newline, return, tab), or length(s) if none.
 fun _printScanSpecial(s: String, from: Int): Int
-  let q: Int = System::findByte(s, '"', from)
-  let bs: Int = System::findByte(s, '\\', from)
-  let nl: Int = System::findByte(s, '\n', from)
-  let cr: Int = System::findByte(s, '\r', from)
-  let tb: Int = System::findByte(s, '\t', from)
-  let lenS: Int = System::length(s)
-  let qIdx: Int = q < 0 ? lenS : q
-  let bsIdx: Int = bs < 0 ? lenS : bs
-  let nlIdx: Int = nl < 0 ? lenS : nl
-  let crIdx: Int = cr < 0 ? lenS : cr
-  let tbIdx: Int = tb < 0 ? lenS : tb
-  let m1: Int = qIdx < bsIdx ? qIdx : bsIdx
-  let m2: Int = m1 < nlIdx ? m1 : nlIdx
-  let m3: Int = m2 < crIdx ? m2 : crIdx
-  ret m3 < tbIdx ? m3 : tbIdx
+  ret System::findAny(s, _printSpecials, from)
+
+# The bytes a JSON string may not hold raw: `"`, `\` and every control
+# character below 0x20.
+let _printSpecials: String = fold(_controls(0i32, List<String>()), "\"\\", (acc: String, c: String) => acc + c)
+
+fun [tail] _controls(c: System::Int32, acc: List<String>): List<String>
+  ret c == 32i32 ? acc : _controls(c + 1i32, append(acc, System::Char(c)))
 
 fun _printEscapeFor(c: String): String
   ret match(c)
@@ -270,7 +301,13 @@ fun _printEscapeFor(c: String): String
     ("\n") => "\\n"
     ("\r") => "\\r"
     ("\t") => "\\t"
-    (other) => c
+    (other) => "\\u00" + _hexByte(System::byteAt(c, 0))
+
+fun _hexByte(b: System::Int32): String
+  let digits: String = "0123456789abcdef"
+  let hi: Int = Int(b / 16i32)
+  let lo: Int = Int(b % 16i32)
+  ret System::slice(digits, hi, hi + 1) + System::slice(digits, lo, lo + 1)
 
 # Quoted-string body: bulk-append each safe run, escape each special byte.
 # `[tail]` so a string with many escapes builds in constant stack.

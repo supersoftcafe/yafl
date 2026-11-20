@@ -29,6 +29,7 @@ import System::IO
 
 import Bootstrap::Ast
 import Bootstrap::Frontend
+import Bootstrap::Lsp
 import Bootstrap::Parse
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
@@ -42,6 +43,8 @@ fun cliMain(argv: List<String>): Int
     (e: ArgError) => usageError(line, e)
     (s: CliScan)  => s.csHelp
       ? exitWithOut(help(line, terminalWidth(), wantColour(false)), 0)
+      : s.csLsp
+      ? lspMain()
       : match(resolveEnabledWarnings(s.csWarns))
         (werr: WrErr) => usageError(line, Invalid(werr.wrMessage))
         (ok: WrOk)    => s.csFormat || s.csFormatCheck ? cliFormat(s) : cliCompile(s, ok.wrEnabled)
@@ -58,10 +61,11 @@ fun progName() => baseName(argv0())
 class [final] CliScan(csHelp: Bool, csOpt: Int, csAsm: String|None, csC: String|None,
                       csOut: String|None, csLibs: List<String>,
                       csProfile: Bool, csWarns: List<String>, csTest: Bool,
-                      csThreshold: Int, csFiles: List<String>, csFormat: Bool, csFormatCheck: Bool)
+                      csThreshold: Int, csFiles: List<String>, csFormat: Bool, csFormatCheck: Bool,
+                      csLsp: Bool)
 
 fun freshScan() => CliScan(false, 0, None, None, None, List(), false, List(), false,
-                           Bootstrap::Lower::Ir::inlCutoffComplexity(), List(), false, false)
+                           Bootstrap::Lower::Ir::inlCutoffComplexity(), List(), false, false, false)
 
 # The arguments, in the order main.py declares them (argparse adds -h first).
 fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like tool", List<Arg<CliScan>>()
@@ -94,6 +98,10 @@ fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like too
                            (s: CliScan) => with s(csFormat = true)))
   |> (l) => append(l, Flag(List("--format-check"), "List the files not in that layout, and fail if there are any",
                            (s: CliScan) => with s(csFormatCheck = true)))
+  # The language server (#26, lsp/server.yafl): ends the scan, like -h, so it
+  # needs no files. Only in this compiler: Python has no server.
+  |> (l) => append(l, Stop(List("--lsp"), "Serve the Language Server Protocol on stdin and stdout",
+                           (s: CliScan) => with s(csLsp = true)))
   |> (l) => append(l, Positional("files", AtLeastOne(), "Input .yafl file(s), or a project directory",
                                  (s: CliScan, vs: List<String>) => with s(csFiles = vs))))
 

@@ -1,0 +1,44 @@
+# bootstrap/lsp/documents.yafl — the open documents (#26). Opening, changing
+# and closing a document only records its text; each counts as an edit, so
+# the next request analyses again. A closed document's text comes from disk
+# once more. A document outside the workspace folder is not the program's and
+# is not recorded.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::Json
+
+
+fun opened(sv: Server, params: JsonValue): Server
+  let doc = field(params, "textDocument") ?? JsonNull()
+  ret match(unitIn(sv, doc), stringField(doc, "text"))
+    (unit: String, text: String) => recorded(sv, unit, text)
+    (u, t)                       => sv
+
+# Full sync: each change carries the whole text, and the last one is the
+# document now.
+fun changed(sv: Server, params: JsonValue): Server
+  let doc = field(params, "textDocument") ?? JsonNull()
+  let text = match(field(params, "contentChanges"))
+    (changes: JsonArr) => fold<JsonValue, String|None>(changes.elements, None, (t, c) => stringField(c, "text") ?? t)
+    ()                 => None
+  ret match(unitIn(sv, doc), text)
+    (unit: String, t: String) => recorded(sv, unit, t)
+    (u, t)                    => sv
+
+fun closed(sv: Server, params: JsonValue): Server
+  ret match(unitIn(sv, field(params, "textDocument") ?? JsonNull()))
+    (unit: String) => with sv(svDocs = remove(sv.svDocs, unit), svEdits = sv.svEdits + 1)
+    ()             => sv
+
+fun recorded(sv: Server, unit: String, text: String): Server
+  ret with sv(svDocs = put(sv.svDocs, unit, text), svEdits = sv.svEdits + 1)
+
+# The unit a `textDocument` names, when it lies in the workspace.
+fun unitIn(sv: Server, doc: JsonValue): String|None => unitOfUri(sv, stringField(doc, "uri") ?? "")
+
+fun unitOfUri(sv: Server, uri: String): String|None => match(sv.svRoot)
+  (root: String) => unitOf(root, uri)
+  ()             => None

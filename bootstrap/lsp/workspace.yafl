@@ -1,0 +1,89 @@
+# bootstrap/lsp/workspace.yafl — the program the server analyses (#26): every
+# `.yafl` under the workspace root, each named by its path relative to the
+# root, exactly the units `yaflc <dir>` compiles (projectInputs). An open
+# document's text replaces what is on disk.
+#
+# The client names files by `file://` URI; the compiler by unit name.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::IO
+
+import Bootstrap::Driver
+
+
+# ── URIs ─────────────────────────────────────────────────────────────────────
+
+# The path a `file://` URI names, its %XX escapes decoded; None for any other
+# scheme.
+fun uriPath(uri: String): String|None
+  ret startsWith(uri, "file://")
+    ? percentDecoded(slice(uri, 7, System::length(uri)), 0, "")
+    : None
+
+fun [tail] percentDecoded(s: String, i: Int, out: String): String
+  if i >= System::length(s)
+    ret out
+  let b = System::byteAt(s, i)
+  let hi = hexValue(i + 1 < System::length(s) ? System::byteAt(s, i + 1) : -1i32)
+  let lo = hexValue(i + 2 < System::length(s) ? System::byteAt(s, i + 2) : -1i32)
+  ret b == '%' && hi >= 0i32 && lo >= 0i32
+    ? percentDecoded(s, i + 3, out + asciiToString(hi * 16i32 + lo))
+    : percentDecoded(s, i + 1, out + asciiToString(b))
+
+fun hexValue(b: System::Int32): System::Int32
+  ret b >= '0' && b <= '9' ? b - '0'
+    : b >= 'a' && b <= 'f' ? b - 'a' + 10i32
+    : b >= 'A' && b <= 'F' ? b - 'A' + 10i32
+    : -1i32
+
+# The `file://` URI of a path, every byte but a plain one %XX-escaped.
+fun pathUri(path: String): String => "file://" + percentEncoded(path, 0, "")
+
+fun [tail] percentEncoded(s: String, i: Int, out: String): String
+  if i >= System::length(s)
+    ret out
+  let b = System::byteAt(s, i)
+  let plain = isWordByte(b) || b == '/' || b == '.' || b == '-' || b == '~'
+  ret percentEncoded(s, i + 1, plain ? out + asciiToString(b) : out + "%" + hexByte(b))
+
+fun hexByte(b: System::Int32): String
+  ret asciiToString(hexDigit(b / 16i32)) + asciiToString(hexDigit(b % 16i32))
+
+fun hexDigit(n: System::Int32): System::Int32 => n < 10i32 ? '0' + n : 'A' + n - 10i32
+
+# The unit name of the file at `path`: its path relative to `root`; None when
+# it lies outside the root.
+fun unitAt(root: String, path: String): String|None
+  ret startsWith(path, root + "/") ? slice(path, System::length(root) + 1, System::length(path)) : None
+
+# The unit name of the document at `uri`.
+fun unitOf(root: String, uri: String): String|None => match(uriPath(uri))
+  (path: String) => unitAt(root, path)
+  ()             => None
+
+# A workspace root without the trailing `/` a client may send.
+fun rootOf(uri: String): String|None => match(uriPath(uri))
+  (path: String) => endsWith(path, "/") && System::length(path) > 1 ? slice(path, 0, System::length(path) - 1) : path
+  ()             => None
+
+
+# ── the program's sources ────────────────────────────────────────────────────
+
+# Every unit, each with the text an open document gives it or else the text
+# on disk; or why the workspace cannot be listed. A file that cannot be read
+# is left out.
+fun programSources(root: String, open: Dict<String, String>): List<LibSource>|String => match(yaflPaths(root, List()))
+  (why: String)         => why
+  (paths: List<String>) => map(paths, (p) => relativeTo(root, p))
+    |> (onDisk) => sort(fold(onDisk, keys(open), (acc: Set<String>, u: String) => add(acc, u)))
+    |> (units) => fold(units, List<LibSource>(), (acc, u) => withSource(acc, root, u, open))
+
+fun withSource(acc: List<LibSource>, root: String, unit: String, open: Dict<String, String>): List<LibSource>
+  ret match(get(open, unit))
+    (text: String) => append(acc, LibSource(unit, text))
+    ()             => match(readWholeFile(root + "/" + unit))
+      (t: String)  => append(acc, LibSource(unit, t))
+      (e: IOError) => acc

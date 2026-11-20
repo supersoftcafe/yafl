@@ -1,0 +1,106 @@
+# bootstrap/lsp/positions.yafl — the compiler counts lines and columns from 1,
+# columns in characters; LSP counts both from 0, and characters in UTF-16
+# units (#26). A character beyond U+FFFF is one column to the compiler and two
+# units to the client.
+
+namespace Bootstrap::Lsp
+
+import System
+import System::Containers
+import System::Json
+
+import Bootstrap::Ast
+
+
+# The position of the compiler's (line, col) in `text`.
+fun lspPosition(text: String, line: Int, col: Int): JsonValue
+  let row = line > 0 ? line - 1 : 0
+  ret JsonObj(List(JsonPair("line", JsonInt(row)),
+                   JsonPair("character", JsonInt(utf16Units(text, lineStart(text, row, 0), col - 1, 0)))))
+
+# The byte offset where line `row` (from 0) starts; the end of the text when
+# there are fewer lines.
+fun [tail] lineStart(text: String, row: Int, off: Int): Int
+  if row <= 0
+    ret off
+  let nl = findByte(text, '\n', off)
+  ret nl < 0 ? System::length(text) : lineStart(text, row - 1, nl + 1)
+
+# The UTF-16 units in the first `chars` characters from `off`, stopping at the
+# end of the line.
+fun [tail] utf16Units(text: String, off: Int, chars: Int, acc: Int): Int
+  if chars <= 0
+    ret acc
+  ret match(decode(text, off))
+    (d: (cp: System::Int32, next: Int)) => d.cp == '\n'
+      ? acc
+      : utf16Units(text, d.next, chars - 1, acc + (d.cp >= 0x10000i32 ? 2 : 1))
+    ()                                  => acc
+
+# The range of `length` characters from the compiler's (line, col).
+fun lspRange(text: String, line: Int, col: Int, length: Int): JsonValue
+  ret JsonObj(List(JsonPair("start", lspPosition(text, line, col)),
+                   JsonPair("end", lspPosition(text, line, col + length))))
+
+# The compiler's column of the character `units` UTF-16 units into line `row`
+# (from 0): the inverse of lspPosition.
+fun compilerColumn(text: String, row: Int, units: Int): Int => charsIn(text, lineStart(text, row, 0), units, 1)
+
+fun [tail] charsIn(text: String, off: Int, units: Int, col: Int): Int
+  if units <= 0
+    ret col
+  ret match(decode(text, off))
+    (d: (cp: System::Int32, next: Int)) => d.cp == '\n'
+      ? col
+      : charsIn(text, d.next, units - (d.cp >= 0x10000i32 ? 2 : 1), col + 1)
+    ()                                  => col
+
+
+# ── names in the text ────────────────────────────────────────────────────────
+
+# Where `name` is written on the compiler's line `at.plLine`, at `at` or after
+# it, as a whole word; None when it is not.
+fun namedAt(text: String, at: PLine, name: String): PLine|None
+  let start = lineStart(text, at.plLine - 1, 0)
+  let from = charOffset(text, start, at.plCol - 1)
+  let nl = findByte(text, '\n', from)
+  let found = wordIn(text, name, from, nl < 0 ? System::length(text) : nl)
+  ret found < 0 ? None : PLine(at.plFile, at.plLine, at.plCol + charsBetween(text, from, found, 0))
+
+# The byte offset `chars` characters after `off`, stopping at the end of the
+# line.
+fun [tail] charOffset(text: String, off: Int, chars: Int): Int
+  if chars <= 0
+    ret off
+  ret match(decode(text, off))
+    (d: (cp: System::Int32, next: Int)) => d.cp == '\n' ? off : charOffset(text, d.next, chars - 1)
+    ()                                  => off
+
+fun [tail] charsBetween(text: String, off: Int, end: Int, acc: Int): Int
+  if off >= end
+    ret acc
+  ret match(decode(text, off))
+    (d: (cp: System::Int32, next: Int)) => charsBetween(text, d.next, end, acc + 1)
+    ()                                  => acc
+
+# The offset of the first whole `name` in [from, end), or -1. A name is whole
+# when the bytes either side cannot continue it: a word is not inside a longer
+# word, nor an operator inside a longer operator (`>` in `>=`).
+fun [tail] wordIn(text: String, name: String, from: Int, end: Int): Int
+  let i = indexOf(text, name, from)
+  if i < 0 || i + System::length(name) > end
+    ret -1
+  let operator = !isWordByte(System::byteAt(name, 0))
+  let before = i > 0 && continues(System::byteAt(text, i - 1), operator)
+  let after = i + System::length(name) < System::length(text)
+              && continues(System::byteAt(text, i + System::length(name)), operator)
+  ret before || after ? wordIn(text, name, i + 1, end) : i
+
+fun continues(b: System::Int32, operator: Bool): Bool => operator ? isOperatorByte(b) : isWordByte(b)
+
+fun isWordByte(b: System::Int32): Bool
+  ret b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
+
+fun isOperatorByte(b: System::Int32): Bool
+  ret b == '+' || b == '-' || b == '*' || b == '/' || b == '%' || b == '<' || b == '>' || b == '='
+      || b == '!' || b == '&' || b == '|' || b == '^' || b == '~' || b == '?' || b == ':'

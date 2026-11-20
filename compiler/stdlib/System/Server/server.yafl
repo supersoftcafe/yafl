@@ -1,0 +1,89 @@
+# System::Server — a loop that serves messages: it reads one from the input,
+# handles it, writes its replies to the output, and goes round again.
+#
+# The caller opens the streams and closes them; `serve` hands both back with
+# the state at the end, and why it stopped when something failed. The
+# caller's part is four functions:
+#
+#   read     reads the next message: More(message), Done() at the end of the
+#            input, or Failed(why).
+#   capture  gathers what handling the message needs from outside the state,
+#            such as files the message refers to. It is the one place,
+#            besides reading and writing, that may look at the world.
+#   process  handles the message with what was captured, giving the next
+#            state and More(replies), or Done() to stop serving.
+#   write    writes one reply, giving why when it cannot.
+#
+# Each message is handled in turn: its replies are written before the next
+# one is read.
+
+namespace System::Server
+
+import System
+import System::Containers
+
+
+# What a stage gives back: a value, the end, or why it failed.
+enum Next<T>
+  enum More(value: T)
+  enum Done()
+  enum Failed(why: String)
+
+
+fun [tail] serve<[linear] TIn, [linear] TOut, TMsg, TEnv, TReply, TState>(
+    input: TIn, output: TOut, state: TState,
+    read: (:TIn): (:TIn, :Next<TMsg>),
+    capture: (:TState, :TMsg): TEnv,
+    process: (:TState, :TEnv, :TMsg): (:TState, :Next<List<TReply>>),
+    write: (:TOut, :TReply): (:TOut, :String|None)
+    ): (input: TIn, output: TOut, state: TState, failure: String|None)
+  let (in, next) = read(input)
+  let (out, after, go) = _handled(output, state, next, capture, process, write)
+  ret match(go)
+    (m: More<None>)   => serve(in, out, after, read, capture, process, write)
+    (d: Done<None>)   => (in, out, after, None)
+    (f: Failed<None>) => (in, out, after, f.why)
+
+
+# ── one message ──────────────────────────────────────────────────────────────
+
+# The output and state after a message, and whether to go on.
+fun _handled<[linear] TOut, TMsg, TEnv, TReply, TState>(
+    output: TOut, state: TState, next: Next<TMsg>,
+    capture: (:TState, :TMsg): TEnv,
+    process: (:TState, :TEnv, :TMsg): (:TState, :Next<List<TReply>>),
+    write: (:TOut, :TReply): (:TOut, :String|None)
+    ): (:TOut, :TState, :Next<None>) => match(next)
+  (m: More<TMsg>)   => _replied(output, process(state, capture(state, m.value), m.value), write)
+  (d: Done<TMsg>)   => (output, state, Done<None>())
+  (f: Failed<TMsg>) => (output, state, Failed<None>(f.why))
+
+fun _replied<[linear] TOut, TReply, TState>(
+    output: TOut, processed: (:TState, :Next<List<TReply>>),
+    write: (:TOut, :TReply): (:TOut, :String|None)
+    ): (:TOut, :TState, :Next<None>)
+  let (after, replies) = processed
+  ret match(replies)
+    (m: More<List<TReply>>)   => _written(_writeAll(output, m.value, write), after)
+    (d: Done<List<TReply>>)   => (output, after, Done<None>())
+    (f: Failed<List<TReply>>) => (output, after, Failed<None>(f.why))
+
+fun _written<[linear] TOut, TState>(w: (:TOut, :String|None), after: TState): (:TOut, :TState, :Next<None>)
+  let (out, failure) = w
+  ret match(failure)
+    (why: String) => (out, after, Failed<None>(why))
+    ()            => (out, after, More<None>(None))
+
+# Each reply in turn; after one cannot be written, the rest are not tried.
+fun _writeAll<[linear] TOut, TReply>(
+    output: TOut, replies: List<TReply>, write: (:TOut, :TReply): (:TOut, :String|None)
+    ): (:TOut, :String|None)
+  ret fold<TReply, (:TOut, :String|None)>(replies, (output, None), (w, r) => _writeNext(w, r, write))
+
+fun _writeNext<[linear] TOut, TReply>(
+    w: (:TOut, :String|None), reply: TReply, write: (:TOut, :TReply): (:TOut, :String|None)
+    ): (:TOut, :String|None)
+  let (out, failure) = w
+  ret match(failure)
+    (why: String) => (out, why)
+    ()            => write(out, reply)

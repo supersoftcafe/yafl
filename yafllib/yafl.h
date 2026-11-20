@@ -2395,6 +2395,7 @@ EXPORT object_t* io_open_write(object_t* self, str_t path, int8_t truncate);  //
 EXPORT str_t     io_read (object_t* self, object_t* length);   // String|Int|None
 EXPORT object_t* io_write(object_t* self, str_t data);
 EXPORT object_t* io_close(object_t* self);
+EXPORT object_t* io_flush(object_t* self);
 
 // Filesystem metadata.  Both ops dispatch through the IO threadpool so
 // the blocking syscalls (access/stat) never run on a worker thread.
