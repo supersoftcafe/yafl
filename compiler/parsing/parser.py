@@ -814,25 +814,31 @@ def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]]
 
 
 def __expression_start(x: e.Expression) -> p.LineRef:
-    """Where an expression starts, read from its shape: a call at its callee, a
-    dot at its base, a ternary at its condition, a match at its subject, a
-    pipeline where its lowering starts — at the piped value when the stage binds
-    it, else at the stage it calls; anything else at its own position. The port
-    has the same rule (startLine, bootstrap/parse/builders.yafl)."""
-    while True:
-        match x:
-            case e.CallExpression():
-                x = x.function
-            case e.DotExpression():
-                x = x.base
-            case e.TernaryExpression():
-                x = x.condition
-            case m.MatchExpression():
-                x = x.subject
-            case e.PipeExpression():
-                x = x.subject if __pipe_binds_subject(x.stage) else x.stage
-            case _:
-                return x.line_ref
+    """Where an expression starts, read from its shape: a call at its callee,
+    or at its own position when that comes first (an operator is written
+    between its operands, and `a op b` sits where it starts, a leading bracket
+    included); a dot at its base, a
+    ternary at its condition, a match at its subject, a pipeline where its
+    lowering starts — at the piped value when the stage binds it, else at the
+    stage it calls; anything else at its own position. The port has the same
+    rule (startLine, bootstrap/parse/builders.yafl)."""
+    match x:
+        case e.CallExpression():
+            return __earlier(__expression_start(x.function), x.line_ref)
+        case e.DotExpression():
+            return __expression_start(x.base)
+        case e.TernaryExpression():
+            return __expression_start(x.condition)
+        case m.MatchExpression():
+            return __expression_start(x.subject)
+        case e.PipeExpression():
+            return __expression_start(x.subject if __pipe_binds_subject(x.stage) else x.stage)
+        case _:
+            return x.line_ref
+
+
+def __earlier(a: p.LineRef, b: p.LineRef) -> p.LineRef:
+    return a if (a.line, a.offset) <= (b.line, b.offset) else b
 
 
 def __statement_start(x: e.Expression, tokens: list[p.Token], parse_start: p.LineRef) -> p.LineRef:

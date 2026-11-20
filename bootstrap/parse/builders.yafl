@@ -368,7 +368,9 @@ fun letName(p) => match(p)
   (l: PsLet) => l.lName
   (o: PStmt) => "_"
 
-# Where an expression starts, read from its shape: a call at its callee, a
+# Where an expression starts, read from its shape: a call at its callee, or at
+# its own position when that comes first (an operator is written between its
+# operands, and `a op b` sits where it starts, a leading bracket included); a
 # dot/ternary at its left/condition, a match at its subject, a pipeline where
 # its lowering starts — at the piped value when the stage binds it, else at the
 # stage it calls; anything else at its own position. parser.py's
@@ -376,8 +378,8 @@ fun letName(p) => match(p)
 # token Python's combinators keep, which is NOT the same where a bracketed
 # group leads a binary expression — `(a) == b`: the combinators drop the `(`
 # — so Python now uses this rule instead.)
-fun [tail] startLine(x) => match(x)
-  (c: PeCall)     => startLine(c.function)
+fun startLine(x: PExpr): PLine => match(x)
+  (c: PeCall)     => earlier(startLine(c.function), c.pecLine)
   (d: PeDot)      => startLine(d.base)
   (t3: PeTernary) => startLine(t3.condition)
   (pp: PePipe)    => startLine(pipeBindsSubject(pp.pipeStage) ? pp.pipeSubject : pp.pipeStage)
@@ -387,6 +389,9 @@ fun [tail] startLine(x) => match(x)
   # a dot's MEMBER position).
   (m2: PeMatch)   => startLine(m2.subject)
   (other)         => exprLine(x)
+
+fun earlier(a: PLine, b: PLine): PLine
+  ret b.plLine < a.plLine || (b.plLine == a.plLine && b.plCol < a.plCol) ? b : a
 
 fun exprLine(x) => match(x)
   (i: PeInt) => i.peiLine
