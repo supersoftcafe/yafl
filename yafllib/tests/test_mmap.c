@@ -270,24 +270,31 @@ TEST_END()
 // creates: 742 MiB returned to the OS over a 240 s slice, 55% of it faulted
 // straight back in.
 //
-// So: claim a dense prefix, free a block beyond the budget, and re-allocate
-// exactly that many DISTINCT pages. Every one must come from the free block.
+// So: claim a dense prefix, free pages beyond the budget, and re-allocate
+// exactly that many DISTINCT pages. Every one must come from those holes.
+//
+// The holes are one page in every STRIDE, not one contiguous block: by the
+// one density rule (#134) a page in a busy block is the first choice and the
+// pool serves it, while the pool sets an emptied block's pages aside (the scan
+// takes them, after denser blocks and cold pages). A contiguous hole would
+// test the scan's last resort, not the pool.
 TEST(reuse_reaches_free_pages_across_epoch_cursor_resets)
     // HOLE_START must clear MAX_SCAN_PROBES (4096, private to mmap.c) with
     // margin; HOLE_SIZE must span many epoch ticks (256 claims each) so the
     // test measures the sustained case rather than a single cold start.
-    enum { FILL = 12000, HOLE_START = 8000, HOLE_SIZE = 3000 };
+    enum { STRIDE = 4, HOLE_START = 8000, HOLE_SIZE = 3000,
+           FILL = HOLE_START + HOLE_SIZE * STRIDE + 1000 };
 
     void** pages = malloc(FILL * sizeof(void*));
     ASSERT(pages != NULL);
     for (int i = 0; i < FILL; ++i)
         pages[i] = memory_pages_alloc(1);
 
-    // Free one contiguous block, well past the budget from the bottom. It is
-    // the only free region below the watermark — asserted, not assumed, since
-    // a hole left by an earlier test would let the scan succeed and make this
-    // pass for the wrong reason.
-    for (int i = HOLE_START; i < HOLE_START + HOLE_SIZE; ++i) {
+    // Free the holes, well past the budget from the bottom. They are the only
+    // free pages below the watermark — asserted, not assumed, since a hole
+    // left by an earlier test would let the scan succeed and make this pass
+    // for the wrong reason.
+    for (int i = HOLE_START; i < HOLE_START + HOLE_SIZE * STRIDE; i += STRIDE) {
         memory_pages_free(pages[i], 1);
         pages[i] = NULL;
     }
@@ -370,16 +377,19 @@ TEST(release_rule_hands_back_the_configured_fraction)
     memory_pool_release_cycle();
     size_t rel1, ret1, lost1; memory_pool_release_stats(&rel1, &ret1, &lost1, &pct);
 
-    // Churn a pool's worth so the ALLOCATION CLOCK advances past the horizon —
-    // the release deliberately does nothing until enough demand has gone by to
-    // make "nobody took this page" mean something. Back-to-back calls with no
-    // allocation between them are a no-op by design.
-    for (int i = 0; i < N; ++i) pages[i] = memory_pages_alloc(1);
-    for (int i = 0; i < N; ++i) memory_pages_free(pages[i], 1);
-
-    // Now the first batch has sat through a pool's worth of demand unclaimed.
-    memory_pool_release_cycle();
-    size_t rel2, ret2, lost2; memory_pool_release_stats(&rel2, &ret2, &lost2, &pct);
+    // Churn until the ALLOCATION CLOCK passes the horizon — the release
+    // deliberately does nothing until a pool's worth of demand has gone by to
+    // make "nobody took this page" mean something, and back-to-back calls
+    // with no allocation between them are a no-op by design. The horizon is
+    // the whole surplus, set-aside pages included, so pages earlier tests
+    // left set aside lengthen it: churn until the release acts.
+    size_t rel2 = rel1, ret2 = ret1, lost2 = lost1;
+    for (int round = 0; round < 8 && rel2 + ret2 + lost2 == rel1 + ret1 + lost1; ++round) {
+        for (int i = 0; i < N; ++i) pages[i] = memory_pages_alloc(1);
+        for (int i = 0; i < N; ++i) memory_pages_free(pages[i], 1);
+        memory_pool_release_cycle();
+        memory_pool_release_stats(&rel2, &ret2, &lost2, &pct);
+    }
 
     size_t drained  = (rel2 - rel1) + (lost2 - lost1);
     size_t retained = ret2 - ret1;

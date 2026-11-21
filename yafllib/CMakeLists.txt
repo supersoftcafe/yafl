@@ -168,6 +168,10 @@ set_tests_properties(test_gc_cards PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL
 # the forwarder until the next major rewrites them.
 add_yafl_test(test_gc_old_compact)
 set_tests_properties(test_gc_old_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_sparse_compact: stepped. Once the bands meet, compaction empties a
+# half-full page in a nearly-free block, and leaves one in a busy block (#134).
+add_yafl_test(test_gc_sparse_compact)
+set_tests_properties(test_gc_sparse_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_old_stub_card: stepped. An old forwarding stub keeps its card, so a
 # minor rewrites its body when a young referent moves: a reader that reaches
 # the stub through an old referrer, before the next major, reads live data.
@@ -250,6 +254,9 @@ add_yafl_test(test_heapprof2)
 add_yafl_test(test_heapprof3)
 add_yafl_test(test_tempdir)
 add_yafl_test(test_mmap)
+# test_mmap_blocks: once the bands meet, single pages fill busy blocks before
+# nearly-free ones (#134). Own binary: it fills a small heap.
+add_yafl_test(test_mmap_blocks)
 add_yafl_test(test_large_objects)
 add_yafl_test(test_pin)
 add_yafl_test(test_vtable_lookup)

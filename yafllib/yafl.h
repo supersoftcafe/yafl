@@ -647,6 +647,10 @@ typedef struct page_head {
                            // old at its prune. Deaths found there mean its
                            // promotion was premature (a promotion MISTAKE;
                            // see gc_promote_volume). Sits in padding.
+    bool       relocation; // Allocated as a compaction target. Never moved
+                           // for being in a sparse block (#134): a copy that
+                           // found no busy hole lands in a sparse block, and
+                           // would otherwise move again every cycle. Padding.
     uint64_t stable_since; // Allocation-clock reading (pages) at the last
                            // prune that found a death on this page — or
                            // UINT64_MAX before the first prune (a page's
