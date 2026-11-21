@@ -158,6 +158,7 @@ static unsigned gc_compact_percent = COMPACT_THRESHOLD_PERCENT;
 // is roomy and binds hard as it fills.
 #define GC_COMPACT_FREE_PERCENT_DEFAULT 25
 static unsigned gc_compact_free_percent = GC_COMPACT_FREE_PERCENT_DEFAULT;
+_Atomic(size_t) gc_sparse_compactions = 0;   // pages moved only for being in a sparse block (#134)
 static _Atomic(size_t) gc_cycle_compact_pages = 0;   // evacuation-target pages this cycle
 static size_t          gc_cycle_compact_limit = SIZE_MAX;
 static _Atomic(size_t) gc_cycle_compact_skipped = 0; // candidates passed over at the limit
@@ -904,6 +905,7 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
     gc_page_t *page = memory_pages_alloc(page_count);
     memset(&page->head, 0, sizeof(page_head_t));
     page->head.pages = page_count;
+    page->head.relocation = gc_thread_info.in_relocation;
     page->head.stable_since = UINT64_MAX;   // "never pruned": the first prune
                                             // starts the stability clock
     atomic_thread_fence(memory_order_release);
@@ -1369,7 +1371,14 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         atomic_fetch_add_explicit(&gc_cycle_compact_skipped, 1, memory_order_relaxed);
         return;
     }
-    const unsigned slots_threshold = SLOTS_PER_PAGE * pct / 100;
+    // A page in a nearly-free block is emptied whatever its occupancy: moving
+    // it out opens a window a multi-page run can use (#134; mmap.c, the busy
+    // and sparse blocks). Not a page compaction itself filled: see
+    // page_head.relocation.
+    const bool in_sparse_block = !page->head.relocation && memory_page_in_sparse_block(page);
+    const unsigned slots_threshold = in_sparse_block
+        ? SLOTS_PER_PAGE
+        : SLOTS_PER_PAGE * pct / 100;
 
     // Previously compacted. If we do it again we'll be making redundent copies.
     if (page->head.compacted)
@@ -1429,6 +1438,8 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     // target allocations may use the relocation reserve — they are the one
     // class of allocation that must succeed near full, because each evacuated
     // page returns more pages than the evacuation consumed.
+    if (in_sparse_block && total > SLOTS_PER_PAGE * pct / 100 * sizeof(slot_t))
+        atomic_fetch_add_explicit(&gc_sparse_compactions, 1, memory_order_relaxed);
     page->head.compacted = true;
     page->head.compacted_cycle = (uint32_t)atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
     bool was_in_relocation = gc_thread_info.in_relocation;
@@ -1907,6 +1918,9 @@ static void gc_collect_cards(void) {
 static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     if (++epoch == 0)
         epoch = 1;
+
+    // This cycle's sparse threshold, from the blocks as they are (#134).
+    memory_blocks_retarget();
 
     // This cycle's compaction budget, from the headroom it starts with.
     {
