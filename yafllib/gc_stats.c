@@ -24,14 +24,13 @@ _Atomic(uint64_t) gc_stat_cons_seeds   = 0;  // objects seeded live by conservat
    and pointer tallies, promotion outcomes, and tsc per mark/prune section —
    printed at exit as [GC PROF]/[GC PROMO] alongside the stats. */
 _Atomic(uint64_t) gc_prof_objs, gc_prof_ptrs, gc_prof_passes, gc_prof_drained;
-_Atomic(uint64_t) gc_prof_drain_pages;
 size_t gc_occ_hist_pages[10], gc_occ_hist_dead[10], gc_occ_hist_promo[10];
 _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_carded, gc_prof_promote_pinned,
                 gc_prof_block_unstable, gc_prof_block_volume, gc_prof_block_kind;
 _Atomic(uint64_t) gc_prof_block_multipage, gc_prof_block_mutable, gc_prof_block_compacted;
 size_t gc_fwd_age[GC_FWD_AGE_BUCKETS], gc_fwd_freed;
 _Atomic(uint64_t) gc_prof_mut_fwd_hops, gc_prof_stack_held_husk;
-_Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
+_Atomic(uint64_t) gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
 // gc_tsc / GC_STAT_BUMP / GC_PROF_LAP: gc_internal.h
 
 // Nanoseconds spent inside gc_fsa, per stage (index = enum gc_stage). All GC
@@ -169,11 +168,10 @@ void gc_stats_report(void) {
     fprintf(stderr, "[GC PROMO] kind breakdown: multipage=%llu mutable=%llu compacted=%llu\n",
             (unsigned long long)gc_prof_block_multipage, (unsigned long long)gc_prof_block_mutable,
             (unsigned long long)gc_prof_block_compacted);
-    fprintf(stderr, "[GC PROF] objs=%llu ptrs=%llu drained=%llu passes=%llu drain_pages=%llu | tsc: drain=%llu merge=%llu pages=%llu live=%llu prune_rest=%llu\n",
+    fprintf(stderr, "[GC PROF] objs=%llu ptrs=%llu drained=%llu passes=%llu | tsc: merge=%llu pages=%llu live=%llu prune_rest=%llu\n",
             (unsigned long long)gc_prof_objs, (unsigned long long)gc_prof_ptrs,
             (unsigned long long)gc_prof_drained, (unsigned long long)gc_prof_passes,
-            (unsigned long long)gc_prof_drain_pages,
-            (unsigned long long)gc_prof_t_drain, (unsigned long long)gc_prof_t_merge,
+            (unsigned long long)gc_prof_t_merge,
             (unsigned long long)gc_prof_t_pages, (unsigned long long)gc_prof_t_live,
             (unsigned long long)gc_prof_t_prune_rest);
     fprintf(stderr, "[GC PAGES] last cycle: %slarge=%zu pages | imm-sparse: fwd=%zu pin=%zu oth=%zu | old=%zu carded=%zu pages majors=%llu\n",
@@ -185,25 +183,18 @@ void gc_stats_report(void) {
     memory_scavenge_stats(&scav_ret, &scav_rec, &scav_cold, &scav_rec_runs);
     fprintf(stderr, "[GC SCAV] returned=%zu reclaimed=%zu (runs=%zu) cold_now=%zu (pages)\n",
             scav_ret, scav_rec, scav_rec_runs, scav_cold);
-    // Page pool. `premature` is the one to watch: a bump that followed a scan
-    // which merely ran out of probe budget abandoned a free page the pool
-    // should have supplied. It is the metric the reuse defect was invisible
-    // without — watermark totals hid it completely.
-    size_t pool_hits, pool_steals, pool_stale, misses, warm_at_miss;
-    memory_pool_stats(&pool_hits, &pool_steals, &pool_stale, &misses, &warm_at_miss);
-    fprintf(stderr, "[GC POOL] hits=%zu steals=%zu stale=%zu | scan_miss=%zu"
-                    " mean_warm_at_miss=%.0f pages\n",
-            pool_hits, pool_steals, pool_stale, misses,
-            misses ? (double)warm_at_miss / (double)misses : 0.0);
+    size_t pool_hits, pool_steals, pool_stale;
+    memory_pool_stats(&pool_hits, &pool_steals, &pool_stale);
+    fprintf(stderr, "[GC POOL] hits=%zu steals=%zu stale=%zu\n",
+            pool_hits, pool_steals, pool_stale);
     // Busy and sparse blocks (#134, mmap.c): what keeping nearly-free blocks
     // for runs costs the single-page allocator.
-    size_t aside, skips, ditch, ditch_sparse, run_windows, sparse_fallback, pool_sparse;
-    memory_block_stats(&aside, &skips, &ditch, &ditch_sparse, &run_windows,
-                       &sparse_fallback, &pool_sparse);
-    fprintf(stderr, "[GC BLOCKS] pool set aside=%zu, taken back=%zu | scan skips=%zu,"
-                    " sparse fallback=%zu | whole-map singles=%zu (into a sparse block %zu)"
+    size_t aside, skips, ditch, ditch_sparse, run_windows, pool_sparse;
+    memory_block_stats(&aside, &skips, &ditch, &ditch_sparse, &run_windows, &pool_sparse);
+    fprintf(stderr, "[GC BLOCKS] pool set aside=%zu, taken back=%zu | scan skips=%zu"
+                    " | whole-map singles=%zu (into a sparse block %zu)"
                     " | sparse compactions=%zu | runs in sparse windows=%zu\n",
-            aside, pool_sparse, skips, sparse_fallback, ditch, ditch_sparse,
+            aside, pool_sparse, skips, ditch, ditch_sparse,
             gc_sparse_compactions, run_windows);
 }
 
@@ -221,18 +212,17 @@ void gc_stats_tick(void) {
     gc_pool_unlock();
     size_t scav_ret, scav_rec, scav_cold, scav_rec_runs;
     memory_scavenge_stats(&scav_ret, &scav_rec, &scav_cold, &scav_rec_runs);
-    // Pool hits and PREMATURE bumps ride the sampled line, not just the exit
-    // summary: a run killed by a timeout still yields them, and they are the
-    // pair that says whether reuse is working (see memory_pool_stats).
-    size_t pool_hits, pool_steals, pool_stale, scan_miss, scan_waste;
-    memory_pool_stats(&pool_hits, &pool_steals, &pool_stale, &scan_miss, &scan_waste);
+    // Pool hits ride the sampled line, not just the exit summary: a run
+    // killed by a timeout still yields them.
+    size_t pool_hits, pool_steals, pool_stale;
+    memory_pool_stats(&pool_hits, &pool_steals, &pool_stale);
     fprintf(stderr,
         "[GC] allocs=%llu watermark=%llu live=%llu cycles=%llu stage=%d epoch=%u "
         "wl=%u scanq=%u "
         "mark_steps=%llu popped=%llu requeued=%llu overflows=%llu "
         "rq_drain=%llu rq_repro=%llu prune_steps=%llu freed=%llu "
         "scav_ret=%zu scav_rec=%zu cold=%zu "
-        "pool_hits=%zu pool_steals=%zu pool_stale=%zu scan_miss=%zu warm_at_miss=%zu\n",
+        "pool_hits=%zu pool_steals=%zu pool_stale=%zu\n",
         (unsigned long long)n,
         (unsigned long long)memory_watermark(),
         (unsigned long long)memory_count(),
@@ -248,7 +238,7 @@ void gc_stats_tick(void) {
         (unsigned long long)atomic_load(&gc_stat_prune_steps),
         (unsigned long long)atomic_load(&gc_stat_pages_freed),
         scav_ret, scav_rec, scav_cold,
-        pool_hits, pool_steals, pool_stale, scan_miss, scan_waste);
+        pool_hits, pool_steals, pool_stale);
 }
 
 

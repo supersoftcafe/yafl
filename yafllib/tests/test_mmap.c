@@ -10,8 +10,7 @@
 // tests and the [GC POOL] diagnostic line.
 extern size_t memory_watermark(void);
 extern size_t memory_total_pages(void);
-extern void memory_pool_stats(size_t* hits, size_t* steals, size_t* stale,
-                              size_t* misses, size_t* warm_at_miss);
+extern void memory_pool_stats(size_t* hits, size_t* steals, size_t* stale);
 extern void memory_pool_release_cycle(void);
 extern void memory_pool_release_stats(size_t* released, size_t* retained, size_t* lost,
                                       unsigned* pct);
@@ -204,15 +203,10 @@ TEST_END()
 
 
 // Construct a heap state where the only free region in the active heap lies
-// beyond MAX_SCAN_PROBES from where the per-thread cursor will reset to (0).
-// A correct allocator must still reach those free pages — bumping the
-// watermark once per allocation would balloon the heap indefinitely.
-//
-// MAX_SCAN_PROBES is a private constant in mmap.c, so we use generous
-// margins. After this test fills FILL pages and frees a hole at HOLE_START,
-// the per-thread cursor is at FILL. The next allocation resets the cursor
-// to 0 (because cursor + 1 > FILL). With a 4096-probe cap, walking from 0
-// covers [0, 4096); a hole at HOLE_START > 4096 is unreachable.
+// thousands of pages up from the bottom. A correct allocator must still reach
+// those free pages — bumping the watermark once per allocation would balloon
+// the heap indefinitely. (A bounded scan from a cursor once missed exactly
+// this: with a 4096-probe cap, walking from 0 never reached a hole at 4500.)
 TEST(scan_cap_reaches_holes_beyond_cap_distance)
     enum { FILL = 6000, HOLE_START = 4500, HOLE_SIZE = 200, CYCLES = 4096 };
 
@@ -255,13 +249,8 @@ TEST_END()
 
 
 // REUSE REGRESSION: a free page must be reused however far it sits from the
-// scan cursor. The previous test churns ONE page at a time, so after the first
-// bump the cursor is parked next to the hole and every later cycle finds it.
-// Sustained allocation does not get that luck: the cursor is reset to 0 once
-// per scavenge epoch (every 256 pages claimed), so on a heap whose live prefix
-// is longer than the probe budget, the first allocation after every epoch tick
-// walks the budget over live markers, gives up, and extends the watermark —
-// while thousands of free pages sit just past where it stopped looking.
+// bottom of the heap. The previous test churns ONE page at a time; this one
+// re-allocates a sustained run of them.
 //
 // Measured on a self-compile before the per-thread page pool: 62% of ALL
 // watermark bumps (33,561 of 53,972) happened with WARM free pages below the
@@ -270,55 +259,45 @@ TEST_END()
 // creates: 742 MiB returned to the OS over a 240 s slice, 55% of it faulted
 // straight back in.
 //
-// So: claim a dense prefix, free pages beyond the budget, and re-allocate
-// exactly that many DISTINCT pages. Every one must come from those holes.
+// So: claim a dense prefix, free pages far up it, and re-allocate exactly that
+// many DISTINCT pages. Every one must come from those holes, served by the
+// pool.
 //
 // The holes are one page in every STRIDE, not one contiguous block: by the
 // one density rule (#134) a page in a busy block is the first choice and the
-// pool serves it, while the pool sets an emptied block's pages aside (the scan
-// takes them, after denser blocks and cold pages). A contiguous hole would
-// test the scan's last resort, not the pool.
-TEST(reuse_reaches_free_pages_across_epoch_cursor_resets)
-    // HOLE_START must clear MAX_SCAN_PROBES (4096, private to mmap.c) with
-    // margin; HOLE_SIZE must span many epoch ticks (256 claims each) so the
-    // test measures the sustained case rather than a single cold start.
+// pool serves it, while the pool sets an emptied block's pages aside. A
+// contiguous hole would test the last resort, not the pool.
+TEST(reuse_reaches_free_pages_far_from_the_bottom)
     enum { STRIDE = 4, HOLE_START = 8000, HOLE_SIZE = 3000,
            FILL = HOLE_START + HOLE_SIZE * STRIDE + 1000 };
+
+    // The holes earlier tests left are the rule's first choice, so take them
+    // all before laying out the prefix: allocate until a page comes fresh
+    // from the top of the band, and keep what was taken until the end.
+    enum { SPARE_MAX = 1 << 16 };
+    void** spare = malloc(SPARE_MAX * sizeof(void*));
+    ASSERT(spare != NULL);
+    size_t n_spare = 0;
+    for (;;) {
+        size_t wm = memory_watermark();
+        ASSERT(n_spare < SPARE_MAX);
+        spare[n_spare++] = memory_pages_alloc(1);
+        if (memory_watermark() != wm) break;
+    }
 
     void** pages = malloc(FILL * sizeof(void*));
     ASSERT(pages != NULL);
     for (int i = 0; i < FILL; ++i)
         pages[i] = memory_pages_alloc(1);
 
-    // Free the holes, well past the budget from the bottom. They are the only
-    // free pages below the watermark — asserted, not assumed, since a hole
-    // left by an earlier test would let the scan succeed and make this pass
-    // for the wrong reason.
+    // Free the holes. They are the only free pages below the watermark.
     for (int i = HOLE_START; i < HOLE_START + HOLE_SIZE * STRIDE; i += STRIDE) {
         memory_pages_free(pages[i], 1);
         pages[i] = NULL;
     }
 
-    size_t hole_index = (size_t)(((char*)pages[HOLE_START - 1] - _memory_heap_base)
-                                 / GC_PAGE_SIZE) + 1;
-    ASSERT(hole_index > 4096);
-    for (size_t p = 0; p < hole_index; ++p) {
-        if (!memory_pages_is_alloc_head(_memory_heap_base + p * GC_PAGE_SIZE)) {
-            printf("\n    free page at index %zu below the hole at %zu"
-                   " — precondition broken, run this test earlier\n", p, hole_index);
-            ASSERT(false);
-        }
-    }
-
-    // Assert on the allocator's own accounting, not on watermark arithmetic.
-    // A watermark delta depends on where the epoch boundary happens to fall
-    // relative to this loop: on a virgin heap the same scenario grew the
-    // watermark by 24 pages, and inside the full test binary it grew by 0 —
-    // the defect was present both times. `premature` counts bumps taken while
-    // a warm free page was going spare, which is exactly the defect.
-    size_t hits0, steals0, stale0, miss0, warm0;
-    size_t hits1, steals1, stale1, miss1, warm1;
-    memory_pool_stats(&hits0, &steals0, &stale0, &miss0, &warm0);
+    size_t hits0, steals0, stale0, hits1, steals1, stale1;
+    memory_pool_stats(&hits0, &steals0, &stale0);
     size_t before = memory_watermark();
 
     void** reused = malloc(HOLE_SIZE * sizeof(void*));
@@ -326,29 +305,24 @@ TEST(reuse_reaches_free_pages_across_epoch_cursor_resets)
     for (int k = 0; k < HOLE_SIZE; ++k)
         reused[k] = memory_pages_alloc(1);
 
-    memory_pool_stats(&hits1, &steals1, &stale1, &miss1, &warm1);
+    memory_pool_stats(&hits1, &steals1, &stale1);
     size_t grew_by = memory_watermark() - before;
-    if (miss1 != miss0 || grew_by != 0) {
-        printf("\n    %zu scans fell through (mean %.0f warm pages going spare)"
-               " and %zu pages of growth, while %d free pages waited past the"
-               " scan budget (pool hits %zu)\n",
-               miss1 - miss0,
-               miss1 > miss0 ? (double)(warm1 - warm0) / (double)(miss1 - miss0) : 0.0,
+    if (grew_by != 0 || hits1 - hits0 != (size_t)HOLE_SIZE)
+        printf("\n    %zu pages of growth while %d free pages waited (pool hits %zu)\n",
                grew_by, HOLE_SIZE, hits1 - hits0);
-    }
-    // The pool must serve every one of them: not one allocation may fall
-    // through to the bounded scan while the pages it needs are pooled.
-    ASSERT(miss1 == miss0);
     ASSERT(grew_by == 0);
-    // ...and they must have come from the pool, not from a lucky scan.
+    // ...and they must have come from the pool.
     ASSERT(hits1 - hits0 == (size_t)HOLE_SIZE);
 
     for (int k = 0; k < HOLE_SIZE; ++k)
         memory_pages_free(reused[k], 1);
     for (int i = 0; i < FILL; ++i)
         if (pages[i] != NULL) memory_pages_free(pages[i], 1);
+    for (size_t k = 0; k < n_spare; ++k)
+        memory_pages_free(spare[k], 1);
     free(reused);
     free(pages);
+    free(spare);
 TEST_END()
 
 
@@ -462,7 +436,7 @@ int main(void) {
     RUN(interleaved_singles_and_runs_leave_a_run_window);
     // Second: it asserts that nothing below its hole is free, which only holds
     // while the low region is still packed by its own fill.
-    RUN(reuse_reaches_free_pages_across_epoch_cursor_resets);
+    RUN(reuse_reaches_free_pages_far_from_the_bottom);
     RUN(single_page_watermark_tracks_live_set);
     RUN(alloc_free_churn_does_not_grow_heap);
     RUN(multi_page_watermark_tracks_live_set);

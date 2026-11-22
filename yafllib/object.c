@@ -128,9 +128,11 @@
                                   // later must finish sooner. Measured with
                                   // the dwell: 6 beat 8 and 4 on the
                                   // self-compile and the benchmark set.
-#define GC_PACE_IDLE_PAGES  1024  // pages allocated between cycles (16 MiB):
+#define GC_PACE_IDLE_PAGES  4096  // pages allocated between cycles (64 MiB):
                                   // smaller dwells left a growing chain at
-                                  // 3-4x the CPU of this one
+                                  // 3-4x the CPU of 1024; on the 6G
+                                  // self-compile 4096 costs 6% less CPU than
+                                  // 1024 for 10% more peak RSS (#134)
 #define GC_PACE_PRUNE_PAGES 64    // pages pruned per page allocated, while the
                                   // heap is at most half full (prune is
                                   // cheap per page); deliberately NOT derived
@@ -145,6 +147,54 @@ static unsigned gc_step_base  = GC_PACE_SCAN_PAGES;
 static unsigned gc_prune_base = GC_PACE_PRUNE_PAGES;
 static uint64_t gc_idle_pages = GC_PACE_IDLE_PAGES;
 static _Atomic(uint64_t) gc_idle_since = 0;   // the clock when the last cycle ended
+// --- Marking by pages ---------------------------------------------------------
+//
+// The scan list holds only pages with marks waiting (GREY pages). A page joins
+// it at its first mark; a page never marked (WHITE) waits on pages_white and
+// goes straight to prune. A mark on a page already scanned this cycle is a
+// BACK-EDGE: the claim that found it scans it on the spot, within a budget
+// (gc_fsa_mark_sweep$drain), and past the budget the page goes back on the
+// list with a page owed. So no executor follows a long chain through pages
+// already scanned while the others allocate: a prepended list runs backwards
+// in memory, and claimed oldest first, every link of it was a back-edge (#134:
+// one executor's unbounded drain was the 6G self-compile's peak RSS).
+//
+// THE HAND-OFF is lossless. Each page carries a stamp (queued_epoch) that
+// places it in the current GC cycle c:
+//   QUEUED(c)  handed over this cycle: on the scan list or about to be;
+//   BORN(c)    born this cycle, after its thread's root scan: OUTSIDE it,
+//              implicitly live, and a mark on it does nothing at all;
+//   any other  WHITE: in the cycle, not yet marked (or old: every mark
+//              source checks `old` first).
+// No stamp is written to make a page white. A page is stamped once, at birth,
+// with BORN of its thread's last root-scan cycle: outside the cycle it was
+// born in if born after that scan, white in the next one, when its thread's
+// scan takes it in; white in the current one if born before. A survivor's
+// QUEUED of an earlier cycle reads white in the next. So the cycle's lists
+// form with no walk over its pages: every page is white the moment the cycle
+// opens, and its first mark — from the roots, a card, a black allocation, a
+// scanner or a mutator's barrier, at any stage of the cycle — moves the stamp
+// to QUEUED(c) with one compare-and-swap. Only that winner hands the page
+// over, by pushing it onto `grey_pending`, a lock-free stack threaded through
+// the page's pending_next. Push-only plus take-all, so no ABA; one push per
+// page per cycle, so no bound to overflow. Executors take the whole stack
+// under the pool lock and move its pages from pages_white to pages_to_scan,
+// from the end of the root scan on (by then every page pushed is on a list
+// of the cycle). The stamps count GC CYCLES, not epochs: an overflow re-scan
+// bumps the epoch mid-mark, and a white page must stay white across it.
+static _Atomic(uint32_t) gc_grey_cycle = 0;   // bumped as each cycle opens
+#define GC_GREY_QUEUED(c) ((uint32_t)(c) * 2)
+#define GC_GREY_BORN(c)   ((uint32_t)(c) * 2 + 1)
+static atomic_bool gc_grey_active = false;   // cycle open, first marks hand over
+// The page this executor is scanning (grey pages). A mark on it is the
+// owner's: set in `seen` directly and scanned depth-first before the page is
+// let go, rather than one whole-page pass per link of an in-page chain.
+static thread_local struct gc_page *gc_owned_page = NULL;
+// Back-edges a claim scans itself, per page claimed. Past it the page goes
+// back on the list. On the 6G self-compile 1024, 4096 and 16384 cost the same
+// CPU; peak RSS 1.39, 1.47 and 1.54 GB.
+#define GC_GREY_DRAIN 4096
+static _Atomic(struct gc_page*) grey_pending = NULL;
 static unsigned gc_compact_percent = COMPACT_THRESHOLD_PERCENT;
 // The per-cycle COMPACTION BUDGET: pages a cycle may allocate as evacuation
 // targets, set at cycle start to this percentage of the heap's free pages
@@ -385,6 +435,8 @@ static list_element_t *list_pop(list_element_t *root) {
     return head;
 }
 
+static void gc_grey_form_lists(void);
+
 static void list_link(list_element_t *root, list_element_t *node) {
     node->next = root;
     node->prev = root->prev;
@@ -427,6 +479,7 @@ thread_local struct gc_thread_info gc_thread_info;   // type: gc_internal.h
 
 _Atomic(struct gc_thread_info*) threads = NULL;
 _Atomic(enum gc_stage) stage = GC_STAGE_NOT_STARTED;
+static alignas(CACHE_LINE_SIZE) atomic_bool fsa_lock;   // the exclusive stages (gc_fsa_impl)
 
 // ── Parallel-executor state (P1) ────────────────────────────────────────────
 // MARK_SWEEP and PRUNE admit ANY number of workers stepping concurrently:
@@ -459,21 +512,13 @@ static atomic_size_t       reprocess_page_tail;
 static _Atomic(int)        gc_ring_writers;   // unlisted threads' ring_writing (rare)
 static atomic_bool         reprocess_overflow_flag;
 
-// Mark worklist: a GROWABLE LIFO stack of objects discovered on an
-// ALREADY-PROCESSED page (a "back-edge" — a reference into a page the scanner
-// has already finished). Such objects are scanned DIRECTLY instead of
-// re-queueing and re-diffing their whole page.
-//
-// It is drained to EMPTY at the end of every page scan (see
-// gc_fsa_mark_sweep): scanning a page pushes its back-edges, then the drain
-// chases them — each scan can push more, so it eats the top of the stack
-// while pushing back to it until nothing remains. A page popped from
-// pages_to_scan is therefore FULLY resolved, back-edge closure included,
-// before the next pop. That keeps the structural pacing exact: the cycle does
-// one page-pop per live page, with no overflow requeue competing for the
-// "scan N pages per allocation" budget (the old fixed array fell back to
-// re-queueing the whole page when full — extra page-pops the budget never
-// accounted for).
+// Mark worklist: a GROWABLE LIFO stack of the objects a claim marks on the
+// page it owns, and on pages already scanned this cycle (back-edges). Such
+// objects are scanned DIRECTLY instead of re-queueing and re-diffing their
+// whole page. It is drained to EMPTY after every pass over the claimed page
+// (gc_fsa_mark_sweep$drain): each scan can push more, so the drain eats the
+// top of the stack while pushing back to it until nothing remains; back-edges
+// past the claim's budget leave it as page requeues.
 //
 // LIFO, not FIFO: depth-first keeps allocation-ordered chains streaming under
 // the hardware prefetcher (a FIFO worklist measured ~30% slower). Chunked so
@@ -563,6 +608,71 @@ static void mark_worklist_reset(void) {
 // from every executor, and two adjacent 16-byte heads on one line measurably
 // false-share (perf c2c: 5.8% of HITM traffic at T=12).
 alignas(CACHE_LINE_SIZE) list_element_t pages_to_scan  = {&pages_to_scan, &pages_to_scan};
+alignas(CACHE_LINE_SIZE) list_element_t pages_white    = {&pages_white, &pages_white};
+
+// Born since its thread's root scan: outside this cycle (see THE HAND-OFF).
+static inline bool gc_grey_outside(gc_page_t *page) {
+    return atomic_load_explicit(&page->head.queued_epoch, memory_order_relaxed)
+        == GC_GREY_BORN(atomic_load_explicit(&gc_grey_cycle, memory_order_relaxed));
+}
+
+// The first marker of a white page hands it over (see THE HAND-OFF). True
+// when this caller won.
+static inline bool gc_grey_first_mark(gc_page_t *page) {
+    uint32_t queued = GC_GREY_QUEUED(atomic_load_explicit(&gc_grey_cycle, memory_order_relaxed));
+    // Read first: every mark after a page's first finds it queued, and a
+    // failed compare-and-swap still takes the line exclusive.
+    uint32_t stamp = atomic_load_explicit(&page->head.queued_epoch, memory_order_relaxed);
+    if (stamp == queued || stamp == queued + 1)   // queued already, or outside
+        return false;
+    // White moves only to queued within a cycle: a failure is another winner.
+    if (!atomic_compare_exchange_strong_explicit(&page->head.queued_epoch, &stamp, queued,
+                                                 memory_order_acq_rel, memory_order_relaxed))
+        return false;
+    gc_page_t *top = atomic_load_explicit(&grey_pending, memory_order_relaxed);
+    do { page->head.pending_next = top; }
+    while (!atomic_compare_exchange_weak_explicit(&grey_pending, &top, page,
+                                                  memory_order_release, memory_order_relaxed));
+    return true;
+}
+
+// Move every handed-over page from the white list to the scan list. Under the
+// pool lock: the move is atomic to the transition tail.
+static void gc_grey_take_pending_locked(void) {
+    gc_page_t *p = atomic_exchange_explicit(&grey_pending, NULL, memory_order_acquire);
+    while (p != NULL) {
+        gc_page_t *next = p->head.pending_next;
+        list_unlink((list_element_t*)&p->head.list);
+        list_link(&pages_to_scan, (list_element_t*)&p->head.list);
+        p = next;
+    }
+}
+
+// Form this cycle's lists at the end of the root scan, when every page of
+// the cycle is on pages_to_scan: all of them white, then those the roots,
+// cards and black allocations handed over already.
+static void gc_grey_form_lists(void) {
+    gc_pool_lock();
+    list_move(&pages_white, &pages_to_scan);
+    gc_grey_take_pending_locked();
+    gc_pool_unlock();
+}
+
+// Open the cycle for the hand-off: before any mark of it (gc_fsa_start).
+static void gc_grey_open_cycle(void) {
+    atomic_fetch_add_explicit(&gc_grey_cycle, 1, memory_order_relaxed);
+    atomic_store_explicit(&gc_grey_active, true, memory_order_seq_cst);
+}
+
+// A black allocation's mark (yafl.h, object_alloc_fast_raw): between the
+// cycle opening and its thread's root scan. Its page is white, so the mark
+// hands it over like any other.
+EXPORT void gc_alloc_black(gc_page_t *page, unsigned slot) {
+    atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
+    if (atomic_load_explicit(&gc_grey_active, memory_order_relaxed))
+        gc_grey_first_mark(page);
+}
+
 alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &pages_to_prune};
 
 // --- Generations (immutability-based) ----------------------------------------
@@ -906,6 +1016,11 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
     memset(&page->head, 0, sizeof(page_head_t));
     page->head.pages = page_count;
     page->head.relocation = gc_thread_info.in_relocation;
+    // Outside the cycle of its thread's last root scan, white in
+    // the next (see THE HAND-OFF). Its thread's scan never runs between this
+    // and the page joining new_pages: the thread is here, not held.
+    atomic_store_explicit(&page->head.queued_epoch,
+                          GC_GREY_BORN(gc_thread_info.grey_scanned_cycle), memory_order_relaxed);
     page->head.stable_since = UINT64_MAX;   // "never pruned": the first prune
                                             // starts the stability clock
     atomic_thread_fence(memory_order_release);
@@ -986,7 +1101,7 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
         // Snapshot-smear guard — see object_alloc_fast_raw for the rationale.
         if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
-            atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, 0);
+            gc_alloc_black(page, 0);
         // Never sample relocation allocations: compaction targets are
         // GC-internal copies of objects that were already sampled at birth
         // (the forward hook re-keys the original record onto the copy) — a
@@ -1309,8 +1424,20 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     gc_thread_info.new_pages.next = &gc_thread_info.new_pages;
     gc_thread_info.new_pages.prev = &gc_thread_info.new_pages;
 
+    // Listed under fsa_lock, which every move into and out of the root scan
+    // holds: so the cycle this thread's first scan falls in is known here,
+    // and its pages are stamped for it (see THE HAND-OFF). Mid-scan, this
+    // cycle's (still to scan it); otherwise the next one's.
+    for (bool expected = false;
+         !atomic_compare_exchange_weak(&fsa_lock, &expected, true);
+         expected = false)
+        cpu_relax();
+    uint32_t cycle = atomic_load_explicit(&gc_grey_cycle, memory_order_relaxed);
+    gc_thread_info.grey_scanned_cycle =
+        atomic_load_explicit(&stage, memory_order_relaxed) == GC_STAGE_SCAN_ROOTS ? cycle - 1 : cycle;
     while (!atomic_compare_exchange_weak(&threads, &gc_thread_info.next, &gc_thread_info));
     gc_thread_info.listed = true;
+    atomic_store(&fsa_lock, false);
 }
 
 // Compaction's targets for an OLD page's objects, in a major (the only time an
@@ -1647,49 +1774,58 @@ static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
     }
 }
 
-static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) {
-    if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot)
-
-        // If it's not "processsed" we don't need to do anything
-        // If it's not in the scanning list at all, definately don't do anything
-
-        // New pages have 'processsed_by_epoch==0', as do pages relocated to the to_scan list
-        // After a bulk move, the epoch is incremented, so it won't match historicaly processed pages anyway
-
-        && page->head.scanner.processed_by_epoch == epoch) {
+// Hand a processed page to the collector through the reprocess ring (a
+// mutator cannot take the pool lock). On overflow the push is dropped and the
+// flag raised; the mark tail then re-scans every processed page.
+static void gc_fsa_mark_sweep$ring_push(gc_page_t *page) {
 #ifdef YAFL_GC_WRITER_PROBE
-        // Test-only hook (tests/test_gc_writer_window.c): the bit is set and
-        // the page not yet pushed, where another executor may run the tail.
-        { extern void gc_test_writer_probe(void); gc_test_writer_probe(); }
+    // Test-only hook (tests/test_gc_writer_window.c): the bit is set and
+    // the page not yet pushed, where another executor may run the tail.
+    { extern void gc_test_writer_probe(void); gc_test_writer_probe(); }
 #endif
 
-        for (size_t scan_index = 0; scan_index < sizeof(reprocess_page_list) / sizeof(gc_page_t*); ++scan_index)
-            if (reprocess_page_list[scan_index] == page)
-                return;
+    for (size_t scan_index = 0; scan_index < sizeof(reprocess_page_list) / sizeof(gc_page_t*); ++scan_index)
+        if (reprocess_page_list[scan_index] == page)
+            return;
 
-        size_t tail = reprocess_page_tail;
-        do {if (tail - reprocess_page_head >= sizeof(reprocess_page_list) / sizeof(gc_page_t*)) {
-                atomic_store(&reprocess_overflow_flag, true);
-                return;
-            }
-        } while (!atomic_compare_exchange_strong(&reprocess_page_tail, &tail, tail+1));
-        // Fill the slot only once it is EMPTY. The capacity check above counts
-        // head, and head moves when a pump CLAIMS an index, before it takes
-        // the slot: so index tail - 16, one lap back on this same slot, may be
-        // claimed and still untaken here. A plain store overwrote that entry —
-        // its pump took this one in its place, every later take on the slot
-        // ran a lap ahead, and the cycle's last pump claimed an index whose
-        // entry was already gone and spun on the empty slot for good, in
-        // flight, so marking never retired (issue #132,
-        // test_gc_ring_lap_window). Waiting is safe: a full slot here can only
-        // be a claimed entry whose pump is already on its way to take it, and
-        // that pump waits on nothing of ours.
-        _Atomic(gc_page_t*) *slot = &reprocess_page_list[tail % REPROCESS_PAGE_COUNT];
-        for (gc_page_t *empty = NULL;
-             !atomic_compare_exchange_weak(slot, &empty, page);
-             empty = NULL)
-            cpu_relax();
-    }
+    size_t tail = reprocess_page_tail;
+    do {if (tail - reprocess_page_head >= sizeof(reprocess_page_list) / sizeof(gc_page_t*)) {
+            atomic_store(&reprocess_overflow_flag, true);
+            return;
+        }
+    } while (!atomic_compare_exchange_strong(&reprocess_page_tail, &tail, tail+1));
+    // Fill the slot only once it is EMPTY. The capacity check above counts
+    // head, and head moves when a pump CLAIMS an index, before it takes
+    // the slot: so index tail - 16, one lap back on this same slot, may be
+    // claimed and still untaken here. A plain store overwrote that entry —
+    // its pump took this one in its place, every later take on the slot
+    // ran a lap ahead, and the cycle's last pump claimed an index whose
+    // entry was already gone and spun on the empty slot for good, in
+    // flight, so marking never retired (issue #132,
+    // test_gc_ring_lap_window). Waiting is safe: a full slot here can only
+    // be a claimed entry whose pump is already on its way to take it, and
+    // that pump waits on nothing of ours.
+    _Atomic(gc_page_t*) *slot = &reprocess_page_list[tail % REPROCESS_PAGE_COUNT];
+    for (gc_page_t *empty = NULL;
+         !atomic_compare_exchange_weak(slot, &empty, page);
+         empty = NULL)
+        cpu_relax();
+}
+
+static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) {
+    // A white page is handed over losslessly (first mark); a processed one
+    // takes the ring, whose overflow re-scan covers exactly the processed
+    // pages. A page born this cycle is left alone: a mark there would outlive
+    // the cycle, unscanned (THE HAND-OFF).
+    if (gc_grey_outside(page))
+        return;
+    if (atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot))
+        return;
+    if (atomic_load_explicit(&gc_grey_active, memory_order_seq_cst)
+            && gc_grey_first_mark(page))
+        return;
+    if (page->head.processed_by_epoch == epoch)
+        gc_fsa_mark_sweep$ring_push(page);
 }
 
 static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) {
@@ -1918,6 +2054,7 @@ static void gc_collect_cards(void) {
 static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     if (++epoch == 0)
         epoch = 1;
+    gc_grey_open_cycle();   // before any mark of the cycle
 
     // This cycle's sparse threshold, from the blocks as they are (#134).
     memory_blocks_retarget();
@@ -1944,15 +2081,20 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
 #endif
 
     // Major-cycle decision: collect the old generation when it has grown to
-    // gc_major_growth percent of its size after the last major (floored),
-    // under heap pressure, or on request.
+    // gc_major_growth percent of its size after the last major (floored), or
+    // by more than the heap has free, or on request. Old garbage is freed only
+    // by a major, so growth past the free pages could be all that stands
+    // between the heap and OOM. A rule on fullness alone (past half full) made
+    // every cycle at 1g a full trace: 25% of its wall time (#134).
     {
         size_t old_total = gc_old_page_count;
-        size_t pressure  = memory_total_pages() / 2;
         size_t grown     = gc_old_baseline * gc_major_growth / 100;
+        size_t used = memory_count(), total = memory_total_pages();
+        size_t free = used < total ? total - used : 0;
+        bool squeezed = old_total > gc_old_baseline && old_total - gc_old_baseline >= free;
         gc_major_cycle = gc_major_request
             || (old_total >= GC_MAJOR_FLOOR && old_total >= grown)
-            || (pressure != 0 && memory_count() > pressure);
+            || squeezed;
         gc_major_request = false;
         if (gc_major_cycle) {
             // Take the whole old generation into this cycle's rotation, to be
@@ -2054,6 +2196,7 @@ static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, ob
         if (containing < 0)
             continue;   // before the first object on the page
         if (page->head.old) continue;   // old generation: implicitly live, never pruned
+        if (gc_grey_outside(page)) continue;   // born this cycle: live
         page->head.scanner.pinned = true;
         // DIAGNOSTIC: a conservative root landing on an already-EVACUATED page.
         // Only two referent classes can keep a husk alive — a mutable object's
@@ -2067,6 +2210,7 @@ static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, ob
         if (UNLIKELY(gc_stats_enabled) && page->head.compacted) gc_prof_stack_held_husk++;
         if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, containing))
             GC_STAT_BUMP(gc_stat_cons_seeds);   // diagnostic: conservative root seeds
+        gc_grey_first_mark(page);
     }
 }
 
@@ -2089,6 +2233,8 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
 
     if (thread != NULL) {
         thread->roots_scanned = true;
+        // Its pages born from here on are outside this cycle (THE HAND-OFF).
+        thread->grey_scanned_cycle = atomic_load_explicit(&gc_grey_cycle, memory_order_relaxed);
         // Greedily take this thread's bump pages into the collection pool. Objects
         // it allocates AFTER this (region reset below) land on fresh pages that
         // are taken NEXT cycle — that is the birth protection. The take must be
@@ -2151,6 +2297,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
     }
     assert(list_empty(&pages_to_prune));
 
+    gc_grey_form_lists();
     return GC_STAGE_MARK_SWEEP;
 }
 
@@ -2188,7 +2335,7 @@ static void gc_fsa_mark_sweep$page_needs_scan(gc_page_t *page) {
         return;
     }
     GC_STAT_BUMP(gc_stat_requeued);
-    page->head.scanner.processed_by_epoch = 0;
+    page->head.processed_by_epoch = 0;
     list_unlink((list_element_t*)&page->head.list);
     list_link(&pages_to_scan, (list_element_t*)&page->head.list);
     gc_pool_unlock();
@@ -2205,6 +2352,12 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
     gc_page_t *page; ptrdiff_t slot;
     object_get_page_and_slot(object, &page, &slot);
     if (page->head.old) return;   // old generation: implicitly live in minor cycles
+    if (page == gc_owned_page) {
+        if (!bitmap_fetch_set(&page->head.scanner.seen, slot))
+            mark_worklist_push(object);
+        return;
+    }
+    if (gc_grey_outside(page)) return;   // born this cycle: live
 
     // PARALLEL-MARKING DISCIPLINE: a scanner marks remote objects through
     // atomic_seen — the same lock-free route the mutator barrier uses — never
@@ -2231,13 +2384,22 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
         yafl_heapprof_census((const struct vtable *)object_get_vtable(object),
                              object_get_size(object));
 
-    // Newly marked on a page the scanner already finished this epoch: a
-    // back-edge. Push the object for direct scanning — the per-page drain in
-    // gc_fsa_mark_sweep resolves it (and anything it reaches) before the page
-    // that found it is considered done. The mark set above keeps it live for
-    // prune (which merges residual atomic bits) regardless of where it sits.
-    if (!was_set && page->head.scanner.processed_by_epoch == epoch)
-        mark_worklist_push(object);
+    if (was_set)
+        return;
+    if (page->head.processed_by_epoch == epoch) {
+        // Scanned already this cycle: a back-edge, for this claim's drain
+        // (gc_fsa_mark_sweep$drain). Outside a claim, back on the list with a
+        // page owed. The mark set above keeps it live for prune (which merges
+        // residual atomic bits) regardless of where it sits.
+        if (gc_owned_page != NULL) {
+            mark_worklist_push(object);
+        } else {
+            gc_fsa_mark_sweep$page_needs_scan(page);
+            atomic_fetch_add_explicit(&gc_scan_clock, 1, memory_order_relaxed);
+        }
+    } else {
+        gc_grey_first_mark(page);   // white: hand it over (or it is queued already)
+    }
 }
 
 // Snap a MUTABLE container's slot to the forwarding tail — by COMPARE-EXCHANGE,
@@ -2482,8 +2644,14 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep$scan_page(gc_page_t *page) {
         // that holds one, and the mask keeps a stray bit from ever leading
         // the marker into a dead slot.
         mask_bits_t seen_bits = page->head.scanner.seen.a[index] & page->head.objects.a[index];
-        mask_bits_t scan_bits = seen_bits &~ page->head.scanner.scanned.a[index];
-        page->head.scanner.scanned.a[index] = seen_bits; // Mark all 'seen' as 'scanned' now
+        _Atomic(mask_bits_t) *scanned = (_Atomic(mask_bits_t)*)&page->head.scanner.scanned.a[index];
+        mask_bits_t scan_bits = seen_bits &~ atomic_load_explicit(scanned, memory_order_relaxed);
+        // Claim the scans by fetch-or: a back-edge drain on another executor
+        // may claim an object's scan on this page (it sets its `scanned` bit
+        // first). Its claim is a plain store, so a race can scan an object
+        // twice, never not at all (gc_fsa_mark_sweep$drain).
+        if (scan_bits)
+            scan_bits &= ~atomic_fetch_or_explicit(scanned, scan_bits, memory_order_relaxed);
         did_some |= scan_bits;
 
         unsigned offset = index * GC_MASK_SIZE;
@@ -2496,44 +2664,44 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep$scan_page(gc_page_t *page) {
     return did_some != 0;
 }
 
-// Drain the mark worklist to EMPTY: pop the top object, scan it (which may
-// push more back-edges), repeat until nothing remains. Each object is pushed
-// at most once per cycle (only when its seen bit transitions unset->set), so
-// total pops are bounded by the live set and this always terminates.
+// Scan, depth first, what this claim marked on the page it owns, and — up to
+// GC_GREY_DRAIN per claimed page — the objects it marked on pages already
+// scanned this cycle (back-edges). Each scan sets the object's `scanned` bit,
+// so a page pass does not scan it again. A plain load and store, not a locked
+// fetch-set (0.85% of a 6G self-compile): a racing claim can only make one
+// object scan twice, and a scan is idempotent (mark_object skips children
+// already seen). A back-edge past the budget is not scanned here: its page
+// goes back on the list, with a page owed, and the next claim of that page
+// scans it (its `scanned` bit is still clear).
 //
 // SCAN IMMEDIATELY ON POP — do not batch. It is tempting to accumulate a burst
-// of back-edges and group it by address before scanning, since the drained
-// objects DO cluster (measured: ~15 per page, the stats counter below). Both
-// shapes were built and measured, and both are worse: a 64-object burst costs
-// +6% mark on its own, and sorting the burst by address costs +16%. The reason
-// is that this pop is the CONSUMER END OF A PREFETCH PIPELINE — scan_elements'
-// gather issued a prefetch for each child's body and then marked it, so the
-// object the LIFO hands back next is the one whose line was most recently
-// requested. Deferring it behind 63 other scans lets that line die before use,
-// and reordering breaks the pairing outright. The clustering is real; it is
-// simply already being exploited, one object ahead, by the gather.
-static void gc_fsa_mark_sweep$drain_worklist(void) {
-    // DIAGNOSTIC (stats-gated): drained objects vs the distinct pages they land
-    // on. A 32-entry direct-mapped filter approximates the distinct count
-    // (aliasing over-counts, so the ratio is a LOWER bound on true clustering).
-    gc_page_t *seen_pages[32];
-    if (UNLIKELY(gc_stats_enabled)) memset(seen_pages, 0, sizeof(seen_pages));
-
+// of back-edges and group it by address before scanning, since they DO
+// cluster (measured: ~15 per page). Both shapes were built and measured, and
+// both are worse: a 64-object burst costs +6% mark on its own, and sorting
+// the burst by address costs +16%. This pop is the CONSUMER END OF A PREFETCH
+// PIPELINE — scan_elements' gather issued a prefetch for each child's body and
+// then marked it, so the object the LIFO hands back next is the one whose line
+// was most recently requested.
+static thread_local size_t gc_grey_drain_left = 0;
+static void gc_fsa_mark_sweep$drain(gc_page_t *page) {
     for (object_t *o; (o = mark_worklist_pop()) != NULL; ) {
-        // No scanned-bit write here: the only reader is the page re-diff after
-        // a mutator-barrier requeue, where a duplicate scan is idempotent
-        // (mark_object skips already-seen children) — cheaper than a
-        // page-header RMW per drained object, the dominant population.
-        gc_fsa_mark_sweep$scan_object(o);
-        if (UNLIKELY(gc_stats_enabled)) {
-            gc_prof_drained++;
-            gc_page_t *p = (gc_page_t*)((uintptr_t)o &~ (uintptr_t)(GC_PAGE_SIZE-1));
-            unsigned slot = (unsigned)(((uintptr_t)p >> 14) & 31u);
-            if (seen_pages[slot] != p) {
-                seen_pages[slot] = p;
-                gc_prof_drain_pages++;
+        gc_page_t *pg = (gc_page_t*)((uintptr_t)o & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+        unsigned slot = (unsigned)((slot_t*)o - pg->slots);
+        if (pg != page) {
+            if (gc_grey_drain_left == 0) {
+                gc_fsa_mark_sweep$page_needs_scan(pg);
+                atomic_fetch_add_explicit(&gc_scan_clock, 1, memory_order_relaxed);
+                continue;
             }
+            gc_grey_drain_left -= 1;
         }
+        _Atomic(mask_bits_t) *word = (_Atomic(mask_bits_t)*)&pg->head.scanner.scanned.a[slot / GC_MASK_SIZE];
+        mask_bits_t bit = (mask_bits_t)1 << (slot % GC_MASK_SIZE), w = atomic_load_explicit(word, memory_order_relaxed);
+        if (w & bit)
+            continue;
+        atomic_store_explicit(word, w | bit, memory_order_relaxed);
+        if (UNLIKELY(gc_stats_enabled)) gc_prof_drained++;
+        gc_fsa_mark_sweep$scan_object(o);
     }
 }
 
@@ -2591,6 +2759,7 @@ static bool gc_mark_work_outstanding(void) {
     if (gc_ring_writer_active()) return true;
     if (atomic_load(&reprocess_page_head) != atomic_load(&reprocess_page_tail)) return true;
     if (atomic_load(&gc_pages_in_flight) != 0) return true;
+    if (atomic_load(&grey_pending) != NULL) return true;
     return !list_empty(&pages_to_scan);
 }
 
@@ -2620,22 +2789,48 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
     const unsigned step_pages = _lag > 0 ? (unsigned)_lag : _rate;
     uint64_t _t0 = gc_stats_enabled ? gc_tsc() : 0;
 
+    // Move re-process pages back on to the scan list
+    gc_fsa_mark_sweep$pump_ring();
+
     // BATCHED claims/publication, same shape as prune (see the comment
-    // there): one hold claims up to MARK_CLAIM_BATCH pages, one publishes
-    // the batch's requeues and completions.
+    // there): one hold publishes the batch in hand — its requeues and
+    // completions — and claims the next, up to MARK_CLAIM_BATCH pages. The
+    // last hold publishes only, and reads whether the scan list looks empty.
     enum { MARK_CLAIM_BATCH = 8 };
+    gc_page_t *batch[MARK_CLAIM_BATCH];
+    bool requeue_now[MARK_CLAIM_BATCH];   // per page: back to pages_to_scan
+    unsigned n = 0;                       // pages in hand, claimed and processed
     unsigned count = 0;
-    while (count < step_pages) {
-        gc_page_t *batch[MARK_CLAIM_BATCH];
-        unsigned want = step_pages - count;
+    bool maybe_done;
+    for (;;) {
+        unsigned want = count < step_pages ? step_pages - count : 0;
         if (want > MARK_CLAIM_BATCH) want = MARK_CLAIM_BATCH;
-        unsigned n = 0;
+        gc_pool_lock();
+        // Publish. Every page stays UNLINKED until here — claimed, on no
+        // list — so a concurrent requeue (page_needs_scan, pool-locked) sees
+        // NULL links and defers to the owner through requeue_pending, which
+        // is consumed here under the same lock. No executor-local list: a
+        // requeue would take a page linked on one for a page on a global list
+        // and unlink it while the executor was still appending to it.
+        for (unsigned bi = 0; bi < n; ++bi) {
+            gc_page_t *page = batch[bi];
+            if (requeue_now[bi] || atomic_exchange(&page->head.scanner.requeue_pending, false)) {
+                GC_STAT_BUMP(gc_stat_rq_drain);
+                GC_STAT_BUMP(gc_stat_requeued);
+                page->head.processed_by_epoch = 0;
+                list_link(&pages_to_scan, (list_element_t*)&page->head.list);
+            } else {
+                list_link(&pages_to_prune, (list_element_t*)&page->head.list);
+            }
+        }
+        int in_flight = -(int)n;   // released only with publication (see prune)
+        n = 0;
         // Stage-guarded claim: the pool lock serialises this against the
         // transition tail's verify-and-store, so a pop can never race the
         // stage forward and claim a NEXT-cycle page, and the in_flight
         // increment is visible to any tail that observes the pop.
-        gc_pool_lock();
-        if (atomic_load_explicit(&stage, memory_order_acquire) == GC_STAGE_MARK_SWEEP) {
+        if (want != 0 && atomic_load_explicit(&stage, memory_order_acquire) == GC_STAGE_MARK_SWEEP) {
+            gc_grey_take_pending_locked();
             while (n < want) {
                 gc_page_t *p = (gc_page_t*)list_pop(&pages_to_scan);
                 if (p == NULL) break;
@@ -2645,17 +2840,19 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
                 atomic_store(&p->head.scanner.requeue_pending, false);
                 batch[n++] = p;
             }
-            if (n != 0)
-                atomic_fetch_add_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
         }
+        in_flight += (int)n;
+        if (in_flight != 0)
+            atomic_fetch_add_explicit(&gc_pages_in_flight, in_flight, memory_order_acq_rel);
+        maybe_done = n == 0 && list_empty(&pages_to_scan)
+                  && atomic_load_explicit(&grey_pending, memory_order_acquire) == NULL;
         gc_pool_unlock();
         if (n == 0) break;
         count += n;
-        bool requeue_now[MARK_CLAIM_BATCH];   // per page: back to pages_to_scan
         for (unsigned bi = 0; bi < n; ++bi) {
         gc_page_t *page = batch[bi];
         GC_STAT_BUMP(gc_stat_pages_popped);
-        if (page->head.scanner.processed_by_epoch == epoch) {   // instrumented assert
+        if (page->head.processed_by_epoch == epoch) {   // instrumented assert
             fprintf(stderr, "[DOUBLE-CLAIM] page=%p epoch=%u links=%p/%p pending=%d cycle=%llu\n",
                     (void*)page, epoch, (void*)page->head.list.next, (void*)page->head.list.prev,
                     (int)atomic_load(&page->head.scanner.requeue_pending),
@@ -2683,37 +2880,30 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         // "the merge added NEW bits" — the only loop-safe condition (target
         // bits are monotonic and bounded; looping on target-nonempty spins
         // forever, and on source-nonempty for as long as mutators re-mark).
+        gc_owned_page = page;
+        gc_grey_drain_left = GC_GREY_DRAIN;
         if (bitmap_or_test_reset_all(&page->head.scanner.seen, &page->head.scanner.atomic_seen)) {
             do {
                 while (gc_fsa_mark_sweep$scan_page(page)) {
                     if (UNLIKELY(gc_stats_enabled)) gc_prof_passes++;
+                    gc_fsa_mark_sweep$drain(page);
                 }
             } while (bitmap_or_test_new_reset_all(&page->head.scanner.seen, &page->head.scanner.atomic_seen));
         }
+        gc_owned_page = NULL;
 
-        page->head.scanner.processed_by_epoch = epoch;
+        page->head.processed_by_epoch = epoch;
         // A store then loads, against markers that do the mirror image (set
         // the atomic_seen bit, then read processed_by_epoch): each side must
         // see the other's store, or a mark that lands now is pushed by
         // neither — kept live by prune's residue merge but never scanned, its
         // children freed under it. The markers' side is ordered (a seq_cst
         // RMW, then a seq_cst load); this one is a seq_cst store followed by
-        // the drain's and the re-merge's RELAXED loads, which aarch64 may
+        // the re-merge's RELAXED loads, which aarch64 may
         // satisfy before the store is visible (x86's xchg store is a full
         // barrier already). Once per page.
         atomic_thread_fence(memory_order_seq_cst);
         GC_PROF_LAP(gc_prof_t_pages, _t0);
-
-        // Finish the page: drain its whole back-edge closure now, so it (and
-        // everything its scan reached on already-processed pages) is fully
-        // resolved before the next pop — the page-pop count then equals the
-        // live-page count exactly, which is what the structural pacing's
-        // "scan N pages per allocation" promise rests on. processed_by_epoch
-        // is set FIRST so a back-edge landing on THIS page during the drain
-        // queues and resolves too, rather than setting a seen bit with no
-        // scanner to follow it.
-        gc_fsa_mark_sweep$drain_worklist();
-        GC_PROF_LAP(gc_prof_t_drain, _t0);
 
         // Catch mutator marks that landed in atomic_seen during this page's
         // own processing — chiefly the window between the merge above and
@@ -2725,31 +2915,7 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         bool deferred  = atomic_exchange(&page->head.scanner.requeue_pending, false);
         requeue_now[bi] = late_bits || deferred;
         }
-        // Publish the batch. Every page stays UNLINKED until here — claimed,
-        // on no list — so a concurrent requeue (page_needs_scan, pool-locked)
-        // sees NULL links and defers to the owner through requeue_pending,
-        // which is consumed below under the same lock. No executor-local list:
-        // a requeue would take a page linked on one for a page on a global
-        // list and unlink it while the executor was still appending to it.
-        gc_pool_lock();
-        for (unsigned bi = 0; bi < n; ++bi) {
-            gc_page_t *page = batch[bi];
-            if (requeue_now[bi] || atomic_exchange(&page->head.scanner.requeue_pending, false)) {
-                GC_STAT_BUMP(gc_stat_rq_drain);
-                GC_STAT_BUMP(gc_stat_requeued);
-                page->head.scanner.processed_by_epoch = 0;
-                list_link(&pages_to_scan, (list_element_t*)&page->head.list);
-            } else {
-                list_link(&pages_to_prune, (list_element_t*)&page->head.list);
-            }
-        }
-        gc_pool_unlock();
-        // Release in-flight only AFTER publication (see prune).
-        atomic_fetch_sub_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
     }
-
-    // Move re-process pages back on to the scan list
-    gc_fsa_mark_sweep$pump_ring();
 
     // Publish REAL pages scanned (spans included): this is what the
     // allowance above nets against the target, so a big object's surplus
@@ -2757,11 +2923,8 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
     if (count > 0)
         atomic_fetch_add_explicit(&gc_pages_scanned, count, memory_order_relaxed);
 
-    // The worklist is always empty here — it is drained per page above — so
-    // only the scan list governs whether a transition attempt is worthwhile.
-    gc_pool_lock();
-    bool maybe_done = list_empty(&pages_to_scan);
-    gc_pool_unlock();
+    // maybe_done: the worklist is always empty here — it is drained per page
+    // — so only the scan list governs whether a transition is worthwhile.
     return maybe_done;
 }
 
@@ -2784,6 +2947,7 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     // in-flight count means a page (or a pumped ring entry) is still being
     // worked; try again on a later step.
     gc_pool_lock();
+    gc_grey_take_pending_locked();
     bool busy = gc_mark_work_outstanding();
     gc_pool_unlock();
     if (busy)
@@ -2843,6 +3007,8 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     gc_pool_lock();
     if (!gc_mark_work_outstanding() && !atomic_load(&reprocess_overflow_flag)) {
         gc_write_barrier_requested = false;
+        atomic_store(&gc_grey_active, false);
+        list_move(&pages_to_prune, &pages_white);   // never marked: all dead
         atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
     }
     gc_pool_unlock();
@@ -2886,7 +3052,7 @@ bool gc_test_object_seen(object_t *object) {
 bool gc_test_page_done(void *page);
 bool gc_test_page_done(void *page) {   // processed this epoch, and nothing left to scan
     gc_pool_lock();
-    bool done = ((gc_page_t*)page)->head.scanner.processed_by_epoch == epoch && list_empty(&pages_to_scan);
+    bool done = ((gc_page_t*)page)->head.processed_by_epoch == epoch && list_empty(&pages_to_scan);
     gc_pool_unlock();
     return done;
 }
@@ -3011,14 +3177,26 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
     // promotion simplifies: the page joins old_pages directly instead of
     // being published to pages_to_scan and unlinked again.
     enum { PRUNE_CLAIM_BATCH = 16 };
-    unsigned count = 0;
-    while (count < step_pages) {
-        gc_page_t *batch[PRUNE_CLAIM_BATCH];
-        unsigned want = step_pages - count;
+    gc_page_t *batch[PRUNE_CLAIM_BATCH];
+    list_element_t survivors = {&survivors, &survivors};   // -> pages_to_scan
+    list_element_t promoted  = {&promoted,  &promoted};    // -> old_pages
+    list_element_t promoted_carded = {&promoted_carded, &promoted_carded};   // -> carded_pages
+    unsigned count = 0, n = 0;   // n: pages in hand, claimed and pruned
+    bool maybe_done;
+    for (;;) {
+        unsigned want = count < step_pages ? step_pages - count : 0;
         if (want > PRUNE_CLAIM_BATCH) want = PRUNE_CLAIM_BATCH;
-        unsigned n = 0;
+        // One hold publishes the batch in hand and claims the next; the last
+        // publishes only, and reads whether the prune list looks empty.
         gc_pool_lock();
-        if (atomic_load_explicit(&stage, memory_order_acquire) == GC_STAGE_PRUNE) {
+        list_move(&pages_to_scan, &survivors);
+        list_move(&old_pages, &promoted);
+        list_move(&carded_pages, &promoted_carded);
+        // Release in-flight only WITH publication: a transition that sees
+        // zero in-flight must also see every batch page on its final list.
+        int in_flight = -(int)n;
+        n = 0;
+        if (want != 0 && atomic_load_explicit(&stage, memory_order_acquire) == GC_STAGE_PRUNE) {
             while (n < want) {
                 gc_page_t *p = (gc_page_t*)list_pop(&pages_to_prune);
                 if (p == NULL) break;
@@ -3026,20 +3204,18 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                 atomic_store(&p->head.scanner.requeue_pending, false);
                 batch[n++] = p;
             }
-            if (n != 0)
-                atomic_fetch_add_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
         }
+        in_flight += (int)n;
+        if (in_flight != 0)
+            atomic_fetch_add_explicit(&gc_pages_in_flight, in_flight, memory_order_acq_rel);
+        maybe_done = n == 0 && list_empty(&pages_to_prune);
         gc_pool_unlock();
         if (n == 0) break;
         count += n;
-        list_element_t survivors = {&survivors, &survivors};   // -> pages_to_scan
-        list_element_t promoted  = {&promoted,  &promoted};    // -> old_pages
-        list_element_t promoted_carded = {&promoted_carded, &promoted_carded};   // -> carded_pages
         size_t batch_survivor_pages = 0, batch_survivor_slots = 0, batch_promoted = 0,
                batch_returned = 0, batch_carded = 0;
         for (unsigned bi = 0; bi < n; ++bi) {
         gc_page_t *page = batch[bi];
-        assert(page->head.scanner.processed_by_epoch == epoch);
         // (flag cleared under the claim lock above)   // stale by now:
         // during PRUNE the barrier is off and mark executors are gone, so a
         // lingering flag can only be a consumed mark-stage duplicate whose
@@ -3232,24 +3408,13 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
             gc_page_free(page);
         }
         }
-        gc_pool_lock();
-        list_move(&pages_to_scan, &survivors);
-        list_move(&old_pages, &promoted);
-        list_move(&carded_pages, &promoted_carded);
-        gc_pool_unlock();
         gc_cycle_survivors      += batch_survivor_pages;
         gc_cycle_survivor_slots += batch_survivor_slots;
         gc_old_page_count       += batch_promoted + batch_returned;
         gc_carded_page_count    += batch_carded;
         atomic_fetch_add_explicit(&gc_promote_window_promoted, batch_promoted, memory_order_relaxed);
-        // Release in-flight only AFTER publication: a transition that sees
-        // zero in-flight must also see every batch page on its final list.
-        atomic_fetch_sub_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
     }
 
-    gc_pool_lock();
-    bool maybe_done = list_empty(&pages_to_prune);
-    gc_pool_unlock();
     return maybe_done;
 }
 
@@ -3358,8 +3523,6 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
 
 
 
-
-static alignas(CACHE_LINE_SIZE) atomic_bool fsa_lock;
 
 // Attempt the exclusive stage transition after a parallel body reported "no
 // work left". Sound only when NO executor is mid-page: an in-flight executor
