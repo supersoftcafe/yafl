@@ -337,6 +337,18 @@ set_tests_properties(test_gc_writer_window PROPERTIES ENVIRONMENT "YAFL_GC_POISO
 add_yafl_test(test_gc_late_handoff)
 target_compile_definitions(test_gc_late_handoff PRIVATE YAFL_GC_HANDOFF_PROBE=1)
 set_tests_properties(test_gc_late_handoff PROPERTIES TIMEOUT 120 ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_late_mark: stepped. A mutator's mark landing after marking closed
+# must not hide its page from the next cycle (#134). Builds its own object.c
+# with YAFL_GC_HANDOFF_PROBE, for the test helpers.
+add_yafl_test(test_gc_late_mark)
+target_compile_definitions(test_gc_late_mark PRIVATE YAFL_GC_HANDOFF_PROBE=1)
+set_tests_properties(test_gc_late_mark PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_late_old_mark: stepped. A mutator's mark held over into the next
+# cycle must not hand an old page over to a minor (#134). Builds its own
+# object.c with YAFL_GC_HANDOFF_PROBE, for the test helpers.
+add_yafl_test(test_gc_late_old_mark)
+target_compile_definitions(test_gc_late_old_mark PRIVATE YAFL_GC_HANDOFF_PROBE=1)
+set_tests_properties(test_gc_late_old_mark PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_old_garbage: old data dropped without the old generation growing, then
 # the heap filled with data that never promotes: the reserve gate must have a
 # major free the old garbage rather than give up (#134).

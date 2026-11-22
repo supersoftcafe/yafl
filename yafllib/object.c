@@ -607,17 +607,40 @@ alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &page
 // of the cycle). The stamps count GC CYCLES, not epochs: an overflow re-scan
 // bumps the epoch mid-mark, and a white page must stay white across it.
 //
-// OPENING AND CLOSING. A cycle opens (gc_fsa_start) with no mark of the last
-// one still in flight: a mutator's barrier counts itself (ring_writing) from
-// before it reads the flags it acts on until after its last push, and one that
-// read them just before the last cycle closed may push after it closed — onto
-// the ring, or this stack, where its page would read white again next cycle
-// and be pushed a second time while still on it (test_gc_late_handoff). So
-// the opening waits for every barrier to leave its window, then starts the
-// ring and the stack empty. Everything the opening writes — the cycle number,
-// the open flag, the epoch, a major's cleared `old` flags — is published by a
-// release fence before gc_write_barrier_requested goes up, and a barrier that
-// read the flag up takes an acquire fence before it reads any of them
+// OPENING AND CLOSING. No mutator's mark lands outside the cycle's marking.
+// A barrier reads gc_write_barrier_requested inline and marks out of line, so
+// one that read the flag up just before marking closed could otherwise mark
+// after it: push its page here or on the ring after the last take, where the
+// page would read white next cycle and be pushed again while still on the
+// stack (test_gc_late_handoff); or set its bit after the page was pruned,
+// where the bit would outlive the cycle and, read as "marked already", keep
+// the next cycle from ever handing the page over — the object kept, its
+// children freed (test_gc_late_mark). So a barrier counts itself
+// (ring_writing) and only then reads gc_handoff_open, marking nothing if it
+// is down; and the mark tail lowers it, then waits for every barrier inside
+// its window to leave, before the stage moves on. Either the barrier sees the
+// flag down or the tail sees the barrier (seq_cst, both sides). Under SATB a
+// mark made with marking complete is redundant, so a barrier that read the
+// flag up just before it went down only repeats a mark; any page it handed
+// over is dropped as the stack closes.
+//
+// A barrier held up for longer — preempted between its filter and its count
+// — can find the NEXT cycle open. It has passed no safe point, so its mark
+// lands before its own thread's root scan, where that scan and the insertion
+// half cover whatever it shades: redundant again, but it must be sound. So
+// nothing the filter read is acted on: inside the window every decision is
+// made afresh, the page's generation first. The prune in between may have
+// promoted the page, and an old page handed over joins a minor's scan list,
+// where every mark of its objects is skipped as implicitly live: its prune
+// keeps the one object the barrier marked and frees the rest under it
+// (test_gc_late_old_mark). And a cycle opens only at the end of its START, so
+// a mark that sees it open sees all of it — a major's cleared `old` flags and
+// white stamps among them (the open flag is seq_cst on both sides).
+//
+// Everything the opening writes — the cycle number, the open flag, the epoch,
+// a major's cleared `old` flags — is published by a release fence before
+// gc_write_barrier_requested goes up, and a barrier that read the flag up
+// takes an acquire fence before it reads any of them, its filter included
 // (atomic_gc_object_mark_as_seen). The flag is a plain volatile read inline
 // in generated code, so on a weakly ordered machine this pair is what orders
 // a mark after the opening; x86 orders it anyway. Stamps wrap after 2^31
@@ -689,8 +712,9 @@ static void gc_handoff_form_lists(void) {
     gc_pool_unlock();
 }
 
-// Open the cycle for the hand-off: before any mark of it, and with no mark
-// of the last one still in flight (gc_fsa_start, see OPENING AND CLOSING).
+// Open the cycle for the hand-off, at the end of its START: after everything
+// a mark of it reads is written, before any mark of it can be made (see
+// OPENING AND CLOSING).
 static void gc_handoff_open_cycle(void) {
     atomic_store_explicit(&handoff_pending, NULL, memory_order_relaxed);
     atomic_fetch_add_explicit(&gc_handoff_cycle, 1, memory_order_relaxed);
@@ -1767,6 +1791,7 @@ EXPORT object_t *gc_exchange(_Atomic(object_t*) *slot, object_t *desired) {
     return old;
 }
 
+static void atomic_gc_object_mark_as_seen$counted(gc_page_t *page, ptrdiff_t slot);
 static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot);
 // A mutator's mark is two steps: set the object's atomic_seen bit, then, if
 // its page was already processed this epoch, push the page on the reprocess
@@ -1793,11 +1818,11 @@ static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot);
 // the tail read it has a bit no marker has seen yet: the late entry
 // gc_fsa_mark_sweep_tail describes, harmless under SATB.
 //
-// Only a mark that may set the bit is counted. An old page, or a bit already
-// set, pushes nothing (the bit's setter, counted, made the decision), and the
-// count is one shared line every barrier would otherwise bounce: so marking
-// can retire under a busy mutator, each object entering the window about
-// once a cycle.
+// Only a mark that may set the bit is counted. The FILTER skips an old page,
+// or a bit already set (the bit's setter, counted, made the decision), so
+// marking can retire under a busy mutator, each object entering the window
+// about once a cycle. The filter only ever skips: what it read may belong to
+// an earlier cycle, so the window decides afresh ($push).
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
     // The flag that led here was read up: see what the cycle's opening wrote
     // before acting on any of it (THE HAND-OFF, OPENING AND CLOSING).
@@ -1810,6 +1835,11 @@ static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
     mask_bits_t bit = ((mask_bits_t)1) << (slot % GC_MASK_SIZE);
     if (atomic_load_explicit((_Atomic(mask_bits_t)*)&page->head.scanner.atomic_seen.a[slot / GC_MASK_SIZE],
                              memory_order_relaxed) & bit) return;
+    atomic_gc_object_mark_as_seen$counted(page, slot);
+}
+
+// The barrier past its filter: counted, then decided inside the window.
+static void atomic_gc_object_mark_as_seen$counted(gc_page_t *page, ptrdiff_t slot) {
     struct gc_thread_info *t = &gc_thread_info;
     if (LIKELY(t->listed)) {
         // Only this thread writes it: the increment is a load and a store.
@@ -1864,16 +1894,21 @@ static void gc_fsa_mark_sweep$ring_push(gc_page_t *page) {
 }
 
 static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) {
-    // A white page is handed over losslessly (first mark); a processed one
-    // takes the ring, whose overflow re-scan covers exactly the processed
-    // pages. A page born this cycle is left alone: a mark there would outlive
-    // the cycle, unscanned (THE HAND-OFF).
-    if (gc_handoff_outside(page))
+    // Inside the writer's window: with marking closed, nothing; open, every
+    // decision afresh, since the filter may have read an earlier cycle (THE
+    // HAND-OFF, OPENING AND CLOSING). An old page is left alone: handed over,
+    // it would join a minor's scan list, where nothing marks its objects. So
+    // is a page born this cycle: a mark there would outlive the cycle,
+    // unscanned. A white page is handed over losslessly (first mark); a
+    // processed one takes the ring, whose overflow re-scan covers exactly the
+    // processed pages.
+    if (!atomic_load_explicit(&gc_handoff_open, memory_order_seq_cst))
+        return;
+    if (page->head.old || gc_handoff_outside(page))
         return;
     if (atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot))
         return;
-    if (atomic_load_explicit(&gc_handoff_open, memory_order_seq_cst)
-            && gc_handoff_first_mark(page))
+    if (gc_handoff_first_mark(page))
         return;
     if (page->head.processed_by_epoch == epoch)
         gc_fsa_mark_sweep$ring_push(page);
@@ -2102,19 +2137,14 @@ static void gc_collect_cards(void) {
     }
 }
 
-static bool gc_ring_writer_active(void);   // the mark stage, below
-
 static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
-    // No mark of the last cycle still in flight; then the ring and the
-    // hand-off start empty, and the cycle opens (THE HAND-OFF, OPENING AND
+    // The ring starts empty. The cycle opens once all of this is written,
+    // just before the barrier flag goes up (THE HAND-OFF, OPENING AND
     // CLOSING).
-    while (gc_ring_writer_active())
-        cpu_relax();
     reprocess_page_head = reprocess_page_tail = 0;
     memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
     if (++epoch == 0)
         epoch = 1;
-    gc_handoff_open_cycle();
 
     // This cycle's sparse threshold, from the blocks as they are (#134).
     memory_blocks_retarget();
@@ -2158,13 +2188,14 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
         if (gc_major_cycle) {
             // Take the whole old generation into this cycle's rotation, to be
             // traced like any page; its prune returns each survivor to old.
-            // Flags are cleared BEFORE gc_write_barrier_requested goes up, so
-            // no mark source can observe old=true on a page that is back in
-            // the rotation and skip a mark it owes. Each page is restamped
-            // white: an old page's stamp is as old as its promotion, and
+            // Flags are cleared BEFORE the cycle opens and the barrier flag
+            // goes up, so no mark source can observe old=true on a page that
+            // is back in the rotation and skip a mark it owes. Each page is
+            // restamped white (the last cycle's QUEUED: this one opens
+            // below): an old page's stamp is as old as its promotion, and
             // after 2^31 cycles it could alias this cycle's BORN.
             uint32_t white = GC_STAMP_QUEUED(atomic_load_explicit(&gc_handoff_cycle,
-                                                                  memory_order_relaxed) - 1);
+                                                                  memory_order_relaxed));
             for (list_element_t *list = &old_pages; list != NULL;
                  list = list == &old_pages ? &carded_pages : NULL)
                 for (list_element_t *node = list->next; node != list; node = node->next) {
@@ -2190,8 +2221,9 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     gc_occ_large = 0;
     gc_occ_sparse_fwd = gc_occ_sparse_pin = gc_occ_sparse_oth = 0;
 
-    // Everything above is published before the flag (THE HAND-OFF, OPENING
-    // AND CLOSING).
+    // The cycle opens, all of it written, and is published before the flag
+    // (THE HAND-OFF, OPENING AND CLOSING).
+    gc_handoff_open_cycle();
     atomic_thread_fence(memory_order_release);
     gc_write_barrier_requested = true;
     // Pairs with the fence in gc_root_publish: a store into a root slot is
@@ -3097,8 +3129,16 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
         // found nothing, and marking is still open to a mutator's barrier.
         { extern void gc_test_handoff_probe(void); gc_test_handoff_probe(); }
 #endif
+        // Close marking (THE HAND-OFF, OPENING AND CLOSING): the flag down,
+        // then every barrier still inside its window out of it — before the
+        // stage moves on, so no mark lands on a page prune has reset. A page
+        // one of them handed over is dropped: the mark only repeated one
+        // that marking made.
         gc_write_barrier_requested = false;
-        atomic_store(&gc_handoff_open, false);
+        atomic_store_explicit(&gc_handoff_open, false, memory_order_seq_cst);
+        while (gc_ring_writer_active())
+            cpu_relax();
+        atomic_store_explicit(&handoff_pending, NULL, memory_order_relaxed);
         list_move(&pages_to_prune, &pages_white);   // never marked: all dead
         atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
     }
@@ -3131,6 +3171,12 @@ void gc_test_drain_marking(void) {   // pump and scan until nothing is outstandi
 }
 void gc_test_mutator_mark(object_t *object);
 void gc_test_mutator_mark(object_t *object) { atomic_gc_object_mark_as_seen(object); }
+void gc_test_mutator_mark_unfiltered(object_t *object);
+void gc_test_mutator_mark_unfiltered(object_t *object) {   // a barrier whose filter ran a cycle ago
+    gc_page_t* page; ptrdiff_t slot;
+    object_get_page_and_slot(object, &page, &slot);
+    atomic_gc_object_mark_as_seen$counted(page, slot);
+}
 void gc_test_mark_tail(void);
 void gc_test_mark_tail(void) { gc_fsa_mark_sweep_tail(); }
 void gc_test_pump_ring(void);
@@ -3324,9 +3370,9 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
         // end-of-page re-merge, later mutator marks ring-enqueue the page for
         // a genuine re-scan, and a barrier straddling the mark stage's retire
         // is counted (ring_writing, atomic_gc_object_mark_as_seen), so the
-        // tail does not retire under it. One that reads the flags just before
-        // the final check and marks just after is a late mark, harmless under
-        // SATB; the next cycle's opening waits for it (THE HAND-OFF).
+        // tail does not retire under it. One that counts itself only after
+        // the final check finds marking closed and marks nothing (THE
+        // HAND-OFF, OPENING AND CLOSING).
         bitmap_or_test_source_reset_all(&page->head.scanner.seen,
                                         &page->head.scanner.atomic_seen);
         // Marks on slots that hold no object mean nothing (see scan_page);
