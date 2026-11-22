@@ -189,12 +189,12 @@ void gc_stats_report(void) {
             pool_hits, pool_steals, pool_stale);
     // Busy and sparse blocks (#134, mmap.c): what keeping nearly-free blocks
     // for runs costs the single-page allocator.
-    size_t aside, skips, ditch, ditch_sparse, run_windows, pool_sparse;
-    memory_block_stats(&aside, &skips, &ditch, &ditch_sparse, &run_windows, &pool_sparse);
-    fprintf(stderr, "[GC BLOCKS] pool set aside=%zu, taken back=%zu | scan skips=%zu"
-                    " | whole-map singles=%zu (into a sparse block %zu)"
+    size_t aside, ditch, ditch_scan, run_windows, pool_sparse;
+    memory_block_stats(&aside, &ditch, &ditch_scan, &run_windows, &pool_sparse);
+    fprintf(stderr, "[GC BLOCKS] pool set aside=%zu, taken back=%zu"
+                    " | whole-map singles=%zu (by the last-ditch scan %zu)"
                     " | sparse compactions=%zu | runs in sparse windows=%zu\n",
-            aside, pool_sparse, skips, ditch, ditch_sparse,
+            aside, pool_sparse, ditch, ditch_scan,
             gc_sparse_compactions, run_windows);
 }
 

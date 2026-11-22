@@ -31,12 +31,11 @@ enum {
     PAGE_MARKER_BODY = 2,
 };
 
-// Phase-1 scan budget: probe at most this many page positions before giving up
-// and extending the watermark. Bounds allocation latency to a constant
-// independent of heap size; in exchange the heap may inflate modestly under
-// heavy fragmentation, then plateau as reuse catches up within the larger
-// active region. Increase if profiling shows premature bumps; decrease if
-// allocation latency dominates.
+// The runs scan's budget (scan_runs_topdown): probe at most this many page
+// positions before giving up and lowering the runs floor. Bounds allocation
+// latency to a constant independent of heap size; in exchange the heap may
+// inflate modestly under heavy fragmentation, then plateau as reuse catches
+// up within the larger band.
 enum { MAX_SCAN_PROBES = 4096 };
 
 // Scavenger tuning knobs (see memory_scavenge and the FREE-AGE comment below).
@@ -104,9 +103,8 @@ static _Atomic(size_t)  upper_watermark = 0;    // Top of the SINGLES region (gr
 // are found by the top-down reuse scan. Singles and runs thus never
 // interleave in address order: the virgin middle is consumed from both ends,
 // and the contiguous windows large objects need survive at the top instead
-// of being peppered with single pages the moment a bounded singles scan
-// misses its probe budget (the self-host stage3 abort: no 83MB window
-// despite gigabytes free). Initialised in init(); zero until then, which
+// of being peppered with single pages (the self-host stage3 abort: no 83MB
+// window despite gigabytes free). Initialised in init(); zero until then, which
 // rejects nothing because no allocation exists before init either.
 static _Atomic(size_t)  run_floor = 0;
 static _Atomic(size_t)  alloc_count = 0;        // Track real heap usage
@@ -129,11 +127,11 @@ static _Atomic(size_t)  scavenge_reclaimed_runs = 0;  // ...of which by multi-pa
 // rescaled when pacing changed, and churn returned). Pages the churn keeps
 // reusing re-stamp on every free and never become eligible; a dead
 // transient's pages are freed once and age out. Meaningful only because
-// reuse is CONCENTRATED: the allocation cursors reset every epoch (see
-// memory_pages_alloc), so the working set re-packs the same pages —
-// singles lowest, runs highest — and everything between stops being touched
-// and ages. With the old free-roaming next-fit ring, reuse was spread
-// round-robin over the whole free pool and age was all-or-nothing. The byte
+// reuse is CONCENTRATED: a single page goes to the densest block (the density
+// index), a run to the top of its band, so the working set re-packs the same
+// pages and everything between stops being touched and ages. With the old
+// free-roaming next-fit ring, reuse was spread round-robin over the whole
+// free pool and age was all-or-nothing. The byte
 // wraps every 256 epochs: a very old free can transiently look young and
 // merely returns an epoch later.
 static _Atomic(uint8_t)*pages_free_epoch = NULL;
@@ -143,7 +141,7 @@ static inline uint8_t scavenge_epoch_now(void) {
                      >> SCAVENGE_EPOCH_SHIFT);
 }
 
-// Per-thread starting offset for the whole-map scan (scan_within). Only ever
+// Per-thread starting offset for the whole-map scan (scan_whole_map). Only ever
 // read or written by its owning thread — no atomic, no cache-line contention.
 static thread_local size_t alloc_cursor = 0;
 
@@ -200,9 +198,8 @@ static unsigned sparse_share = 25;   // YAFL_GC_SPARSE_SHARE; 0 turns the rules 
 static _Atomic(unsigned) sparse_block_max = 0;
 // What the rules cost, for the [GC BLOCKS] stats line.
 static _Atomic(size_t) blocks_pool_drops = 0;    // pool entries set aside: sparse block
-static _Atomic(size_t) blocks_scan_skips = 0;    // sparse blocks the singles scan leapt
 static _Atomic(size_t) blocks_last_ditch = 0;    // singles placed by a whole-map scan
-static _Atomic(size_t) blocks_last_ditch_sparse = 0;   // ...that had to take a sparse block
+static _Atomic(size_t) blocks_last_ditch_scan = 0;    // ...that the index could not place
 static _Atomic(size_t) blocks_run_windows = 0;   // runs placed in a sparse block's window
 static _Atomic(size_t) blocks_pool_sparse = 0;       // singles from the set-aside list
 
@@ -478,123 +475,47 @@ static bool try_claim_run(size_t idx, size_t n) {
 }
 
 
-// Phase 1 helper: scan within [0, snapshot) for a free run and claim it via the
-// CAS chain. Returns the page index on success, SIZE_MAX on exhaustion.
-//
-// `step_budget` caps the number of page positions probed. The bound makes
-// allocation latency O(step_budget) rather than O(snapshot).
-//
-// COLD-AVERSE unless `cold_ok`: a free window containing a scavenged page is
-// skipped, so the cursor flows around returned memory and it stays returned —
-// without this, the next-fit ring cyclically faulted cold pages back in while
-// the scavenger re-returned the warm ones left behind (measured: ~12 pages/
-// cycle bouncing at steady state). Cold skips are FREE with respect to the
-// probe budget: they cost one byte-load, not a marker probe, and the warm
-// pool typically sits behind a scavenged stretch the cursor must cross to
-// reach it — budgeting the skips made the crossing fail and re-faulted a cold
-// page per allocation. Termination on an all-cold heap comes from the
-// one-full-lap bound instead. The first cold window seen is remembered as a
-// FALLBACK and claimed if the scan finds no warm window: reusing returned
-// memory beats inflating the watermark. The last-ditch near-OOM scan passes
-// `cold_ok` and takes anything. The cold-bit loads are RELAXED by design:
-// on a non-TSO machine a just-released cold page can transiently read warm,
-// costing at worst one avoidable page fault — claimed_run's exchange keeps
-// the accounting exact either way.
-//
-// On both success and budgeted failure, `alloc_cursor` is left pointing at the
-// next position to inspect. On failure that means subsequent allocations
-// continue the walk from where this one gave up — without this, a bounded
-// scan that always restarts at 0 could repeatedly miss the same free region
-// further along and bump the watermark indefinitely.
-//
-// BUSY-ONLY (`busy_only`, single pages, the whole-map scan): a free page in a
-// sparse block is passed over (see the busy and sparse blocks); the cursor
-// leaps to the next block for the price of one probe. Single pages are
-// placed by the density index (pick_single); this scan is their last ditch.
-static size_t scan_within(size_t snapshot, size_t page_count, size_t step_budget, bool cold_ok,
-                          bool busy_only) {
-    if (snapshot < page_count)
+// The LAST DITCH, once the two bands have met: one lap of the whole map, next
+// fit from this thread's cursor, claiming the first FREE window of
+// `page_count` pages, cold or warm (returned memory beats an abort). Returns
+// the page index, SIZE_MAX when there is none. A non-FREE page inside a
+// window skips the cursor past it in one step: every window starting before
+// it would include it.
+static size_t scan_whole_map(size_t page_count) {
+    size_t total = total_page_count;
+    if (total < page_count)
         return SIZE_MAX;
-
-    if (alloc_cursor + page_count > snapshot)
+    if (alloc_cursor + page_count > total)
         alloc_cursor = 0;
-
     size_t i = alloc_cursor;
-    size_t steps_remaining = snapshot < step_budget ? snapshot : step_budget;
-    size_t lap_remaining = snapshot;   // hard bound: one full lap, free skips included
-    size_t fallback = SIZE_MAX;
-
-    while (steps_remaining > 0 && lap_remaining > 0) {
-        if (i + page_count > snapshot) {
+    for (size_t lap = total; lap > 0; ) {
+        if (i + page_count > total) {
             i = 0;
-            continue;  // wrap is a free operation, not a probe
+            continue;   // the wrap costs nothing
         }
-
-        if (atomic_load_explicit(&pages_info[i], memory_order_relaxed) != PAGE_MARKER_FREE) {
-            i += 1;
-            steps_remaining -= 1;
-            lap_remaining -= 1;
-            continue;
-        }
-
-        if (busy_only && block_sparse(i)) {
-            size_t advance = BLOCK_PAGES - (i & (BLOCK_PAGES - 1));
-            atomic_fetch_add_explicit(&blocks_scan_skips, 1, memory_order_relaxed);
-            i += advance;
-            steps_remaining -= 1;
-            lap_remaining = sat_sub(lap_remaining, advance);
-            continue;
-        }
-
-        // Probe the rest of the window. If page i+j is not FREE, every window
-        // starting in i+1..i+j would still include it, so we can skip the
-        // cursor past the obstruction in one step rather than crawling.
-        bool has_cold = !cold_ok
-            && atomic_load_explicit(&pages_cold[i], memory_order_relaxed);
-        size_t j = 1;
+        size_t j = 0;
         while (j < page_count
-                && atomic_load_explicit(&pages_info[i + j], memory_order_relaxed) == PAGE_MARKER_FREE) {
-            has_cold = has_cold || (!cold_ok
-                && atomic_load_explicit(&pages_cold[i + j], memory_order_relaxed));
+                && atomic_load_explicit(&pages_info[i + j], memory_order_relaxed) == PAGE_MARKER_FREE)
             j += 1;
-        }
-
-        if (j < page_count) {
-            size_t advance = j + 1;
-            i += advance;
-            steps_remaining = sat_sub(steps_remaining, advance);
-            lap_remaining   = sat_sub(lap_remaining, advance);
-            continue;
-        }
-
-        if (has_cold) {
-            // Budget-free skip (see header comment); the lap bound terminates.
-            if (fallback == SIZE_MAX)
-                fallback = i;
-            i += page_count;
-            lap_remaining = sat_sub(lap_remaining, page_count);
-            continue;
-        }
-
-        if (try_claim_run(i, page_count)) {
+        if (j == page_count && try_claim_run(i, page_count)) {
             alloc_cursor = i + page_count;
             return i;
         }
-
-        // Lost the race for this window; nudge the cursor and try again.
-        i += 1;
-        steps_remaining -= 1;
-        lap_remaining -= 1;
+        size_t advance = j < page_count ? j + 1 : 1;   // past the obstruction, or a lost race
+        i += advance;
+        lap = sat_sub(lap, advance);
     }
-
     alloc_cursor = i;
-    if (fallback != SIZE_MAX && try_claim_run(fallback, page_count)) {
-        alloc_cursor = fallback + page_count;
-        return fallback;
-    }
     return SIZE_MAX;
 }
 
+
+// One past block `lo`'s last page: the heap's last block is only partly real
+// when its size is not a whole number of blocks, and past its end the page map
+// is mapping slack that reads FREE (test_mmap_heap_end).
+static inline size_t block_end(size_t lo) {
+    return lo + BLOCK_PAGES < total_page_count ? lo + BLOCK_PAGES : total_page_count;
+}
 
 // The first FREE page in [lo, hi), warm only if asked; SIZE_MAX if none.
 static size_t first_free_in(size_t lo, size_t hi, bool warm_only) {
@@ -608,17 +529,12 @@ static size_t first_free_in(size_t lo, size_t hi, bool warm_only) {
     return SIZE_MAX;
 }
 
-// The one rule, by the density index: a free page in the
-// DENSEST non-full block wholly below `limit` blocks, a warm page before a
-// cold one within the block. No budget, no cursor: the index lists only the
-// blocks that can serve. The first page of an empty block is handed back in
-// `empty_out` (it comes after the set-aside pool pages).
 // A free page in block `b`, warm before cold, claimed; SIZE_MAX if none, or,
 // with `shy`, at the first claim another thread wins (the block is shared:
 // leave it to them and pick afresh).
 static size_t claim_in_block(size_t b, bool shy) {
     size_t lo = b << BLOCK_SHIFT, cold = SIZE_MAX;
-    for (size_t i = lo; i < lo + BLOCK_PAGES; ++i) {
+    for (size_t i = lo, hi = block_end(lo); i < hi; ++i) {
         if (atomic_load_explicit(&pages_info[i], memory_order_relaxed) != PAGE_MARKER_FREE)
             continue;
         if (atomic_load_explicit(&pages_cold[i], memory_order_relaxed)) {
@@ -635,10 +551,12 @@ static size_t claim_in_block(size_t b, bool shy) {
     return SIZE_MAX;
 }
 
-// This thread's CURRENT block: the block it last took a page
-// from, filled until full before the index is consulted again. It was the
-// densest when chosen and only grows denser, so the rule holds; threads end
-// up in different blocks rather than racing for the one densest block.
+// This thread's CURRENT block: the block it last took a page from, filled
+// until full before the index is consulted again. It was the densest when
+// chosen, and this thread's own claims only make it denser (a prune may free
+// pages in it meanwhile; it is still dense, and is left once full or once
+// another thread wins a page in it). Threads end up in different blocks
+// rather than racing for the one densest block.
 static thread_local size_t my_block = SIZE_MAX;
 
 // Where a pick starts looking within a level: a fresh RANDOM block each time
@@ -666,6 +584,11 @@ static size_t level_next_wrap(unsigned l, size_t start, size_t limit, size_t *po
     return level_next(l, *pos, start);
 }
 
+// The one rule, by the density index: a free page in the DENSEST non-full
+// block wholly below `limit` blocks, a warm page before a cold one within the
+// block, claimed. No budget, no cursor: the index lists only the blocks that
+// can serve. SIZE_MAX if none; then the first page of an empty block is
+// handed back in `empty_out` (it comes after the set-aside pool pages).
 static size_t pick_single(size_t limit, size_t *empty_out) {
     *empty_out = SIZE_MAX;
     if (limit == 0)
@@ -703,7 +626,7 @@ static size_t pick_single(size_t limit, size_t *empty_out) {
     return SIZE_MAX;
 }
 
-// Top-down counterpart of scan_within, used for multi-page RUNS. Singles pack
+// The scan for a multi-page RUN, top down in the runs band. Singles pack
 // upward from the bottom, runs pack downward from the watermark: the two
 // populations meet in the middle instead of peppering each other with holes,
 // so the big contiguous spans large objects need survive at the top — and
@@ -716,10 +639,19 @@ static size_t pick_single(size_t limit, size_t *empty_out) {
 // re-claimed by the next run of similar size instead of being abandoned
 // behind a descending cursor until it ages and the scavenger returns it
 // (measured on findstr: a per-epoch cursor left ~10k pages/run bouncing
-// through the kernel). Same probe-budget and cold-aversion contracts as
-// scan_within (the fallback claim beats a watermark bump here too — and
-// large runs land on cold spans often, since dead transients are exactly
-// what the scavenger returns).
+// through the kernel).
+//
+// BOUNDED: at most `step_budget` page probes, so allocation latency does not
+// grow with the heap. COLD-AVERSE: a window holding a scavenged page is
+// skipped, so returned memory stays returned, and the skip is free with
+// respect to the budget (one byte-load; the warm spans often sit behind a
+// returned stretch the scan must cross); the one-lap bound terminates. The
+// first cold window is remembered and claimed if no warm one turns up: it
+// beats moving the floor, and large runs land on cold spans often, since
+// dead transients are exactly what the scavenger returns. The cold-bit loads
+// are relaxed: on a weakly ordered machine a just-released cold page can
+// read warm, costing at worst one avoidable fault — claimed_run's exchange
+// keeps the accounting exact.
 static size_t scan_runs_topdown(size_t floor, size_t page_count, size_t step_budget) {
     size_t span = total_page_count - floor;      // the runs band [floor, total)
     if (span < page_count)
@@ -735,8 +667,7 @@ static size_t scan_runs_topdown(size_t floor, size_t page_count, size_t step_bud
     while (steps_remaining > 0 && lap_remaining > 0) {
         // Probe the window [i, i+page_count) from its TOP end: an obstruction
         // at i+j rules out every window starting above i+j-page_count, so the
-        // cursor can leap below it in one step — the mirror of scan_within's
-        // skip-past-the-obstruction.
+        // cursor can leap below it in one step.
         bool has_cold = false;
         size_t j = page_count;
         while (j > 0
@@ -748,7 +679,7 @@ static size_t scan_runs_topdown(size_t floor, size_t page_count, size_t step_bud
 
         if (j == 0) {
             if (has_cold) {
-                // Budget-free skip (see scan_within); the lap bound terminates.
+                // Budget-free skip (see above); the lap bound terminates.
                 if (fallback == SIZE_MAX)
                     fallback = i;
                 lap_remaining = sat_sub(lap_remaining, page_count);
@@ -820,15 +751,16 @@ static size_t scan_sparse_windows(size_t page_count) {
 // ── Per-thread page pool ─────────────────────────────────────────────────────
 //
 // A freed single page is remembered by the thread that freed it, so the next
-// single-page allocation gets it for the price of a pop instead of a scan.
-// The scan is BOUNDED (MAX_SCAN_PROBES), and once the live prefix is longer
-// than that budget it stops reaching the free pages beyond it: measured on a
-// self-compile, 62% of all watermark bumps (33,561 of 53,972) happened with a
-// mean of 1,869 warm free pages sitting below the watermark. The abandoned
-// pages are not lost — the scavenger hands them back to the OS — but that is
-// the allocator and the scavenger undoing each other's work, and it cost 742
-// MiB of madvise traffic over a 240 s slice with 55% of it faulted straight
-// back in.
+// single-page allocation gets it for the price of a pop. It was first built
+// for a BOUNDED singles scan, which stopped reaching the free pages beyond
+// its budget: measured on a self-compile, 62% of all watermark bumps (33,561
+// of 53,972) happened with a mean of 1,869 warm free pages sitting below the
+// watermark, and the scavenger handed the abandoned pages back to the OS for
+// the allocator to fault straight back in (742 MiB of madvise traffic over a
+// 240 s slice, 55% of it). The density index (pick_single) now reaches every
+// free page; the pool still serves first, from the thread's own recent frees,
+// warm and without touching the index — and by the one rule, since it sets
+// aside the pages that are not in a busy block (below).
 //
 // THE POOL IS A HINT, NOT AN OWNER. A pooled page is FREE in `pages_info`,
 // exactly as before, so:
@@ -897,7 +829,7 @@ typedef struct page_pool {
     pool_gen_t         sparse;  // set aside: in a sparse block, so taken only
                                 // when no busy hole is left (pool_take_sparse)
     pool_gen_t         idle;    // set aside: in an EMPTY block; never served
-                                // (the scan finds it), only released
+                                // (the index finds it), only released
     pool_chunk_t      *spare;   // one emptied chunk kept back, so a pool
                                 // oscillating across a chunk boundary does not
                                 // allocate and free a chunk per page
@@ -920,7 +852,7 @@ static _Atomic(size_t) pool_steals = 0;   // ...of which taken from another thre
 static _Atomic(size_t) pool_stale  = 0;   // entries dropped: page taken elsewhere
 
 // The set-aside lists' bound, each: past it, an entry is dropped (the page
-// stays free, for the scan). The release rule drains these lists only up to
+// stays free, for the index to find). The release rule drains these lists only up to
 // its fraction, so without a bound a page freed into a sparse block again and
 // again could grow a list faster than the release shrinks it.
 enum { POOL_SPARSE_MAX = 4096 };
@@ -1017,8 +949,8 @@ static bool pool_pop_any_locked(page_pool_t *pool, uint32_t *out) {
 // Cold entries are dropped rather than claimed. A cold page has been returned
 // to the OS, and taking it back would fault it in for no reason — the pool
 // would quietly undo the scavenger's work, which is the very churn it exists
-// to stop. Dropping leaves it returned and reachable by the scan's own
-// cold-fallback path if the heap ever genuinely needs it.
+// to stop. Dropping leaves it returned, and the index finds it (warm pages in
+// its block first) if the heap ever genuinely needs it.
 //
 // Entries in a SPARSE block are set aside on the pool's `sparse` list: taking
 // one now would fill the window that compaction is draining (see the busy and
@@ -1072,7 +1004,7 @@ static bool pool_steal_batch(page_pool_t *self, page_pool_t *victim) {
 }
 
 // Own pool first, then steal. Returns NULL only when no thread holds a
-// claimable page, which is when a scan — and possibly a bump — is honest.
+// claimable page; then the density index, and possibly a bump.
 static void* pool_take(void) {
     page_pool_t *self = pool_self();
     void *p = pool_claim_from(self);
@@ -1114,8 +1046,8 @@ static void* pool_take_sparse(void) {
         if (!got)
             return NULL;
         // An entry whose block has emptied since moves to `idle`: an empty
-        // block comes after the cold pages (the one rule), and the scan finds
-        // it there; the entry stays the release's to hand back.
+        // block comes last (the one rule), and the index finds it there; the
+        // entry stays the release's to hand back.
         if (!atomic_load_explicit(&pages_cold[index], memory_order_relaxed)
                 && atomic_load_explicit(&block_live[index >> BLOCK_SHIFT], memory_order_relaxed) == 0) {
             pool_lock(self);
@@ -1383,9 +1315,9 @@ static void* claimed_run(size_t idx, size_t page_count, bool was_free) {
     return pages_heap + idx * GC_PAGE_SIZE;
 }
 
-// The public entry: consult the per-thread pool (own, then steal) before doing
-// any scanning at all. Only when no thread holds a claimable page does the
-// bounded scan — and, failing that, a watermark bump — get to run.
+// The public entry: consult the per-thread pool (own, then steal) first. Only
+// when no thread holds a claimable page does the density index — and,
+// failing that, a watermark bump — get to run.
 EXPORT void* memory_pages_alloc(size_t page_count) {
     assert(page_count > 0);
 
@@ -1432,7 +1364,7 @@ static void* memory_pages_alloc_raw(size_t page_count) {
                 return aside;
             }
             if (empty != SIZE_MAX) {
-                size_t i = first_free_in(empty, empty + BLOCK_PAGES, false);
+                size_t i = first_free_in(empty, block_end(empty), false);
                 if (i != SIZE_MAX && try_claim_run(i, 1)) {
                     my_block = i >> BLOCK_SHIFT;
                     return claimed_run(i, 1, true);
@@ -1451,12 +1383,12 @@ static void* memory_pages_alloc_raw(size_t page_count) {
                     atomic_fetch_add_explicit(&blocks_last_ditch, 1, memory_order_relaxed);
                     size_t last = pick_single(block_total, &empty);
                     if (last == SIZE_MAX && empty != SIZE_MAX)
-                        empty = first_free_in(empty, empty + BLOCK_PAGES, false);
+                        empty = first_free_in(empty, block_end(empty), false);
                     if (last == SIZE_MAX && empty != SIZE_MAX && try_claim_run(empty, 1))
                         last = empty;
                     if (last == SIZE_MAX) {
-                        atomic_fetch_add_explicit(&blocks_last_ditch_sparse, 1, memory_order_relaxed);
-                        last = scan_within(total_page_count, 1, SIZE_MAX, true, false);
+                        atomic_fetch_add_explicit(&blocks_last_ditch_scan, 1, memory_order_relaxed);
+                        last = scan_whole_map(1);
                     }
                     if (last != SIZE_MAX) {
                         return claimed_run(last, 1, true);
@@ -1506,7 +1438,7 @@ static void* memory_pages_alloc_raw(size_t page_count) {
                 // The regions have met (or the request exceeds the heap).
                 // Last-ditch unbounded scan over the WHOLE map — a window may
                 // straddle what the banded scans never look at.
-                size_t last = scan_within(total_page_count, page_count, SIZE_MAX, true, false);
+                size_t last = scan_whole_map(page_count);
                 if (last != SIZE_MAX) {
                     return claimed_run(last, page_count, true);
                 }
@@ -1637,8 +1569,8 @@ static void scavenge_release(size_t lo, size_t end) {
             // re-pooled every cycle it survives, and each copy is popped and
             // discarded later. Measured at 62.8M stale drops against 28.1M
             // allocations on one self-compile. The page stays FREE and warm
-            // and the fallback scan can still find it; the pool's own release
-            // is what governs the population now.
+            // and the index can still find it; the pool's own release is what
+            // governs the population now.
         }
         return;
     }
@@ -1795,15 +1727,14 @@ EXPORT size_t memory_run_floor() {
     return atomic_load_explicit(&run_floor, memory_order_relaxed);
 }
 
-EXPORT void memory_block_stats(size_t* pool_drops, size_t* scan_skips,
-                                size_t* last_ditch, size_t* last_ditch_sparse,
+EXPORT void memory_block_stats(size_t* pool_drops,
+                                size_t* last_ditch, size_t* last_ditch_scan,
                                 size_t* run_windows, size_t* pool_sparse) {
     *run_windows       = atomic_load(&blocks_run_windows);
     *pool_sparse       = atomic_load(&blocks_pool_sparse);
     *pool_drops        = atomic_load(&blocks_pool_drops);
-    *scan_skips        = atomic_load(&blocks_scan_skips);
     *last_ditch        = atomic_load(&blocks_last_ditch);
-    *last_ditch_sparse = atomic_load(&blocks_last_ditch_sparse);
+    *last_ditch_scan   = atomic_load(&blocks_last_ditch_scan);
 }
 
 // Is `page` in a sparse block (see the busy and sparse blocks)? Compaction

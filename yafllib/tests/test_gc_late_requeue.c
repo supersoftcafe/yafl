@@ -1,9 +1,9 @@
 // Deterministic, single-stepped test: a request to rescan a page that arrives
 // after marking has retired must not take the page out of the cycle's prune.
 //
-// A mark executor pumps the reprocess ring after its page loop, with no stage
-// check, so a rescan request (page_needs_scan) can arrive once the tail has
-// retired the stage to PRUNE. Honoured, it moves the page from pages_to_prune
+// A mark executor pumps the reprocess ring at the start of its step, with no
+// stage check, so a rescan request (page_needs_scan) can arrive once the tail
+// has retired the stage to PRUNE. Honoured, it moves the page from pages_to_prune
 // back to pages_to_scan: the page skips this prune, its seen/scanned bitmaps
 // are never reset, and the next cycle's page pass (seen & ~scanned) skips
 // every object on it that this cycle scanned — their children are not traced,

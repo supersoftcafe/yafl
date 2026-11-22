@@ -207,7 +207,7 @@ TEST_END()
 // those free pages — bumping the watermark once per allocation would balloon
 // the heap indefinitely. (A bounded scan from a cursor once missed exactly
 // this: with a 4096-probe cap, walking from 0 never reached a hole at 4500.)
-TEST(scan_cap_reaches_holes_beyond_cap_distance)
+TEST(holes_far_up_the_heap_are_reached)
     enum { FILL = 6000, HOLE_START = 4500, HOLE_SIZE = 200, CYCLES = 4096 };
 
     size_t start_wm = memory_watermark();
@@ -434,15 +434,13 @@ int main(void) {
     // Runs FIRST: it sizes its fill from the total heap, so it needs the
     // virgin map before other tests latch the band watermarks.
     RUN(interleaved_singles_and_runs_leave_a_run_window);
-    // Second: it asserts that nothing below its hole is free, which only holds
-    // while the low region is still packed by its own fill.
     RUN(reuse_reaches_free_pages_far_from_the_bottom);
     RUN(single_page_watermark_tracks_live_set);
     RUN(alloc_free_churn_does_not_grow_heap);
     RUN(multi_page_watermark_tracks_live_set);
     RUN(mixed_sizes_bounded_by_fragmentation);
     RUN(concurrent_churn_bounded_watermark);
-    RUN(scan_cap_reaches_holes_beyond_cap_distance);
+    RUN(holes_far_up_the_heap_are_reached);
     // Last: it drives release cycles, which take pages other tests freed.
     RUN(release_rule_hands_back_the_configured_fraction);
 

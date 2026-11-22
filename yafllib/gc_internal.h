@@ -61,7 +61,7 @@ struct gc_thread_info {
     // The GC cycle of this thread's last root scan: its pages are born
     // outside that cycle (object.c, THE HAND-OFF). Set at the scan, while
     // the thread is held, and at registration.
-    uint32_t grey_scanned_cycle;
+    uint32_t scanned_cycle;
     // A mark between setting an object's bit and pushing its page on the
     // reprocess ring (atomic_gc_object_mark_as_seen): written by this thread
     // alone, summed by the mark tail. `listed` once the thread is on the
@@ -129,8 +129,8 @@ extern size_t memory_count(void);
 extern bool memory_page_in_sparse_block(void* page);
 extern void memory_blocks_retarget(void);   // retake the sparse threshold, per cycle
 extern _Atomic(size_t) gc_sparse_compactions;   // object.c
-extern void memory_block_stats(size_t* pool_drops, size_t* scan_skips,
-                               size_t* last_ditch, size_t* last_ditch_sparse,
+extern void memory_block_stats(size_t* pool_drops,
+                               size_t* last_ditch, size_t* last_ditch_scan,
                                size_t* run_windows, size_t* pool_sparse);
 extern void memory_pool_stats(size_t* hits, size_t* steals, size_t* stale);
 extern void memory_pool_release_cycle(void);

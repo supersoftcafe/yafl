@@ -613,7 +613,7 @@ typedef struct page_head {
     // touches this line and `seen` (the next, which the hardware fetches with
     // it), and atomic_seen; no line further down.
     _Atomic(uint32_t) processed_by_epoch; // Scanned has processed this page..  Reset to false when something changes
-    _Atomic(uint32_t) queued_epoch; // the page's place in the GC cycle
+    _Atomic(uint32_t) cycle_stamp; // the page's place in the GC cycle
                            // (object.c, THE HAND-OFF)
     struct gc_page *pending_next; // link on the lock-free stack of
                            // first-marked pages (THE HAND-OFF)
