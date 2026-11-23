@@ -609,11 +609,21 @@ typedef struct page_head {
         struct gc_page *prev;
     } list; // Page belongs to a cicular list, somewhere
 
+    // What every mark reads, on the first line with the links: a mark then
+    // touches this line and `seen` (the next, which the hardware fetches with
+    // it), and atomic_seen; no line further down.
+    _Atomic(uint32_t) processed_by_epoch; // Scanned has processed this page..  Reset to false when something changes
+    _Atomic(uint32_t) cycle_stamp; // the page's place in the GC cycle
+                           // (object.c, THE HAND-OFF)
+    struct gc_page *pending_next; // link on the lock-free stack of
+                           // first-marked pages (THE HAND-OFF)
+    bool         old; // In the old generation, for good: exempt from minor
+                      // cycles, traced by a major and returned.
+
     struct {
         bitmap_t        seen; // Starting slot of each seen object
         bitmap_t     scanned; // Starting slot of each scanned object
         bitmap_t atomic_seen; // Strictly for the early stage atomic updates
-        _Atomic(uint32_t) processed_by_epoch; // Scanned has processed this page..  Reset to false when something changes
         _Atomic(bool) requeue_pending; // a requeue request arrived while an executor
                                        // had this page CLAIMED (popped, on no list);
                                        // the owner consumes it after its final
@@ -626,8 +636,6 @@ typedef struct page_head {
     uint32_t   pages; // Number of pages, including this one, in the complete allocation
     bool     mutable; // Contains mutable objects.
     bool   compacted; // Don't compact again.
-    bool         old; // In the old generation, for good: exempt from minor
-                      // cycles, traced by a major and returned.
     _Atomic(bool) carded; // A late pin set a card on this page (object_pin):
                       // set by the MUTATOR, consumed at the end of root
                       // scanning, which moves an old page onto the carded
@@ -647,6 +655,10 @@ typedef struct page_head {
                            // old at its prune. Deaths found there mean its
                            // promotion was premature (a promotion MISTAKE;
                            // see gc_promote_volume). Sits in padding.
+    bool       relocation; // Allocated as a compaction target. Never moved
+                           // for being in a sparse block (#134): a copy that
+                           // found no busy hole lands in a sparse block, and
+                           // would otherwise move again every cycle. Padding.
     uint64_t stable_since; // Allocation-clock reading (pages) at the last
                            // prune that found a death on this page — or
                            // UINT64_MAX before the first prune (a page's
@@ -747,6 +759,7 @@ EXTERN thread_local gc_alloc_tl_t gc_alloc_tl;
 // except array_create's pointer-free-payload path, which zeroes the header
 // slots only.
 EXTERN void *object_alloc_slow_raw(size_t size, bool is_mutable);
+EXTERN void gc_alloc_black(gc_page_t *page, unsigned slot);   // object.c: a black allocation's mark
 
 // RAW bump allocation: claims and publishes the slots but does NOT zero them.
 // Callers must either zero (object_alloc_fast) or prove the zero state is
@@ -777,7 +790,7 @@ INLINE void *object_alloc_fast_raw(size_t size, bool is_mutable) {
     // The window closes when this thread's scan clears the flag, so the cost
     // outside it is one thread-local load and a not-taken branch.
     if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
-        atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
+        gc_alloc_black(page, slot);
 
     return object;
 }

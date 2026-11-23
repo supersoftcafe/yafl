@@ -168,6 +168,10 @@ set_tests_properties(test_gc_cards PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL
 # the forwarder until the next major rewrites them.
 add_yafl_test(test_gc_old_compact)
 set_tests_properties(test_gc_old_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_sparse_compact: stepped. Once the bands meet, compaction empties a
+# half-full page in a nearly-free block, and leaves one in a busy block (#134).
+add_yafl_test(test_gc_sparse_compact)
+set_tests_properties(test_gc_sparse_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_old_stub_card: stepped. An old forwarding stub keeps its card, so a
 # minor rewrites its body when a young referent moves: a reader that reaches
 # the stub through an old referrer, before the next major, reads live data.
@@ -248,8 +252,18 @@ add_yafl_test(test_prof)
 add_yafl_test(test_heapprof)
 add_yafl_test(test_heapprof2)
 add_yafl_test(test_heapprof3)
+# test_heapprof_chain: stepped. The census counts objects first marked from
+# the page their marker is scanning (#134).
+add_yafl_test(test_heapprof_chain)
+set_tests_properties(test_heapprof_chain PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 add_yafl_test(test_tempdir)
 add_yafl_test(test_mmap)
+# test_mmap_blocks: once the bands meet, single pages fill busy blocks before
+# nearly-free ones (#134). Own binary: it fills a small heap.
+add_yafl_test(test_mmap_blocks)
+# test_mmap_heap_end: a full heap whose last block is only partly real aborts
+# out of memory instead of handing out a page past its end (#134).
+add_yafl_test(test_mmap_heap_end)
 add_yafl_test(test_large_objects)
 add_yafl_test(test_pin)
 add_yafl_test(test_vtable_lookup)
@@ -317,4 +331,27 @@ set_tests_properties(test_gc_ring_lap_window PROPERTIES ENVIRONMENT "YAFL_GC_POI
 add_yafl_test(test_gc_writer_window)
 target_compile_definitions(test_gc_writer_window PRIVATE YAFL_GC_WRITER_PROBE=1)
 set_tests_properties(test_gc_writer_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_late_handoff: stepped. A page handed over after the mark tail's
+# final check must not stay on the hand-off stack into the next cycle (#134).
+# Builds its own object.c with YAFL_GC_HANDOFF_PROBE, which hooks that check.
+add_yafl_test(test_gc_late_handoff)
+target_compile_definitions(test_gc_late_handoff PRIVATE YAFL_GC_HANDOFF_PROBE=1)
+set_tests_properties(test_gc_late_handoff PROPERTIES TIMEOUT 120 ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_late_mark: stepped. A mutator's mark landing after marking closed
+# must not hide its page from the next cycle (#134). Builds its own object.c
+# with YAFL_GC_HANDOFF_PROBE, for the test helpers.
+add_yafl_test(test_gc_late_mark)
+target_compile_definitions(test_gc_late_mark PRIVATE YAFL_GC_HANDOFF_PROBE=1)
+set_tests_properties(test_gc_late_mark PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_late_old_mark: stepped. A mutator's mark held over into the next
+# cycle must not hand an old page over to a minor (#134). Builds its own
+# object.c with YAFL_GC_HANDOFF_PROBE, for the test helpers.
+add_yafl_test(test_gc_late_old_mark)
+target_compile_definitions(test_gc_late_old_mark PRIVATE YAFL_GC_HANDOFF_PROBE=1)
+set_tests_properties(test_gc_late_old_mark PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_old_garbage: old data dropped without the old generation growing, then
+# the heap filled with data that never promotes: the reserve gate must have a
+# major free the old garbage rather than give up (#134).
+add_yafl_test(test_gc_old_garbage)
+set_tests_properties(test_gc_old_garbage PROPERTIES TIMEOUT 300 ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 

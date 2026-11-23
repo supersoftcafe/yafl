@@ -58,6 +58,10 @@ struct gc_thread_info {
     void* thread_roots_context;
 
     bool roots_scanned;
+    // The GC cycle of this thread's last root scan: its pages are born
+    // outside that cycle (object.c, THE HAND-OFF). Set at the scan, while
+    // the thread is held, and at registration.
+    uint32_t scanned_cycle;
     // A mark between setting an object's bit and pushing its page on the
     // reprocess ring (atomic_gc_object_mark_as_seen): written by this thread
     // alone, summed by the mark tail. `listed` once the thread is on the
@@ -121,8 +125,14 @@ bool gc_object_is_on_heap_slow(object_t *object);
 extern size_t memory_watermark(void);
 extern size_t memory_total_pages(void);
 extern size_t memory_count(void);
-extern void memory_pool_stats(size_t* hits, size_t* steals, size_t* stale,
-                              size_t* misses, size_t* warm_at_miss);
+// Is this page in a nearly-free block, which compaction empties? (mmap.c, #134)
+extern bool memory_page_in_sparse_block(void* page);
+extern void memory_blocks_retarget(void);   // retake the sparse threshold, per cycle
+extern _Atomic(size_t) gc_sparse_compactions;   // object.c
+extern void memory_block_stats(size_t* pool_drops,
+                               size_t* last_ditch, size_t* last_ditch_scan,
+                               size_t* run_windows, size_t* pool_sparse);
+extern void memory_pool_stats(size_t* hits, size_t* steals, size_t* stale);
 extern void memory_pool_release_cycle(void);
 extern void memory_pool_release_stats(size_t* released, size_t* retained, size_t* lost,
                                       unsigned* pct);
@@ -172,7 +182,6 @@ extern _Atomic(uint64_t) gc_stat_mark_steps, gc_stat_pages_popped, gc_stat_reque
                          gc_stat_prune_steps, gc_stat_pages_freed, gc_stat_page_allocs,
                          gc_stat_majors, gc_stat_cons_seeds;
 extern _Atomic(uint64_t) gc_prof_objs, gc_prof_ptrs, gc_prof_passes, gc_prof_drained;
-extern _Atomic(uint64_t) gc_prof_drain_pages;
 extern size_t gc_occ_hist_pages[10], gc_occ_hist_dead[10], gc_occ_hist_promo[10];
 extern _Atomic(uint64_t) gc_prof_block_multipage, gc_prof_block_mutable, gc_prof_block_compacted;
 #define GC_FWD_AGE_BUCKETS 16
@@ -180,7 +189,7 @@ extern size_t gc_fwd_age[GC_FWD_AGE_BUCKETS], gc_fwd_freed;
 extern _Atomic(uint64_t) gc_prof_mut_fwd_hops, gc_prof_stack_held_husk;
 extern _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_carded, gc_prof_promote_pinned,
                          gc_prof_block_unstable, gc_prof_block_volume, gc_prof_block_kind;
-extern _Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
+extern _Atomic(uint64_t) gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
 extern _Atomic(uint64_t) gc_stat_stage_ns[8];
 extern _Atomic(uint64_t) gc_stat_lat[8][GC_LAT_BUCKETS];
 extern _Atomic(uint64_t) gc_stat_fsa_calls;

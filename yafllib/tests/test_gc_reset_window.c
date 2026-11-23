@@ -18,7 +18,9 @@
 // the self-compile hang, with RSS at the heap limit.
 //
 //   1. Holders H[0..17], each on a page of its own, each hold a leaf. None is
-//      rooted, so none is marked.
+//      rooted, so none is marked; but each page also holds a rooted anchor,
+//      so each page is marked, and scanned (a page with no mark on it is
+//      never scanned at all, so its holder could never be a back-edge).
 //   2. A cycle runs. When its tail starts with every holder's page processed
 //      (gc_test_tail_probe), H[0..16] are marked, as mutators' barriers mark
 //      them, which fills the ring and overflows it; the ring is then drained.
@@ -71,6 +73,13 @@ static vtable_t leaf_vt = {
 
 // The addresses, where the collector does not look.
 static volatile uintptr_t g_H[N], g_L[N];
+// The anchors: one rooted object on each holder's page.
+static object_t* g_A[N];
+static roots_declaration_func_t _prev;
+static void _decl(void(*declare)(object_t**)) {
+    _prev(declare);
+    for (int i = 0; i < N; ++i) declare(&g_A[i]);
+}
 static fun_t _exit_cont;
 
 // 0: waiting for the first tail; 1: ring overflowed, waiting for the re-scan
@@ -167,6 +176,7 @@ static void run_one_cycle(void) {
 static void __attribute__((noinline)) build(void) {
     for (int i = 0; i < N; ++i) {
         object_t* h = object_create(&holder_vt);
+        g_A[i] = object_create(&leaf_vt);   // the bump fills the holder's page first
         object_t* l = object_create(&leaf_vt);
         memset(((struct leaf*)l)->pad, 0x5a, sizeof ((struct leaf*)l)->pad);
         GC_STORE_IN(h, ((struct holder*)h)->child, 1, l);
@@ -191,10 +201,13 @@ static void __attribute__((noinline)) scrub(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
+    _prev = add_roots_declaration_func(_decl);
     while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
     while (gc_debug_stage() != ST_IDLE) gc_debug_step();
 
     build_below();
+    for (int i = 0; i < N; ++i)
+        if (page_of((uintptr_t)g_A[i]) != page_of(g_H[i])) fail("setup: an anchor is not on its holder's page", i);
     scrub();
     for (int i = 1; i < N; ++i)
         for (int j = 0; j < i; ++j)
