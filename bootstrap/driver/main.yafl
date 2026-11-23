@@ -802,10 +802,24 @@ fun loadProject(user: List<PStmt>, extra: List<String>): ProjectLoad|String|Load
   (e: LibsErr) => e.libsWhy
   (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
     (why: String)        => why
-    (idx: List<NsEntry>) => match(projectRounds(user, idx, List(), List(), List()))
-      (why2: String)      => why2
-      (pe: LoadErrors)   => pe
-      (pr: ProjectLoad)   => placedProject(pr, user, idx)
+    (idx: List<NsEntry>) => isSystemMissing(user, idx)
+      ? systemMissing(extra)
+      : match(projectRounds(user, idx, List(), List(), List()))
+        (why2: String)      => why2
+        (pe: LoadErrors)   => pe
+        (pr: ProjectLoad)   => placedProject(pr, user, idx)
+
+# A program that takes names from System when no library owns it: one error in
+# place of an unresolved reference to every name, and a declared result
+# reported as a missing `ret`. compiler.py compile_project says the same.
+fun isSystemMissing(user: List<PStmt>, idx: List<NsEntry>): Bool =>
+  nsLookup(idx, "System") is None
+    && contains(candidateNamespaces(declaredImports(user), qualifiedRefs(user)), "System")
+
+fun systemMissing(extra: List<String>): String
+  let searched = join(searchPaths(extra), ", ")
+  ret "namespace 'System' is not provided by any library on the search path: "
+    + (searched == "" ? "(empty)" : searched)
 
 # Rule 1 (#136): each library declares only into its own namespaces, and the
 # program into none a library lists. Before pruning, so a misplaced statement

@@ -425,6 +425,22 @@ class TestBootstrapCli(TimedTestCase):
         r = self._compile_installed("yaflc", [other])
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
+    def test_a_program_importing_System_with_no_System_library_says_so(self):
+        # An installed layout with nothing under lib/yafl: one error naming the
+        # search path (#145). The binary is a copy, so no build tree is above it.
+        self._write("hello.yafl", _HELLO)
+        prefix = self._install()
+        (prefix / "lib" / "yafl" / "system.yl").unlink()
+        empty = self.dir / "empty"
+        empty.mkdir()
+        env = self._env()
+        env.pop("YAFL_LIBYAFL_A", None)
+        r = subprocess.run([str(prefix / "bin" / "yaflc"), "-L", str(empty), "-c", "out.c", "hello.yafl"],
+                           cwd=self.dir, env=env, capture_output=True, text=True, timeout=1800)
+        self.assertEqual(1, r.returncode, r.stdout + r.stderr)
+        self.assertEqual(f"error:namespace 'System' is not provided by any library on the search path: "
+                         f"{empty}, {prefix.resolve()}/lib/yafl\n", r.stdout)
+
     def test_unreadable_input(self):
         self._both("missing.yafl")
         self._write("real.yafl", _HELLO)

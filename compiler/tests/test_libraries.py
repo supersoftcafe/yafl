@@ -7,9 +7,12 @@ don't depend on the toolchain.
 from __future__ import annotations
 
 import io
+import tempfile
 import zipfile
 from pathlib import Path
+from unittest import mock
 
+import compiler as C
 import libraries as L
 from tests.testutil import TimedTestCase as TestCase
 
@@ -63,6 +66,30 @@ class TestDevSystemFallback(TestCase):
         idx = L.namespace_index(L.available_libraries())
         self.assertIn("System", idx)
         self.assertIn("System::IO", idx)
+
+
+class TestSystemMissing(TestCase):
+    def test_a_program_importing_System_with_no_System_library_says_so(self):
+        # One error, naming the search path, in place of an unresolved reference
+        # to every name the program uses (#145).
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(L, "dev_system_library", return_value=None), \
+                mock.patch.dict("os.environ", {"YAFL_PATH": td}):
+            prog = C.Input("namespace P\nimport System\nfun main(): System::Int\n  ret 0\n", "p.yafl")
+            with self.assertRaises(L.LibraryError) as ctx:
+                C.compile_project([prog], use_stdlib=True)
+        self.assertEqual(f"namespace 'System' is not provided by any library on the search path: {td}",
+                         str(ctx.exception))
+
+    def test_a_program_that_does_not_use_System_needs_no_System_library(self):
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(L, "dev_system_library", return_value=None), \
+                mock.patch.dict("os.environ", {"YAFL_PATH": td}):
+            prog = C.Input("namespace P\nfun main(): Int\n  ret 0\n", "p.yafl")
+            try:
+                C.compile_project([prog], use_stdlib=True)
+            except L.LibraryError as ex:
+                self.fail(f"no System was asked for: {ex}")
 
 
 class TestDirectoryAndZipLibraries(TestCase):
