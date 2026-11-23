@@ -215,12 +215,6 @@ fun [tail] lastSlash(p, at) => at < 0 ? -1 : byteAt(p, at) == '/' ? at : lastSla
 # distinction is kept in the stdlib because a search path is not the only
 # caller, not because it means anything here.
 #
-# GAP, deliberate: `search_paths` also appends the default install location
-# `${prefix}/lib/yafl`, which it derives from the executable — but only for a
-# frozen build, so for the reference compiler as normally run this list is the
-# same. The port is always a native binary, so an INSTALLED port will not find
-# an installed `system.yl` until it learns its own executable path.
-
 fun searchPaths(extra: List<String>) => concat(concat(map(extra, (p: String) => pathStr(p)), envPaths()),
                                 installPaths())
 
@@ -230,14 +224,13 @@ fun searchPaths(extra: List<String>) => concat(concat(map(extra, (p: String) => 
 # is an installed binary sitting in `bin/`; the port is always that, so this is
 # the port's version of the same rule rather than an extra search path.
 #
-# Nothing when argv[0] carries no directory: a program found on PATH cannot say
-# where it lives, and guessing would put an arbitrary `lib/yafl` on the search
-# path. A missing directory is skipped by discovery, so no existence check here.
-fun installPaths(): List<String>
-  let exe = argv0()
-  ret !contains(exe, "/")
-    ? List()
-    : list1(dirOf(dirOf(exe)) + "/lib/yafl")
+# `exePath` is the real path, symlinks resolved, however the program was
+# started: by a bare name on PATH, or through a link from another `bin/`, as
+# Python's `Path(sys.executable).resolve()` is. Nothing when it cannot say. A
+# missing directory is skipped by discovery, so no existence check here.
+fun installPaths(): List<String> => match(exePath())
+  (exe: String) => list1(dirOf(dirOf(exe)) + "/lib/yafl")
+  ()            => List()
 
 fun envPaths() => match(env("YAFL_PATH"))
   (v: String) => map(filter(split(v, ":"), (p) => p != ""), (p: String) => pathStr(p))
@@ -264,8 +257,8 @@ fun pathStr(p: String): String
 #     library already loaded owns one of its namespaces.
 #
 # The tree is the directory above this binary's own (`build/yaflc` sits
-# in `build/`), as Python finds it above its source file. A binary named
-# without a directory (found on PATH) has no tree.
+# in `build/`), as Python finds it above its source file. A binary whose real
+# path cannot be found has no tree.
 
 fun availableLibraries(extra: List<String>): LibResult => match(discoverLibraries(searchPaths(extra)))
   (e: LibsErr) => e
@@ -273,9 +266,9 @@ fun availableLibraries(extra: List<String>): LibResult => match(discoverLibrarie
     (root: String) => withDevLibraries(root, ok.libsFound)
     ()             => ok
 
-fun devRoot(): String|None
-  let exe = argv0()
-  ret contains(exe, "/") ? dirOf(exe) + "/.." : None
+fun devRoot(): String|None => match(exePath())
+  (exe: String) => dirOf(exe) + "/.."
+  ()            => None
 
 fun withDevLibraries(root: String, found: List<Library>): LibResult
   let owned = fold<Library, List<String>>(found, List(),

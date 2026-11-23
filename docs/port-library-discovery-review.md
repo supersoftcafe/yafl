@@ -311,19 +311,21 @@ extracted and *runs the binary*, checking its exit code. Discovery, zip
 reading, source loading, C emission, extraction, linking and execution, with
 nothing staged by hand.
 
-## 12. The installed search path uses argv[0]
+## 12. The installed search path uses the executable's real path
 
 `search_paths` appends `${prefix}/lib/yafl`, derived from the executable —
 but only for a frozen build, because only a frozen build is an installed
-binary sitting in `bin/`. The port is always that, so it now derives the same
-path from `argv[0]`: `dirname(dirname(argv0))/lib/yafl`, lowest precedence,
-after the explicit paths and `YAFL_PATH`.
+binary sitting in `bin/`. The port is always that, so it derives the same
+path from `System::exePath`: `dirname(dirname(exe))/lib/yafl`, lowest
+precedence, after the explicit paths and `YAFL_PATH`.
 
-Contentious bit: **when `argv[0]` carries no directory, it contributes
-nothing.** A program found on `PATH` cannot say where it lives, and guessing
-would put an arbitrary `lib/yafl` on the search path. Python resolves
-`sys.executable`, which is always a path; the port has no realpath and no PATH
-search, so this is the one place it can come up empty where Python would not.
+`argv[0]` could not serve: a program found on `PATH` is given a bare name, so
+the install was never searched and `System` never loaded (#145). The runtime
+now answers `exePath` as Python's `Path(sys.executable).resolve()` does, an
+absolute path with symlinks resolved: from the OS where it says
+(`/proc/self/exe` on Linux, `_NSGetExecutablePath` on macOS), else from
+`argv[0]` and `PATH`, the way a shell found the program. None only if neither
+can say, and then the install contributes nothing.
 
 ## 13. What is NOT done
 

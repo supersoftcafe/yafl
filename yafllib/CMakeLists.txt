@@ -22,6 +22,7 @@ set(SRC_FILES
     stackguard.c
     str.c
     task.c
+    exepath.c
     tempdir.c
     thread.c
     yafl.c
@@ -79,6 +80,7 @@ set(TEST_SRC_FILES
     stackguard.c
     str.c
     task.c
+    exepath.c
     tempdir.c
     thread.c
     yafl.c
@@ -257,6 +259,7 @@ add_yafl_test(test_heapprof3)
 add_yafl_test(test_heapprof_chain)
 set_tests_properties(test_heapprof_chain PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 add_yafl_test(test_tempdir)
+add_yafl_test(test_exe_path)
 add_yafl_test(test_mmap)
 # test_mmap_blocks: once the bands meet, single pages fill busy blocks before
 # nearly-free ones (#134). Own binary: it fills a small heap.

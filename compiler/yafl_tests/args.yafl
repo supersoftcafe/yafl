@@ -19,3 +19,15 @@ fun program(): System::Int
 
 fun [test("unset value is none")] check(): None|TestFailure
     ret assertEqInt(program(), 4, "program()")
+
+
+namespace CompilerTests::Args::ExePathIsAbsolute
+
+import System
+import System::Test
+
+fun program(): System::Bool
+    ret System::startsWith(System::exePath() ?? "", "/")
+
+fun [test("the executable's path is absolute")] check(): None|TestFailure
+    ret assertTrue(program(), "exePath() starts with /")
