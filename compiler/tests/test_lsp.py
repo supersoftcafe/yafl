@@ -467,3 +467,71 @@ class TestPackagedLibraries(_Workspace):
             finally:
                 if p.poll() is None:
                     p.kill()
+
+
+class TestLibraryWorkspace(_Workspace):
+    """A workspace folder holding a `yafl.toml` is a library, not a program:
+    it is analysed as that library, in place of an installed library of the
+    same name (#144), and what is built on it is left out."""
+
+    def _pull(self, id_, unit: str) -> dict:
+        return _request(id_, "textDocument/diagnostic", {"textDocument": {"uri": self._uri(unit)}})
+
+    def _items(self, unit: str, env: dict | None = None) -> list[dict]:
+        replies = self._replies(self._pull(2, unit), env=env)
+        return next(r["result"]["items"] for r in replies if r.get("id") == 2)
+
+    def _installed(self, name: str, namespace: str, source: str) -> dict:
+        import os
+        libs = self.root.parent / "libs"
+        (libs / name).mkdir(parents=True, exist_ok=True)
+        (libs / name / "yafl.toml").write_text(f'name = "{name}"\nnamespaces = ["{namespace}"]\n')
+        (libs / name / f"{name}.yafl").write_text(source)
+        return dict(os.environ, YAFL_PATH=str(libs))
+
+    _ALPHA = "namespace Alpha\nimport System\nfun one(): Int\n  ret 1\n"
+
+    def _own_alpha(self, source: str) -> None:
+        self._write("yafl.toml", 'name = "alpha"\nnamespaces = ["Alpha"]\n')
+        self._write("alpha.yafl", source)
+
+    def test_the_folder_is_the_library_that_it_shadows(self):
+        # As a program it would declare into a namespace a library lists.
+        env = self._installed("alpha", "Alpha", self._ALPHA)
+        self._own_alpha("namespace Alpha\nimport System\nfun two(): Int\n  ret 2\n")
+        self.assertEqual([], self._items("alpha.yafl", env))
+
+    def test_its_own_errors_are_in_its_files(self):
+        env = self._installed("alpha", "Alpha", self._ALPHA)
+        self._own_alpha("namespace Alpha\nimport System\nfun two(): Int\n  ret nosuch\n")
+        items = self._items("alpha.yafl", env)
+        self.assertTrue(items)
+        lines = {i["range"]["start"]["line"] for i in items}
+        self.assertIn(3, lines)                  # the use of nosuch
+        self.assertLessEqual(lines, {2, 3})      # nothing outside the function
+
+    def test_what_is_built_on_the_shadowed_library_is_left_out(self):
+        # beta imports Alpha. Beside the folder's Alpha it cannot be analysed,
+        # and it is not an error in the folder.
+        env = self._installed("alpha", "Alpha", self._ALPHA)
+        self._installed("beta", "Beta", "namespace Beta\nimport System\nimport Alpha\n"
+                                         "fun three(): Int\n  ret one() + 2\n")
+        self._own_alpha("namespace Alpha\nimport System\nfun two(): Int\n  ret 2\n")
+        self.assertEqual([], self._items("alpha.yafl", env))
+
+    def test_a_namespace_that_another_library_lists_is_still_an_error(self):
+        env = self._installed("gamma", "Alpha", self._ALPHA)
+        self._own_alpha("namespace Alpha\nimport System\nfun two(): Int\n  ret 2\n")
+        items = self._items("alpha.yafl", env)
+        self.assertEqual(1, len(items))
+        self.assertIn("belongs to library 'gamma'", items[0]["message"])
+
+    def test_the_stdlib_folder_is_System(self):
+        # The sources as they are in the tree, with the manifest beside them.
+        import shutil
+        from pathlib import Path
+        shutil.rmtree(self.root)
+        shutil.copytree(Path(__file__).parent.parent / "stdlib", self.root)
+        # The first statement of System is where a program would be told off.
+        self.assertEqual([], self._items("System/abort.yafl"))
+

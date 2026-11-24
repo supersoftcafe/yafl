@@ -153,7 +153,7 @@ fun isFresh(sv: Server): Bool => match(sv.svReport)
 fun captured(sv: Server, m: Message): Captured
   if !needsAnalysis(sv, m)
     ret Captured(None, Dict(), None)
-  let libs = sv.svLibs is Libraries ? None : availableLibraries(List())
+  let libs = sv.svLibs is Libraries ? None : installedLibraries(sv.svRoot)
   let folders = match(libs)
     (ok: LibsOk) => libraryFolders(ok.libsFound)
     (other)      => Dict<String, String>()

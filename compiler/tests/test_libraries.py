@@ -68,6 +68,16 @@ class TestDevSystemFallback(TestCase):
         self.assertIn("System::IO", idx)
 
 
+class TestStdlibManifest(TestCase):
+    def test_the_manifest_beside_the_sources_lists_the_namespaces_they_declare(self):
+        # What an editor reads when the stdlib folder is the workspace (#144);
+        # the packaged archive gets its list by scanning, as this does.
+        stdlib = Path(L.__file__).parent / "stdlib"
+        manifest = L.parse_manifest((stdlib / L.MANIFEST_NAME).read_text(encoding="utf-8"), "stdlib")
+        self.assertEqual("system", manifest.name)
+        self.assertEqual(L._scan_namespaces(sorted(stdlib.rglob("*.yafl"))), manifest.namespaces)
+
+
 class TestSystemMissing(TestCase):
     def test_a_program_importing_System_with_no_System_library_says_so(self):
         # One error, naming the search path, in place of an unresolved reference

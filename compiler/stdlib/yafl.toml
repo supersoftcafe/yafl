@@ -1,0 +1,6 @@
+# The System library as sources: what an editor reads when this folder is the
+# workspace, so it is analysed as System and shadows the installed copy. The
+# installed archive is packaged with a manifest of its own (libraries.py
+# package_system_library); a test keeps the two lists of namespaces equal.
+name = "system"
+namespaces = ["System", "System::Args", "System::Args::Internal", "System::Containers", "System::IO", "System::Internal", "System::Json", "System::Log", "System::Server"]
