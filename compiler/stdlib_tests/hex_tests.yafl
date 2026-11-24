@@ -12,10 +12,8 @@ fun _value(b: Int32): Int => match(hexValue(b))
     (v: Int32) => Int(v)
     (_: None)  => -1
 
-# The digit for n as a one-byte string, "-" for None.
-fun _digit(n: Int32, upper: Bool): String => match(hexDigit(n, upper))
-    (d: Int32) => asciiToString(d)
-    (_: None)  => "-"
+# The digit for n, "-" for None.
+fun _digit(n: Int32, upper: Bool): String => hexDigit(n, upper) ?? "-"
 
 fun [test("hexValue reads digits and both cases")] valueOfDigits(): None|TestFailure
     ret assertEqInt(_value('0'), 0, "0")

@@ -9,16 +9,13 @@ fun hexValue(b: System::Int32): System::Int32|System::None
     : b >= 'A' && b <= 'F' ? b - 'A' + 10i32
     : None
 
-# The digit byte for a value from 0 to 15, with its letters upper case when
-# `upper` is set. None for any other value.
-fun hexDigit(n: System::Int32, upper: System::Bool): System::Int32|System::None
+# The digit for a value from 0 to 15, as a one-byte string, with its letters
+# upper case when `upper` is set. None for any other value.
+fun hexDigit(n: System::Int32, upper: System::Bool): System::String|System::None
   ret n < 0i32 || n > 15i32 ? None
-    : n < 10i32 ? '0' + n
-    : (upper ? 'A' : 'a') + n - 10i32
+    : asciiToString(n < 10i32 ? '0' + n : (upper ? 'A' : 'a') + n - 10i32)
 
 # The low eight bits of `b` as two hex digits.
 fun hexByte(b: System::Int32, upper: System::Bool): System::String
-  fun digit(n: System::Int32): System::String => match(hexDigit(n, upper))
-    (d: System::Int32) => asciiToString(d)
-    (_: System::None)  => ""
-  ret digit((b & 255i32) / 16i32) + digit((b & 255i32) % 16i32)
+  let low: System::Int32 = b & 255i32
+  ret (hexDigit(low / 16i32, upper) ?? "") + (hexDigit(low % 16i32, upper) ?? "")

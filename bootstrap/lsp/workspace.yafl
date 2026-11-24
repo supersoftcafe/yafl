@@ -32,13 +32,11 @@ fun [tail] percentDecoded(s: String, i: Int, out: String): String
   let b = System::byteAt(s, i)
   let hi = hexValue(i + 1 < System::length(s) ? System::byteAt(s, i + 1) : -1i32)
   let lo = hexValue(i + 2 < System::length(s) ? System::byteAt(s, i + 2) : -1i32)
-  ret b == '%'
-    ? match(hi)
-        (h: System::Int32) => match(lo)
-          (l: System::Int32) => percentDecoded(s, i + 3, out + asciiToString(h * 16i32 + l))
-          (_: None)          => percentDecoded(s, i + 1, out + asciiToString(b))
-        (_: None) => percentDecoded(s, i + 1, out + asciiToString(b))
-    : percentDecoded(s, i + 1, out + asciiToString(b))
+  if b != '%'
+    ret percentDecoded(s, i + 1, out + asciiToString(b))
+  ret match(hi, lo)
+    (h: System::Int32, l: System::Int32) => percentDecoded(s, i + 3, out + asciiToString(h * 16i32 + l))
+    ()                                   => percentDecoded(s, i + 1, out + "%")
 
 # The `file://` URI of a path, every byte but a plain one %XX-escaped.
 fun pathUri(path: String): String => "file://" + percentEncoded(path, 0, "")
