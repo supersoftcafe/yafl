@@ -71,3 +71,5 @@ build/**
 examples/build/**
 
 vscode-yafl/build/
+
+a.out
