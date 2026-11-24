@@ -10,6 +10,7 @@ namespace Bootstrap::Lsp
 import System
 import System::Containers
 import System::IO
+import System::Uri
 
 import Bootstrap::Ast
 import Bootstrap::Driver
@@ -19,35 +20,16 @@ import Bootstrap::Types
 
 # ── URIs ─────────────────────────────────────────────────────────────────────
 
-# The path a `file://` URI names, its %XX escapes decoded; None for any other
-# scheme.
-fun uriPath(uri: String): String|None
-  ret startsWith(uri, "file://")
-    ? percentDecoded(slice(uri, 7, System::length(uri)), 0, "")
-    : None
+# The path a `file://` URI names; None for any other scheme, or text that is no
+# URI.
+fun fileOfUri(uri: String): String|None => match(parseUri(uri))
+  (u: Uri)      => filePath(u)
+  (_: UriError) => None
 
-fun [tail] percentDecoded(s: String, i: Int, out: String): String
-  if i >= System::length(s)
-    ret out
-  let b = System::byteAt(s, i)
-  let hi = hexValue(i + 1 < System::length(s) ? System::byteAt(s, i + 1) : -1i32)
-  let lo = hexValue(i + 2 < System::length(s) ? System::byteAt(s, i + 2) : -1i32)
-  if b != '%'
-    ret percentDecoded(s, i + 1, out + asciiToString(b))
-  ret match(hi, lo)
-    (h: System::Int32, l: System::Int32) => percentDecoded(s, i + 3, out + asciiToString(h * 16i32 + l))
-    ()                                   => percentDecoded(s, i + 1, out + "%")
-
-# The `file://` URI of a path, every byte but a plain one %XX-escaped.
-fun pathUri(path: String): String => "file://" + percentEncoded(path, 0, "")
-
-fun [tail] percentEncoded(s: String, i: Int, out: String): String
-  if i >= System::length(s)
-    ret out
-  let b = System::byteAt(s, i)
-  let plain = isWordByte(b) || b == '/' || b == '.' || b == '-' || b == '~'
-  ret percentEncoded(s, i + 1, plain ? out + asciiToString(b) : out + "%" + hexByte(b, true))
-
+# The `file://` URI of an absolute path.
+fun pathUri(path: String): String => match(fileUri(path))
+  (u: Uri)  => String(u)
+  (_: None) => "file://" + encodePath(path)
 
 # The unit name of the file at `path`: its path relative to `root`; None when
 # it lies outside the root.
@@ -55,12 +37,12 @@ fun unitAt(root: String, path: String): String|None
   ret startsWith(path, root + "/") ? slice(path, System::length(root) + 1, System::length(path)) : None
 
 # The unit name of the document at `uri`.
-fun unitOf(root: String, uri: String): String|None => match(uriPath(uri))
+fun unitOf(root: String, uri: String): String|None => match(fileOfUri(uri))
   (path: String) => unitAt(root, path)
   ()             => None
 
 # A workspace root without the trailing `/` a client may send.
-fun rootOf(uri: String): String|None => match(uriPath(uri))
+fun rootOf(uri: String): String|None => match(fileOfUri(uri))
   (path: String) => endsWith(path, "/") && System::length(path) > 1 ? slice(path, 0, System::length(path) - 1) : path
   ()             => None
 
