@@ -230,7 +230,7 @@ fun searchPaths(extra: List<String>) => concat(concat(map(extra, (p: String) => 
 # missing directory is skipped by discovery, so no existence check here.
 fun installPaths(): List<String> => match(exePath())
   (exe: String) => list1(dirOf(dirOf(exe)) + "/lib/yafl")
-  ()            => List()
+  (_: None)     => List()
 
 fun envPaths() => match(env("YAFL_PATH"))
   (v: String) => map(filter(split(v, ":"), (p) => p != ""), (p: String) => pathStr(p))
@@ -268,7 +268,7 @@ fun availableLibraries(extra: List<String>): LibResult => match(discoverLibrarie
 
 fun devRoot(): String|None => match(exePath())
   (exe: String) => dirOf(exe) + "/.."
-  ()            => None
+  (_: None)     => None
 
 fun withDevLibraries(root: String, found: List<Library>): LibResult
   let owned = fold<Library, List<String>>(found, List(),
