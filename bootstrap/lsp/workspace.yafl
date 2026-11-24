@@ -11,7 +11,10 @@ import System
 import System::Containers
 import System::IO
 
+import Bootstrap::Ast
 import Bootstrap::Driver
+import Bootstrap::Frontend
+import Bootstrap::Types
 
 
 # ── URIs ─────────────────────────────────────────────────────────────────────
@@ -87,3 +90,53 @@ fun withSource(acc: List<LibSource>, root: String, unit: String, open: Dict<Stri
     ()             => match(readWholeFile(root + "/" + unit))
       (t: String)  => append(acc, LibSource(unit, t))
       (e: IOError) => acc
+
+
+# ── a workspace that is a library ────────────────────────────────────────────
+# A folder holding a `yafl.toml` is a library, and is analysed as one (#144): in
+# place of an installed library of the same name, whose sources it holds. The
+# folder's units stay the program the server analyses, so it converges and is
+# checked as the top layer, and the libraries beneath it are the installed ones
+# without three groups: the library the folder shadows, whatever is built on
+# it or on the folder (it could not be analysed beside a different copy), and
+# nothing else. An unnamed library shadows nothing, as in discovery.
+#
+# Read when the libraries are loaded, with them: a manifest changed meanwhile
+# is read the next time the editor starts the server.
+
+# The installed libraries, beneath the folder when the folder is a library.
+fun installedLibraries(root: String|None): LibResult => match(root)
+  (dir: String) => match(readDirLibrary(dir))
+    (own: Library) => beneath(availableLibraries(List()), own)
+    (why: String)  => LibsErr(why)
+    (_: None)      => availableLibraries(List())
+  (_: None)     => availableLibraries(List())
+
+# A library that does not parse is left in: the libraries' own load reports it.
+fun beneath(found: LibResult, own: Library): LibResult => match(found)
+  (e: LibsErr) => e
+  (ok: LibsOk) => match(parseLibraries(ok.libsFound, List()))
+    (pe: LoadErrors)            => ok
+    (layers: List<List<PStmt>>) => zipMap(ok.libsFound, layers, (l: Library, st: List<PStmt>) => Loaded(l, st))
+      |> (loaded) => partition(loaded, (x: Loaded) => isShadowedBy(own, x.ldLib))
+      |> (split) => withoutBuiltOn(split.no,
+                      Set(concat(own.libManifest.libNamespaces,
+                                 flatMap(split.yes, (x: Loaded) => x.ldLib.libManifest.libNamespaces))))
+      |> (kept) => LibsOk(map(kept, (x: Loaded) => x.ldLib))
+
+fun isShadowedBy(own: Library, lib: Library): Bool =>
+  own.libManifest.libName != UNNAMED && lib.libManifest.libName == own.libManifest.libName
+
+# What is left once every library that references a namespace in `gone` is
+# out, and with it the namespaces of each in turn.
+fun withoutBuiltOn(loaded: List<Loaded>, gone: Set<String>): List<Loaded>
+  let split = partition(loaded, (x: Loaded) => referencesAny(x, gone))
+  ret isEmpty(split.yes)
+    ? split.no
+    : withoutBuiltOn(split.no, union(gone, Set(flatMap(split.yes, (x: Loaded) => x.ldLib.libManifest.libNamespaces))))
+
+# A library that declares a namespace in `gone` is not built on it but clashes
+# with it, which the program's check reports.
+fun referencesAny(x: Loaded, gone: Set<String>): Bool =>
+  !any(x.ldLib.libManifest.libNamespaces, (n: String) => contains(gone, n))
+    && any(candidateNamespaces(declaredImports(x.ldStmts), qualifiedRefs(x.ldStmts)), (n: String) => contains(gone, n))

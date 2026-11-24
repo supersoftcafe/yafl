@@ -373,6 +373,55 @@ class TestBootstrapLibraries(TestCase):
             names = [l.manifest.name for l in libraries.discover_libraries([root])]
             self.assertEqual(["unnamed", "unnamed"], names)
 
+    def _lib(self, root: Path, dirname: str, name, namespaces: list[str]):
+        d = root / dirname
+        d.mkdir(parents=True)
+        ns = ", ".join(f'"{n}"' for n in namespaces)
+        (d / "yafl.toml").write_text((f'name = "{name}"\n' if name else "") + f"namespaces = [{ns}]\n")
+        (d / "a.yafl").write_text(f"namespace {namespaces[0]}\n")
+
+    def test_a_named_library_at_a_lower_entry_is_SHADOWED(self):
+        """#144: the same library found again lower on the path is the first's
+        shadow, not a second library claiming its namespaces."""
+        with tempfile.TemporaryDirectory() as hi, tempfile.TemporaryDirectory() as lo:
+            self._lib(Path(hi), "alpha", "alpha", ["Alpha", "Alpha::More"])
+            self._lib(Path(lo), "alpha", "alpha", ["Alpha"])
+            rc, out = self._run("libs", env_extra={"YAFL_PATH": f"{hi}:{lo}"})
+            self.assertEqual(0, rc, out)
+            self.assertEqual("alpha|Alpha,Alpha::More||\n", out)
+            rc, out = self._run("libsfor", "namespace P\nimport Alpha::More\n" + self._PRELUDE,
+                                env_extra={"YAFL_PATH": f"{hi}:{lo}"})
+            self.assertEqual(0, rc, out)
+            self.assertEqual("alpha|Alpha,Alpha::More||\n", out)
+            py = libraries.discover_libraries([Path(hi), Path(lo)])
+            self.assertEqual(["alpha"], [lib.manifest.name for lib in py])
+
+    def test_two_libraries_of_one_name_at_one_entry_still_clash(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._lib(Path(td), "one", "twin", ["Shared"])
+            self._lib(Path(td), "two", "twin", ["Shared"])
+            rc, out = self._run("libsfor", "namespace P\nimport Shared\n" + self._PRELUDE,
+                                env_extra={"YAFL_PATH": td})
+            self.assertEqual(1, rc, out)
+            self.assertIn("two libraries", out)
+
+    def test_different_names_claiming_one_namespace_still_clash_across_entries(self):
+        with tempfile.TemporaryDirectory() as hi, tempfile.TemporaryDirectory() as lo:
+            self._lib(Path(hi), "alpha", "alpha", ["Shared"])
+            self._lib(Path(lo), "beta", "beta", ["Shared"])
+            rc, out = self._run("libsfor", "namespace P\nimport Shared\n" + self._PRELUDE,
+                                env_extra={"YAFL_PATH": f"{hi}:{lo}"})
+            self.assertEqual(1, rc, out)
+            self.assertIn("two libraries", out)
+
+    def test_unnamed_libraries_never_shadow_each_other(self):
+        with tempfile.TemporaryDirectory() as hi, tempfile.TemporaryDirectory() as lo:
+            self._lib(Path(hi), "one", None, ["One"])
+            self._lib(Path(lo), "two", None, ["Two"])
+            rc, out = self._run("libs", env_extra={"YAFL_PATH": f"{hi}:{lo}"})
+            self.assertEqual(0, rc, out)
+            self.assertEqual("unnamed|One||\nunnamed|Two||\n", out)
+
     def test_a_DIRECTORY_named_dot_yl_does_not_kill_discovery(self):
         """_read_library_at tests is_dir() first; the port keyed on the suffix,
         so one oddly-named directory anywhere on the path aborted everything."""

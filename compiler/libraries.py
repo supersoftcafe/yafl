@@ -50,6 +50,11 @@ def unit_name(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
 
+# What a manifest without a `name` is called. Such libraries are not told apart
+# by name, so none shadows another.
+UNNAMED = "unnamed"
+
+
 @dataclass(frozen=True)
 class Manifest:
     """A parsed `yafl.toml`. `headers`/`static_libs` are relative to the manifest."""
@@ -79,7 +84,7 @@ def parse_manifest(text: str, origin: str) -> Manifest:
     if not namespaces:
         raise LibraryError(f"{origin}: a library manifest must declare at least one namespace")
     return Manifest(
-        name=str(data.get("name") or "unnamed"),
+        name=str(data.get("name") or UNNAMED),
         namespaces=namespaces,
         headers=as_str_tuple(data.get("headers"), "headers"),
         static_libs=as_str_tuple(data.get("static_libs"), "static_libs"),
@@ -197,22 +202,33 @@ def _read_library_at(path: Path) -> Library | None:
 
 def discover_libraries(search_paths: list[Path]) -> list[Library]:
     """Find every library on the search path: immediate sub-directories with a
-    manifest, and `*.yl` files. Earlier paths take precedence (first wins) but a
-    later path declaring an already-owned namespace is still an error — uniqueness
-    is enforced by `namespace_index`."""
+    manifest, and `*.yl` files. Earlier paths take precedence: a library NAMED
+    as one already found at an earlier entry is that library's shadow and is
+    dropped whole, so `-L` can put a different copy of an installed library in
+    front of it (#144). Two libraries of one name at the SAME entry, two with
+    different names, and any without a name are not shadows: if they claim one
+    namespace, `namespace_index` rejects them."""
     found: list[Library] = []
     seen_roots: set[Path] = set()
+    shadowed_names: set[str] = set()       # named at an earlier entry
     for base in search_paths:
         if not base.is_dir():
             continue
+        named_here: set[str] = set()
         for entry in sorted(base.iterdir()):
             resolved = entry.resolve()
             if resolved in seen_roots:
                 continue
             lib = _read_library_at(entry)
-            if lib is not None:
-                seen_roots.add(resolved)
-                found.append(lib)
+            if lib is None:
+                continue
+            seen_roots.add(resolved)
+            if lib.manifest.name in shadowed_names:
+                continue
+            if lib.manifest.name != UNNAMED:
+                named_here.add(lib.manifest.name)
+            found.append(lib)
+        shadowed_names |= named_here
     return found
 
 
