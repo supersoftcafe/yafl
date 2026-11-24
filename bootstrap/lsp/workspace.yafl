@@ -28,7 +28,7 @@ fun fileOfUri(uri: String): String|None => match(parseUri(uri))
 
 # The `file://` URI of an absolute path.
 fun pathUri(path: String): String => match(fileUri(path))
-  (u: Uri)  => String(u)
+  (u: Uri)  => show(u)
   (_: None) => "file://" + encodePath(path)
 
 # The unit name of the file at `path`: its path relative to `root`; None when

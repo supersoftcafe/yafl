@@ -10,7 +10,7 @@ import System::Uri
 
 # A parse as one string: the URI back as text, or "err".
 fun _text(s: String): String => match(parseUri(s))
-    (u: Uri)      => String(u)
+    (u: Uri)      => show(u)
     (e: UriError) => "err"
 
 # The position a parse failed at, -1 when it did not fail.
@@ -42,7 +42,7 @@ fun _file(s: String): String => match(parseUri(s))
 
 # The URI text for a path, "-" when the path has none.
 fun _fileUri(p: String): String => match(fileUri(p))
-    (u: Uri)  => String(u)
+    (u: Uri)  => show(u)
     (_: None) => "-"
 
 

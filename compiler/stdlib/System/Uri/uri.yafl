@@ -5,7 +5,7 @@
 #     (u: Uri)      => uriHost(u) ?? ""        # "example.com"
 #
 # A `Uri` is the text of a URI that has been checked, so holding one is proof
-# the text is well formed: `parseUri` is the way to make one, and `String(u)`
+# the text is well formed: `parseUri` is the way to make one, and `show(u)`
 # gives the text back exactly as it was parsed. Nothing is normalised, so two
 # Uris are equal when their text is.
 #
@@ -33,7 +33,11 @@ class [final] Uri(text: String)
 # Why a text is no URI, and the byte offset of the first byte at fault.
 class [final] UriError(message: String, pos: Int)
 
-fun String(u: Uri): String => u.text
+# A Uri shows as its text, exactly as it was parsed (so `$"{u}"` and `format`
+# take one too).
+instance [ambient] Show<Uri>
+  fun show(value: Uri): String
+    ret value.text
 
 
 # ─── Parsing ─────────────────────────────────────────────────────────────
