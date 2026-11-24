@@ -2,140 +2,171 @@
   <img src="docs/images/yafl-banner.png" alt="yafl: yet another functional language" width="100%">
 </p>
 
-# Type inference
+# YAFL: Yet Another Functional Language
 
-The ideal is to be able to write code without specifying the type of parameters, class members
-, function return types etc. Not sure we can get there, but recursive type inference should be
-able to do quite a lot.
+[![Full gate](https://github.com/supersoftcafe/yafl/actions/workflows/full-gate.yml/badge.svg)](https://github.com/supersoftcafe/yafl/actions/workflows/full-gate.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
+**A statically typed functional language that compiles to C. Read-only by default,
+async and parallel without the keywords, with its own concurrent garbage collector.
+The compiler is written in YAFL and compiles itself.**
+
+**Status:** working and self-hosting, under heavy development. The language, the
+standard library and the runtime are all still changing, and there is no 1.0 yet.
+
+## A taste
+
+```yafl
+namespace Test
+
+import System
+
+fun createMessage(name: String): String
+  ret $"Hi {name}, how're you\n"
+
+let message: String = createMessage("Jeff")
+
+fun main(): Int
+  print(message)
+  ret 0
+```
+
+Indentation is the block structure: no braces, no semicolons. Failure is a union type
+that you `match` on, not an exception:
+
+```yafl
+match(divide(10, 2))
+  (_:None)      => print("division by zero\n")
+  (result: Int) => print(result)
+```
+
+Generics are constrained by traits, in the spirit of Rust:
+
+```yafl
+interface Stringable<T>
+  fun toString(t: T): String
+
+fun printValue<T>(value: T): None where Stringable<T>
+    System::print(toString(value))
+    ret None
+```
+
+Real programs live in [`examples/`](examples/): a ray tracer, a Lisp interpreter, a JSON
+pretty-printer, a spell checker and more. Stream pipelines read like this
+(from [`linenumbers.yafl`](examples/linenumbers.yafl)):
+
+```yafl
+let out = writeStream(stdout(), once(text) |> toLines |> prependLineNumbers)
+```
+
+## Why YAFL?
+
+I have read a lot of books and papers on compilers, register allocators and
+optimisation, and worked in many languages (C, C++, Python, Kotlin, C#, Java,
+Modula-2, Miranda, BBC Basic and assorted assembly). YAFL is my attempt to build the
+language I think those experiences add up to.
+
+The bet is this: **you should write plain, side-effect-free code, and the compiler
+and runtime should decide what runs in parallel and what suspends.** No `async` and
+`await`, no threads, no locks in ordinary code.
+
+- **Read-only by default.** Mutability should be hard to ask for. That is better for
+  correctness, and it is also what lets the compiler and the GC be clever.
+- **Implicit async.** Every function is async under the covers unless the compiler
+  can prove it never suspends. The programmer never sees this. (Think of how C#'s
+  `async` spreads through a codebase until you wonder why the keyword exists.)
+- **Implicit parallelism.** Evaluation order is not guaranteed, so independent `let`s
+  and call arguments can be turned into parallel work, guided by a cost estimator.
+- **Linear types for IO.** Files and handles are closed by the type system, with no
+  finalizers and no `IDisposable`.
+- **Unbounded integers.** `Int` never overflows, like Python. Small values are packed
+  into the pointer, so they cost no allocation.
+- **Ambiguity is an error.** If the compiler can't tell what you mean, it says so.
+- **Familiar OO as well.** Classes, interfaces, inheritance and overloading.
+
+## How it works
 
 ```
-fun getAThing(a)
-  ret a + 1
+ .yafl source  →  yaflc  →  C  →  your C compiler  →  native binary
+                  (YAFL)         + YAFL runtime (C)
 ```
 
-In this example we might infer that 'a' is an Int because of the + operation, and then we can
-infer that the return type is Int because the result of + is used on a ret statement.
+- **Compiles to C.** The compiler only needs to know the word size of the target
+  architecture. I started on LLVM IR and moved to C for portability and library
+  integration.
+- **Whole-program build.** One application, one binary, statically linked.
+- **Thread per core.** Worker threads do CPU work only, and all IO is async.
+- **Self-hosting.** `yaflc` is written in YAFL. A Python compiler in `compiler/`
+  bootstraps it, and the YAFL version must reproduce its own generated C byte for
+  byte at every optimisation level.
+- **Tooling.** `yaflc --lsp` is a language server, and there is a VS Code extension in
+  [`vscode-yafl/`](vscode-yafl/).
 
-# YAFL (Yet Another Functional Language)
+Deeper reading: [Architecture](docs/architecture.md) · [Language Guide](docs/guide.md) ·
+[Reference](docs/reference.md) · [Roadmap](docs/roadmap.md) · [all docs](docs/README.md)
 
-I've read about so many programming languages and worked in a few of them. C, C++, Python, Kotlin,
-C#, Java, Modula-2, Miranda, BBC Basic, Visual Basic, various forms of assembly language. I love
-watching presentations about Rust and Haskell on t'internet but haven't had a chance to dabble yet.
-I have read so many books and papers on compiler design, on register allocators, on optimisation
-strategies.
+## Garbage collector
 
-What I am trying to say here, is that I love this stuff, and that I have formed my own opinion
-about what a good programming language should be. This project is me trying to bring it to life.
+A concurrent, compacting, generational collector.
 
-# AI/LLMs
+- **No GC thread.** The work happens on the worker threads, as a side-quest of
+  allocation and of checkpoints that the compiler injects into back edges of
+  generated code.
+- **Precise.** Every heap object has a descriptor saying exactly where its pointers are.
+  Pointer fields with any low bit set are skipped, which is how small values are packed
+  in.
+- **Generational.** Old pages stay old, with a card per object to record old-to-young
+  pointers. Minor cycles trace the young pages and the cards, and major cycles trace
+  everything. See [generations-design.md](docs/generations-design.md).
+- **Compaction of read-only objects.** An object that is fully initialised before the
+  next allocation or checkpoint can be moved safely, because during a move two copies
+  may briefly exist while pointers are rewritten.
 
-I have re-started this project many times over the years, switching the language I used to build
-the compiler, re-doing the parser, and trying to belanance work, family and YAFL. It was becoming
-an issue and I really wanted to share this work with somebody, but there was nobody. Until Claude
-came along. Claude is my junior developer buddy. I can point Claude at some work, and let Claude
-get on with it whilst I have family time. It has accelerated the development of this project
-tenfold at least, but at a cost. I have less control over the output quality. I still have control
-but that takes time, so I find myself compromising and just merging, with a mental promise to
-review/fix regressions later.
+How the collector works is in [docs/internals.md](docs/internals.md).
 
-Before I started using Claude I had the GC complete, the parser was quite mature and robust but
-language features were getting harder and harder to introduce to the compiler. Plus tests were
-thin on the ground. This is where I started using Claude, and slowly trusting it bit-by-bit to
-do small constrained jobs, and slowly increasing the scope of those jobs as my trust improved.
+## IO
 
-Recently I have been able to leave it dealing with some quite complex refactors, or adding a
-big feature, and with good guidance it does a good job. Then I review, give review feedback
-and it fixes those issues. It's working quite well. Case-in-point the async IO module was
-specified by me, for simplicity and portability above all other things, and implemented by
-Claude.
+Async IO currently goes through the C stdio API on a thread pool separate from the
+workers. It is simple and portable, at some cost in overhead. Later I want
+platform-specific modules such as `io_uring` on Linux, which would also map well onto
+an interrupt-driven model on embedded devices.
 
-Does this mean that I'll accept AI PRs. No. Only human PRs. My philosophy is, if you aren't
-willing to take personal responsibility for changes, then I can't trust you. It's the same
-approach my employer is taking, each individual is free to use AI, but the PR is done by a human
-who takes personal responsibility for it.
+## Status and known limits
 
-# Key language features
+I would rather you hear these from me:
 
-- Read-only by default. Rust certainly gets this right, a highly functional language in my
-  opinion. It should be hard to declare something as mutable not just for correctness, but also
-  because it has consequences for efficiency.
-- Code layout as syntax. A lot like python, indentation means something, it means that what follows
-  is a block that belongs to the first statement. No semi-colons, no curley braces, just tidy code.
-- Ambiguity is an error. You can declare what you like. You can even declare the same function with
-  the same parameters multiple times, and the compiler will not complain. If you try to call that
-  function, then you'll have problems. In nearly all evaluations the compiler treats any kind of
-  referential ambiguity as an error.
-- Functions are data. You can reference a function by name, and what is returned is a function. You
-  can pass that around, store it, and call it later. Most modern popular languages do this.
-- There is no guarentee of the order of evaluation. Left to right, right to left. A sequence of
-  lets could be swapped around, or even run in parallel. There is a basic assumption that nothing
-  has side effects and it is safe to re-order the code whilst respecting chained dependencies. No
-  concept like Haskell has of the IO monad. If code is written that has side effects, the programmer
-  must be aware and must code defensively. For the vast majority of non-library code, this should
-  not be a concern.
-- Linear types enforce sequential logic and cleanup for IO.
-- Integers have no min/max. They are unbounded, similar to python.
-- Traits. Borrowed from Rust, this is a brilliant way of thinking about generics, much better
-  than the Java/Kotlin/C# approaches. Declare a local generic name TVal, and then express that it
-  must support numeric functions, or certain IO functions, or maybe functions that can stringify
-  it. Very powerful.
-- OO. We still have the OO concepts from C#/Java. Classes, interfaces, inheritance, overloading.
+- Type annotations can be inferred, but inference of the parameter types of
+  global declarations is not entirely reliable and should not be relied on.
+- The self-hosted compiler is slow to build. A -O3 self-compile takes around 250
+  seconds on an i5-8500T.
+- The standard library is small (but growing), and the language will change
+  underneath you.
 
-# Key runtime features
+## Built with an AI junior developer
 
-- All functions are async. Think about C# and the async keyword, it spreads like a virus throughout
-  a code-base, until you're wondering why the keyword even exists. In YAFL everything is async
-  under the covers unless the compiler can prove otherwise. The programmer is ignorant to this fact.
-- Any tuple creation could be transformed into parallel execution by the compiler. All function
-  calls have a tuple construction for their parameters. Any sequence of lets might be transformedd
-  into a tuple construction by the compiler. It is free to make these decisions for any reason, but
-  will take into account a cost/benefit estimator.
-- Worker threads only do CPU work. All IO is async.
-- Heap is GC managed. There is no concept of a finalizer or of the C# IDisposable. This need is
-  covered by linear types at the language level.
-- Integers and strings are heap managed, unless they are small enough to be packed into a pointer
-  sized object. The runtime uses this, and with some GC help, to avoid heap allocations.
+I have restarted this project many times over the years, changing the implementation
+language and redoing the parser while trying to balance work, family and YAFL. I
+wanted to share it with somebody, but there was nobody, until Claude came along.
 
-# Garbage Collector
+Claude is my junior developer buddy. I point it at some work and let it get on while I
+have family time. It has accelerated the project tenfold at least, at a cost: I have
+less control over output quality. I still have control, but exercising it takes time,
+so I sometimes compromise and merge, with a mental promise to review and fix
+regressions later.
 
-This is a concurrent compacting mark sweep garbage collector. There is no generational optimisation
-here, so it just walks the entire heap every time. For now I need something that works without
-pausing the runtime, and this is it.
+Before I used Claude, the GC was complete and the parser was mature, but adding
+language features was getting harder and tests were thin. I started with small,
+constrained jobs and extended the scope as my trust grew. Now I can leave it with
+sizeable refactors or a big feature, and with good guidance it does a good job. I
+review, give feedback, and it fixes the issues. The async IO module is a good example:
+I specified it, favouring simplicity and portability above all else, and Claude
+implemented it.
 
-There is no GC thread. All work happens on the main worker threads as a side-quest of any heap
-allocation calls, and of checkpoint code that is injected into the generated code from the YAFL
-compiler.
+**Contributing:** human PRs only. If you aren't willing to take personal
+responsibility for a change, I can't trust it. Use AI if you like, but a person puts
+their name to the PR. It's the same approach my employer takes.
 
-There is a strong assumption that the worker threads are running YAFL code, which is known to
-yield often. That matters because the start/end of a GC is marked by all worker threads passing
-a checkpoint.
-
-All GC managed heap must be comprised of well behaved well structured YAFL objects, with a
-descriptor that tells GC exactly where to find pointers. Not things that might be pointers, but
-fields in the heap that are definately pointers to other well structured objects. However, there
-is a global rule that allows the YAFL runtime to pack other data into pointer fields. If any of
-the lower bits are not zero, then the GC will skip the pointer.
-
-Compaction only works on read-only objects. This is defined as an object that is initialised only
-and where that initialisation is completed before any other call to a heap allocation function
-or to a check-point function. This is the window of opportunity where the runtime can be confident
-that this newly allocated object is not being compacted. During compaction two copies of a read-only
-object may exist at the same time whilst GC is re-writing referencing pointers. This keeps the
-runtime safe and happy. At the end of GC, after the all threads have gone through at least one
-cycle of returning to the outer event loop, GC is in a known safe state where none of the old heap
-is referenced and then releases those pages. This is yet another assumption that we are running
-with the YAFL compiler, where everything is read-only by default.
-
-# IO
-
-Eventually I want IO to have platform optimised modules, but that's not an early requirement.
-Right now async IO uses the C stdio API as a standard platform agnostic way of doing IO and
-a thread pool separate from worker threads to do the actual IO. It's simple, it adds overhead
-but it gets the ideas in there early. Later we can use io_uring on Linux, and whatever platform
-specific accelarated APIs exist when porting. On embedded devices this then also maps nicely
-into an interrupt driven model.
-
-# Build and use
+## Build and use
 
 Requirements.
 * Python 3.12+ (the compiler uses PEP 695 generics and `tomllib`)
@@ -146,8 +177,11 @@ Requirements.
 The compiler is `yaflc`, written in YAFL. The Python compiler in `compiler/`
 builds it and is for local use only: it is not installed. Installing also lays
 down the `System` library as `${CMAKE_INSTALL_PREFIX}/lib/yafl/system.yl`, which
-`yaflc` discovers automatically (override the search path with the `YAFL_PATH`
-environment variable).
+`yaflc` finds from its own real path, however it was started. Libraries are
+searched for in the `-L` directories, then those in the `YAFL_PATH` environment
+variable, then the install. A library whose name was found at an earlier entry
+shadows the same-named one at a later entry, so `-L` can put a work-in-progress
+`System` in front of the installed one.
 
 Build and install `yaflc` and the `System` library from the repository root:
 ```
@@ -159,12 +193,11 @@ sudo cmake --install build
 The `yaflc` target is the Python compiler building `yaflc`, which takes a while
 the first time. This installs `yaflc` to `<prefix>/bin` and the `System` library
 to `<prefix>/lib/yafl/system.yl`; nothing is written to `<prefix>/include` or the
-`<prefix>/lib` root. On Windows, drop `sudo` and pick a writable
-`-DCMAKE_INSTALL_PREFIX`.
+`<prefix>/lib` root. The build hasn't been tested on Windows or MacOS yet.
 
-## Running the tests
+### Running the tests
 
-### The full protocol, one command
+#### The full protocol, one command
 
 `full_protocol.py` is the correctness gate — build, the CTest gate, and every
 example compiled and run against a fixture — printing one line per stage:
@@ -186,7 +219,7 @@ compiles its own sources at its level and must reproduce that C byte for byte.
 Each run tees its output to `build/protocol-runs/<timestamp>/`. It is also what
 CI runs (`.github/workflows/full-gate.yml`).
 
-There are two speeds, and the slow one is opt-in. By default it is the FAST
+There are two levels, and the slow but thorough one is opt-in. By default it is the FAST
 path, for pull requests and the middle of a sequence of changes: -O3 only —
 the port, the `[test]` folders and the self-compile — with no Python suite and
 no examples. It also reuses the Python build of the port (`build/bootstrap-cache/`) while the
@@ -210,13 +243,13 @@ python3 full_protocol.py --full --levels 0,1,2 --suite-shard off
 python3 full_protocol.py --full --levels none --suite-shard 2/3
 ```
 
-### Speed
+#### Speed
 
 The speed figure is the self-compile's time, which every run reports on its
-ctest line (`self_compile_o3 570s`): the port compiling its own sources at its
+ctest line (`self_compile_o3 210s`): the port compiling its own sources at its
 level, byte-identical to the C the Python compiler emitted for it.
 
-### The test set alone
+#### The test set alone
 
 The whole test set is wired into CTest. From a configured build, `--target
 check` builds everything (so the runtime archive and C test binaries exist) and
@@ -238,8 +271,8 @@ Behaviour tests come in two kinds:
   default `port`); the tests that reach into `pyast`/`lowering`/… are unit
   tests of the Python implementation itself.
 
-To run the Python suite by hand from `compiler/`, point it at a built port and
-runtime archive:
+To run the Python suite by hand from `compiler/` (it needs `pip install
+unittest-parallel`), point it at a built port and runtime archive:
 ```
 cd compiler
 YAFL_BOOTSTRAP_BIN=../build/yaflc YAFL_LIBYAFL_A=../build/yafllib/libyafl.a \
@@ -264,7 +297,7 @@ yaflc -c test.c helloWorld.yafl
 more test.c
 ```
 
-## Editor support
+### Editor support
 
 The compiler is a language server: `yaflc --lsp` speaks the Language Server
 Protocol on stdin and stdout, giving an editor every error and warning as you
@@ -289,6 +322,4 @@ parent directory with `-DYAFL_VSCODE_EXTENSIONS_DIR=...`); run
 later edits take effect on the next reload with no rebuild. Other targets:
 `uninstall-extension`, and `package-vsix` to build a `.vsix` via
 `npx @vscode/vsce`. See `vscode-yafl/README.md` for details.
-
-
 

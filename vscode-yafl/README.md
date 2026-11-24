@@ -24,7 +24,10 @@ Language support for [YAFL](../README.md) source files (`.yafl`):
 
 The workspace folder is the program: every `.yafl` under it, as
 `yaflc <folder>` compiles it. The installed libraries are found as a compile
-finds them (`YAFL_PATH`, then the install's own).
+finds them (`YAFL_PATH`, then the install's own). A folder with a `yafl.toml`
+is a library: open it to edit the library, and it is analysed as that library
+with the installed copy of the same name out of the way (see
+[the language server](../docs/language-server.md)).
 
 ## Build and install
 

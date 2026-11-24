@@ -1,22 +1,31 @@
 # Roadmap
 
-This document tracks language features and their status — planned items, and recently-completed ones marked **Implemented**. The current state of the language is also described in [Language Design](lang_info.md).
+This document tracks language features and their status: planned items, and completed ones marked **Implemented**. The language itself is described in the [Language Guide](guide.md) and the [Language Reference](reference.md).
 
 ## Control flow statements
 
-Currently, YAFL supports the ternary expression (`condition ? a : b`) for conditional logic. Full control flow statements are planned:
+`if`, `else if` and `else` are implemented, as statements. A branch does what
+its block says, including `ret`, which leaves the function. A function body
+still has to end with a `ret` of its own: an `if` / `else` whose branches all
+return does not count as returning.
 
-- `if/else` blocks as statement-level constructs
+```
+fun sign(n: Int): String
+    if n < 0
+        ret "negative"
+    else if n == 0
+        ret "zero"
+    ret "positive"
+```
+
+Loops are planned. For now iteration is recursion (`[tail]` keeps it in constant
+space) or a fold over a container.
+
 - `for` loops for bounded iteration
 - `break` for conditional early exit from loops
 
 ```
 # Planned syntax
-if x > 0
-    doSomething(x)
-else
-    doSomethingElse()
-
 for item in collection
     process(item)
 ```
@@ -65,15 +74,17 @@ remains future work.
 
 ## Standard input
 
-Implemented at the byte level through the `System::IO` module — the `json_pretty`
-example reads the whole of stdin. A higher-level line reader is still a
-nice-to-have (tracked in `TODO.md`).
+Implemented through the `System::IO` module: `readAll` reads a whole handle, and
+`System::Stream` has stream stages over the text, such as `toLines`. The
+`json_pretty` and `linenumbers` examples read stdin this way.
 
 ## List\<T\>
 
-Implemented (`stdlib/list.yafl`): a persistent list with `prepend`/`append`,
+Implemented (`stdlib/System/Containers/list.yafl`): a persistent list with `prepend`/`append`,
 `map`/`filter`/`fold`, `reverse`, `findIndex`, `partition`, `groupBy`, etc.
 (Random indexed access was intentionally removed — use `Array<T>` for that.)
+The other containers are `Array`, `Dict`, `Set`, `Bag` and `RRBTree`; see
+[Containers](containers.md) for what each is for.
 
 ## Arrays
 
@@ -94,35 +105,55 @@ features should lean toward this rather than against it.
 
 ## Build, libraries & packaging
 
-Implemented. Projects compile against discoverable libraries (manifest + `.yl`
-packages), the runtime is static-only, and `yafl` produces standalone binaries.
-The full design and status are in [Build & packaging](build-and-packaging.md).
+Implemented. Projects compile against discoverable libraries (a `yafl.toml`
+manifest, as a folder or packaged as a `.yl`), the runtime is static-only, and
+`yaflc` produces standalone binaries. Libraries are searched for in the `-L`
+directories, then `YAFL_PATH`, then the install; one named as a library at an
+earlier entry shadows it. The design and each decision are in
+[Port library discovery](port-library-discovery-review.md).
 
 ## Linear types
 
-A `[linear]` annotation will allow values to be declared as single-use — the compiler will enforce at compile time that a linear value is consumed exactly once on every code path. This is the primary mechanism for preventing resource leaks (unclosed files, unreleased locks, etc.) without a garbage collector.
+Implemented. A `[linear]` class is a value the compiler requires to be consumed
+exactly once on every code path, which is how a resource such as a file is
+released without a finaliser. `System::IO::IO` is one:
 
 ```
-# Planned syntax
-class [linear] FileHandle(path: String)
-
-fun openFile(path: String): [linear] FileHandle
-fun closeFile(handle: [linear] FileHandle): None
+class [linear,final] IO(_io: _IO)
 ```
+
+A linear binding that is never used is released by an inserted `drop` when a
+`Drop` instance for its type is in scope (see `Drop` in
+`stdlib/System/traits.yafl`).
 
 ## IO sequencing
 
-A `with` construct is planned as syntactic sugar for chaining sequential IO operations, eliminating the need to thread handles manually through each step:
-
-```
-# Planned syntax
-with(openFile("data.txt"))
-    line = read_line()
-    process(line)
-```
+Implemented as the `?>` bind: `pair ?> f` calls `f(io, v)` when `pair` is a
+successful `(io, v)`, and otherwise passes the error on with the same `io`. It
+is specific to IO for now; a bind over any monad is deferred. (`with` is
+spoken for: it is the copy-with-replacements expression, see
+[The `with` expression](preserving-rewrites-design.md).)
 
 ## JSON parser (showcase)
 
-Implemented — milestone reached. `stdlib/json.yafl` is a full streaming JSON
-parser, and `examples/json_pretty` reads JSON from stdin and pretty-prints it,
-exercising recursive union types, string inspection, stdin, and `List<T>`.
+Implemented — milestone reached. `System::Json` (`stdlib/System/Json/json.yafl`)
+parses and prints JSON, as a value or as a stream, and `examples/json_pretty`
+reads JSON from stdin and pretty-prints it, exercising recursive union types,
+string inspection, stdin, and `List<T>`.
+
+## Tooling
+
+Implemented:
+
+- `yaflc --test` builds a program's `[test]` functions into a test binary
+  ([`[test]`](testing-proposal.md)).
+- `yaflc --format` puts source in the one layout ([Source layout](style.md)).
+- `yaflc --lsp` is a language server, with a VS Code client in `vscode-yafl/`
+  ([Language server](language-server.md)).
+- `yaflc --profile` ([Profiling](profiling-design.md)).
+
+## Standard library additions
+
+Implemented: `System::Args` (command lines), `System::Uri` (checked URIs,
+percent-encoding and `file:` URIs), `System::Log`, `System::Json`,
+`System::memoize`, and hex-digit helpers in `System`.

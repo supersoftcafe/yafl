@@ -5,6 +5,10 @@ replaces demotion and dirty-old pages. The thread-local nursery was removed
 the same day: a dwell between global cycles took most of what it gave
 ([local-nursery-prototype.md](local-nursery-prototype.md), status note).
 
+Marking by pages and the headroom rule for majors came later (#134) and are
+described under "Marking by pages and pacing". The cards and stamps are
+unchanged by them.
+
 ## The shape
 
 A page is YOUNG until it promotes, then OLD for good. Old pages leave the
@@ -93,8 +97,9 @@ promotion. A later prune tries again.
 ## Majors
 
 A major runs once the old generation has grown to 125% of its size after the
-last major (`GC_MAJOR_GROWTH_PERCENT`, `YAFL_GC_MAJOR_GROWTH`), under heap
-pressure, or on request. It takes `old_pages` and `carded_pages` into its
+last major (`GC_MAJOR_GROWTH_PERCENT`, `YAFL_GC_MAJOR_GROWTH`), once it has
+grown by more than the heap has free, or on request (see "Marking by pages and
+pacing", below, for why the second rule replaced "past half full"). It takes `old_pages` and `carded_pages` into its
 rotation and traces everything. At its prune each old page gives up its dead objects (and their
 cards) and goes straight back to old, to the list its cards decide. Deaths on
 an old page count as a promotion MISTAKE: the page promoted while still
@@ -188,6 +193,48 @@ The benchmark set (`ylisp`, `raytracer`, `yaflc`, `yspell`, `json_pretty`,
 `pin_append` chain/mixed, `memo_bench` insert/parins/churn) was within
 run-to-run noise of the runtime before cards, at every trigger setting; its
 programs rarely run a major.
+
+## Marking by pages and pacing
+
+Added by #134, after the cards. Both change how a cycle gets its work, not what
+the generations mean.
+
+**Only marked pages are scanned.** A page joins the scan list at its first mark,
+and a page never marked goes straight to prune; before, every page in the cycle
+was scanned. Each page carries a stamp, written once at birth, that places it in
+the current cycle (queued, born outside it, or white), so the cycle's lists
+form without walking its pages: the first mark of a white page moves the stamp
+with one compare-and-swap, and only the winner hands the page over, by pushing
+it onto a lock-free stack that the executors take whole. A mark on a page born
+this cycle does nothing, because such a page is implicitly live. A mark from any
+source hands over the same way: the roots, a card, a black allocation, a scanner
+or a mutator's barrier. The protocol, including how marking opens and closes
+without losing a late barrier, is the `THE HAND-OFF` comment in `object.c`.
+
+**Back-edges are scanned by the claim that finds them.** A mark on a page
+already scanned this cycle is a back-edge. The claim that finds it scans it on
+the spot, up to 4096 objects per page claimed (`GC_BACKEDGE_BUDGET`); past that
+the page goes back on the list once. A prepended list runs backwards in memory,
+so claimed oldest first, every link of one was a back-edge, and one executor
+followed the whole chain while the others allocated: that was the peak memory of
+the 6G self-compile.
+
+**Majors by headroom.** The old rule, a major on every cycle once the heap was
+half full, made every cycle at 1g a full trace (a quarter of its wall time).
+A major now runs on growth of the old generation, or growth beyond the free
+pages, or a request, and the allocator's reserve gate asks for one before it
+gives up, since old data that died without the old generation growing triggers
+neither rule.
+
+**The dwell is 4096 pages.** Marking by pages ends a cycle sooner, so it runs
+about 37% more of them at the old dwell of 1024; the dwell is the dial between
+CPU and memory. At 4096, against `main` at the same dwell and scan rate, on the
+6G self-compile: elapsed level, CPU +1 to 2%, peak RSS 17 to 29% less (workhorse,
+local and aarch64 runs); at equal RSS, 2 to 5% less CPU. At 1g `main` aborted
+out of memory, and this completes in about 200 s.
+
+The page allocator's density rule, from the same change, is described in
+[internals.md](internals.md).
 
 ## Found on the way: where the current thread's scan starts
 

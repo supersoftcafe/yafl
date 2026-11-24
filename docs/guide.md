@@ -101,6 +101,21 @@ fun describe(x: System::String): System::String
     ret "a string"
 ```
 
+### If statements
+
+Besides the ternary expression, `if` is a statement. It runs its indented block when the condition holds, and `else if` and `else` follow it at the same indent:
+
+```yafl
+fun sign(n: System::Int): System::String
+    if n < 0
+        ret "negative"
+    else if n == 0
+        ret "zero"
+    ret "positive"
+```
+
+A `ret` inside a branch leaves the function, so the usual use is an early exit. A function body still ends with a `ret` of its own: an `if` and `else` that both return do not count as returning. Where a value is wanted from a condition, use the ternary expression below.
+
 ## Types
 
 ### Built-in types
@@ -497,20 +512,31 @@ IO functions live in the `System::IO` sub-namespace. Import with `import System:
 System::IO::stdin(): System::IO::IO
 System::IO::stdout(): System::IO::IO
 System::IO::stderr(): System::IO::IO
-System::IO::open_read(path: System::String): System::IO::IO|System::Int
-System::IO::open_write(path: System::String, truncate: System::Bool): System::IO::IO|System::Int
-System::IO::create(path: System::String): System::IO::IO|System::Int
+System::IO::open_read(path: System::String): System::IO::IO|System::IO::IOError
+System::IO::open_write(path: System::String, truncate: System::Bool): System::IO::IO|System::IO::IOError
+System::IO::create(path: System::String): System::IO::IO|System::IO::IOError
 ```
 
-On failure the constructor functions return a negative `Int` error code rather than an `IO` handle. The `IO` class has three methods:
+A failure is an `IOError` value (`FileNotFoundError`, `PermissionDeniedError` and so on) in place of the handle, and you `match` on it like any other union. The `IO` class is `[linear]`: the compiler requires a handle to be used exactly once. So a method that leaves it open hands it back, together with its result, in a tuple:
 
 ```yafl
-read(length: System::Int): System::String|System::Int|System::None
-write(data: System::String): System::Int|System::None
-close(): System::Int|System::None
+read(length: System::Int): (io: IO, v: System::String|IOError)
+write(data: System::String): (io: IO, v: System::Int|IOError)
+close(): IOError|System::None        # consumes the handle
 ```
 
-`None` is returned at end of file. An `Int` return value indicates a negative error code.
+`v` is an `EOFError` when a read finds the end of input. Reading a whole input and closing it looks like this:
+
+```yafl
+fun slurp(): String|IOError
+  let r = readAll(stdin())
+  let closed = r.io.close()
+  ret match(closed)
+    (e: IOError) => e
+    (_: None)    => r.v
+```
+
+The `?>` operator chains such steps: `pair ?> f` calls `f(io, v)` when `pair` is a successful `(io, v)`, and passes the error on otherwise. `withFile(open_read(path), use)` opens, runs `use` and closes the handle on every path, and a handle that is never used is closed when its scope ends. [`examples/linenumbers.yafl`](../examples/linenumbers.yafl) shows a complete program.
 
 ### Command-line arguments
 
