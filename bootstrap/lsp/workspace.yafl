@@ -32,15 +32,13 @@ fun [tail] percentDecoded(s: String, i: Int, out: String): String
   let b = System::byteAt(s, i)
   let hi = hexValue(i + 1 < System::length(s) ? System::byteAt(s, i + 1) : -1i32)
   let lo = hexValue(i + 2 < System::length(s) ? System::byteAt(s, i + 2) : -1i32)
-  ret b == '%' && hi >= 0i32 && lo >= 0i32
-    ? percentDecoded(s, i + 3, out + asciiToString(hi * 16i32 + lo))
+  ret b == '%'
+    ? match(hi)
+        (h: System::Int32) => match(lo)
+          (l: System::Int32) => percentDecoded(s, i + 3, out + asciiToString(h * 16i32 + l))
+          (_: None)          => percentDecoded(s, i + 1, out + asciiToString(b))
+        (_: None) => percentDecoded(s, i + 1, out + asciiToString(b))
     : percentDecoded(s, i + 1, out + asciiToString(b))
-
-fun hexValue(b: System::Int32): System::Int32
-  ret b >= '0' && b <= '9' ? b - '0'
-    : b >= 'a' && b <= 'f' ? b - 'a' + 10i32
-    : b >= 'A' && b <= 'F' ? b - 'A' + 10i32
-    : -1i32
 
 # The `file://` URI of a path, every byte but a plain one %XX-escaped.
 fun pathUri(path: String): String => "file://" + percentEncoded(path, 0, "")
@@ -50,12 +48,8 @@ fun [tail] percentEncoded(s: String, i: Int, out: String): String
     ret out
   let b = System::byteAt(s, i)
   let plain = isWordByte(b) || b == '/' || b == '.' || b == '-' || b == '~'
-  ret percentEncoded(s, i + 1, plain ? out + asciiToString(b) : out + "%" + hexByte(b))
+  ret percentEncoded(s, i + 1, plain ? out + asciiToString(b) : out + "%" + hexByte(b, true))
 
-fun hexByte(b: System::Int32): String
-  ret asciiToString(hexDigit(b / 16i32)) + asciiToString(hexDigit(b % 16i32))
-
-fun hexDigit(n: System::Int32): System::Int32 => n < 10i32 ? '0' + n : 'A' + n - 10i32
 
 # The unit name of the file at `path`: its path relative to `root`; None when
 # it lies outside the root.

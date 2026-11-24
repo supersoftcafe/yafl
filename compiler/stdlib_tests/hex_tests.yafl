@@ -1,0 +1,70 @@
+# Tests for the hex-digit helpers (stdlib/hex.yafl).
+# See Containers/list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::HexTests
+
+import System
+import System::Test
+
+
+# The value of a digit as an Int, -1 for None, so a test asserts on one number.
+fun _value(b: Int32): Int => match(hexValue(b))
+    (v: Int32) => Int(v)
+    (_: None)  => -1
+
+# The digit for n as a one-byte string, "-" for None.
+fun _digit(n: Int32, upper: Bool): String => match(hexDigit(n, upper))
+    (d: Int32) => asciiToString(d)
+    (_: None)  => "-"
+
+fun [test("hexValue reads digits and both cases")] valueOfDigits(): None|TestFailure
+    ret assertEqInt(_value('0'), 0, "0")
+     ?? assertEqInt(_value('9'), 9, "9")
+     ?? assertEqInt(_value('a'), 10, "a")
+     ?? assertEqInt(_value('f'), 15, "f")
+     ?? assertEqInt(_value('A'), 10, "A")
+     ?? assertEqInt(_value('F'), 15, "F")
+
+fun [test("hexValue refuses other bytes")] valueOfOthers(): None|TestFailure
+    ret assertEqInt(_value('g'), -1, "g")
+     ?? assertEqInt(_value('G'), -1, "G")
+     ?? assertEqInt(_value('/'), -1, "just below 0")
+     ?? assertEqInt(_value(':'), -1, "just above 9")
+     ?? assertEqInt(_value('`'), -1, "just below a")
+     ?? assertEqInt(_value('@'), -1, "just below A")
+     ?? assertEqInt(_value(-1i32), -1, "negative")
+     ?? assertEqInt(_value(256i32), -1, "beyond a byte")
+
+fun [test("hexDigit gives a digit for 0 to 15")] digitOfValues(): None|TestFailure
+    ret assertEqStr(_digit(0i32, false), "0", "0")
+     ?? assertEqStr(_digit(9i32, false), "9", "9")
+     ?? assertEqStr(_digit(10i32, false), "a", "10 lower")
+     ?? assertEqStr(_digit(15i32, false), "f", "15 lower")
+     ?? assertEqStr(_digit(10i32, true), "A", "10 upper")
+     ?? assertEqStr(_digit(15i32, true), "F", "15 upper")
+     ?? assertEqStr(_digit(7i32, true), "7", "7 upper")
+
+fun [test("hexDigit refuses values outside 0 to 15")] digitOfOthers(): None|TestFailure
+    ret assertEqStr(_digit(-1i32, true), "-", "negative")
+     ?? assertEqStr(_digit(16i32, true), "-", "16")
+     ?? assertEqStr(_digit(16i32, false), "-", "16 lower")
+
+fun [test("hexByte is two digits")] byteAsDigits(): None|TestFailure
+    ret assertEqStr(hexByte(0i32, false), "00", "zero")
+     ?? assertEqStr(hexByte(31i32, false), "1f", "lower")
+     ?? assertEqStr(hexByte(31i32, true), "1F", "upper")
+     ?? assertEqStr(hexByte(255i32, true), "FF", "255")
+     ?? assertEqStr(hexByte(0xA5i32, false), "a5", "A5")
+
+fun [test("hexByte keeps the low eight bits")] byteLowBits(): None|TestFailure
+    ret assertEqStr(hexByte(256i32, true), "00", "256")
+     ?? assertEqStr(hexByte(0x1234i32, true), "34", "0x1234")
+     ?? assertEqStr(hexByte(-1i32, true), "FF", "-1")
+
+fun [test("every byte round trips")] roundTrip(): None|TestFailure
+    fun [tail] go(b: Int32): None|TestFailure
+        let s = hexByte(b, b % 2i32 == 0i32)
+        let hi = _value(System::byteAt(s, 0))
+        let lo = _value(System::byteAt(s, 1))
+        ret hi * 16 + lo == Int(b) ? (b == 255i32 ? None : go(b + 1i32)) : assertEqInt(hi * 16 + lo, Int(b), "round trip of a byte")
+    ret go(0i32)
