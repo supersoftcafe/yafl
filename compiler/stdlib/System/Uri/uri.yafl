@@ -1,0 +1,283 @@
+# System::Uri — a URI (RFC 3986): parse one, take it apart, write it back.
+#
+#   match(parseUri("http://user@example.com:8042/over/there?name=ferret#nose"))
+#     (e: UriError) => fail(e.message)
+#     (u: Uri)      => uriHost(u) ?? ""        # "example.com"
+#
+# A `Uri` is the text of a URI that has been checked, so holding one is proof
+# the text is well formed: `parseUri` is the way to make one, and `show(u)`
+# gives the text back exactly as it was parsed. Nothing is normalised, so two
+# Uris are equal when their text is.
+#
+# What is accepted is an absolute URI: a scheme, then `//authority` and a path,
+# or a path alone, then an optional `?query` and `#fragment`. Every byte must
+# be one the RFC allows in its place, and every `%` must begin a `%XX` escape;
+# a space or a byte above 127 is refused, so percent-encode them first. The
+# checks are by the RFC's character sets and are lenient on shape: a bracketed
+# host is taken as it stands, without the IPv6 grammar, and a port is digits.
+#
+# The components come back as written: `percentDecode` turns an escaped one
+# into text. `fileUri` and `filePath` map between a file's path and its
+# `file:` URI, POSIX, Windows drive and UNC forms alike.
+
+namespace System::Uri
+
+import System
+
+
+# ─── The type ────────────────────────────────────────────────────────────
+
+# A URI. `parseUri` is the way to make one: the text it holds is then checked.
+class [final] Uri(text: String)
+
+# Why a text is no URI, and the byte offset of the first byte at fault.
+class [final] UriError(message: String, pos: Int)
+
+# A Uri shows as its text, exactly as it was parsed (so `$"{u}"` and `format`
+# take one too).
+instance [ambient] Show<Uri>
+  fun show(value: Uri): String
+    ret value.text
+
+
+# ─── Parsing ─────────────────────────────────────────────────────────────
+
+fun parseUri(s: String): Uri|UriError
+  let l: _Layout = _layout(s)
+  if l.schemeEnd < 0
+    ret UriError("a URI starts with a scheme and a colon", 0)
+  ret (_checkScheme(s, l) ?? _checkAuthority(s, l) ?? _checkPath(s, l) ?? _checkQuery(s, l) ?? _checkFragment(s, l)) ?? Uri(s)
+
+
+# ─── The components ──────────────────────────────────────────────────────
+
+fun uriScheme(u: Uri): String
+  ret System::slice(u.text, 0, _layout(u.text).schemeEnd)
+
+# The part before `@` in the authority; None when there is none.
+fun uriUserinfo(u: Uri): String|None
+  let l: _Layout = _layout(u.text)
+  ret l.userEnd >= 0 ? System::slice(u.text, l.authStart, l.userEnd) : None
+
+# The host, brackets and all for an IP literal. None when there is no
+# authority; empty for `file:///x`.
+fun uriHost(u: Uri): String|None
+  let l: _Layout = _layout(u.text)
+  ret l.hasAuth ? System::slice(u.text, l.hostStart, l.hostEnd) : None
+
+# The port; None when there is none, or it is empty.
+fun uriPort(u: Uri): Int|None
+  let l: _Layout = _layout(u.text)
+  ret l.portStart >= 0 ? parseInt(System::slice(u.text, l.portStart, l.authEnd)) : None
+
+fun uriPath(u: Uri): String
+  let l: _Layout = _layout(u.text)
+  ret System::slice(u.text, l.pathStart, l.pathEnd)
+
+# The query without its `?`; None when there is none.
+fun uriQuery(u: Uri): String|None
+  let l: _Layout = _layout(u.text)
+  ret l.queryStart >= 0 ? System::slice(u.text, l.queryStart, l.queryEnd) : None
+
+# The fragment without its `#`; None when there is none.
+fun uriFragment(u: Uri): String|None
+  let l: _Layout = _layout(u.text)
+  ret l.fragStart >= 0 ? System::slice(u.text, l.fragStart, System::length(u.text)) : None
+
+
+# ─── Percent-encoding ────────────────────────────────────────────────────
+
+# Every byte but the RFC's unreserved ones (letters, digits, `-._~`) as `%XX`,
+# in upper case.
+fun percentEncode(s: String): String => _encode(s, 0, "", "")
+
+# As `percentEncode`, but a `/` stays: for the path of a URI.
+fun encodePath(s: String): String => _encode(s, 0, "", "/")
+
+# `%XX` escapes turned back into their bytes. An escape that is not well
+# formed is kept as written.
+fun percentDecode(s: String): String => _decode(s, 0, "")
+
+
+# ─── file: URIs ──────────────────────────────────────────────────────────
+
+# The `file:` URI of an absolute path; None for a relative one. A path is
+# POSIX (`/home/me/a`), a Windows drive path (`C:\Users\me\a`, or with
+# slashes) or a Windows UNC path (`\\server\share\a`); a backslash is a
+# separator only in the last two.
+fun fileUri(path: String): Uri|None
+  ret _drivePath(path)
+    ? _asUri("file:///" + System::slice(path, 0, 2) + encodePath(_slashes(System::slice(path, 2, System::length(path)))))
+    : startsWith(path, "\\\\") || startsWith(path, "//")
+      ? _uncUri(_slashes(path))
+      : startsWith(path, "/")
+        ? _asUri("file://" + encodePath(path))
+        : None
+
+# The path a `file:` URI names, escapes decoded; None for any other scheme or
+# an empty path. `file:///C:/x` is the Windows path `C:/x`; a host other than
+# `localhost` makes a UNC path, `file://server/share/x` being `//server/share/x`.
+# (So a POSIX directory named `C:` at the root reads as a drive.)
+fun filePath(u: Uri): String|None
+  let host: String = uriHost(u) ?? ""
+  let path: String = percentDecode(uriPath(u))
+  ret _lowerAscii(uriScheme(u)) != "file" || path == "" ? None
+    : host == "" || _lowerAscii(host) == "localhost" ? _withoutRoot(path)
+    : "//" + percentDecode(host) + path
+
+
+# ─── Layout ──────────────────────────────────────────────────────────────
+
+# Where the parts of a text lie, by byte offset, -1 for a part that is not
+# there. Total: a text that is no URI gives offsets that mean nothing, so the
+# checks come before any use of them.
+class [final] _Layout(schemeEnd: Int, hasAuth: Bool, authStart: Int, authEnd: Int, userEnd: Int,
+                      hostStart: Int, hostEnd: Int, portStart: Int, pathStart: Int, pathEnd: Int,
+                      queryStart: Int, queryEnd: Int, fragStart: Int)
+
+fun _layout(s: String): _Layout
+  let n: Int = System::length(s)
+  let colon: Int = System::findByte(s, ':', 0)
+  let hash: Int = System::findByte(s, '#', 0)
+  let ques: Int = System::findByte(s, '?', 0)
+  let limit: Int = hash >= 0 ? hash : n
+  let hasQuery: Bool = ques >= 0 && ques < limit
+  let hierEnd: Int = hasQuery ? ques : limit
+  let hier: Int = colon + 1
+  let hasAuth: Bool = colon >= 0 && System::slice(s, hier, hier + 2) == "//"
+  let aStart: Int = hier + 2
+  let slash: Int = hasAuth ? System::findByte(s, '/', aStart) : -1
+  let aEnd: Int = slash >= 0 && slash < hierEnd ? slash : hierEnd
+  let at: Int = hasAuth ? _lastByte(s, '@', aStart, aEnd) : -1
+  let hostStart: Int = at >= 0 ? at + 1 : aStart
+  let bracketed: Bool = hasAuth && hostStart < aEnd && System::byteAt(s, hostStart) == '['
+  let close: Int = bracketed ? System::findByte(s, ']', hostStart) : -1
+  let colonFrom: Int = bracketed ? (close >= 0 ? close : aEnd) : hostStart
+  let pc: Int = hasAuth ? _lastByte(s, ':', colonFrom, aEnd) : -1
+  ret _Layout(colon, hasAuth, aStart, aEnd, at, hostStart, pc >= 0 ? pc : aEnd, pc >= 0 ? pc + 1 : -1,
+              hasAuth ? aEnd : hier, hierEnd, hasQuery ? ques + 1 : -1, limit, hash >= 0 ? hash + 1 : -1)
+
+# The last `b` in `s` from `from` to before `to`; -1 when there is none.
+fun [tail] _lastByte(s: String, b: Int32, from: Int, to: Int): Int
+  ret to <= from ? -1
+    : System::byteAt(s, to - 1) == b ? to - 1
+    : _lastByte(s, b, from, to - 1)
+
+
+# ─── Checks ──────────────────────────────────────────────────────────────
+# Each gives the first fault, or None.
+
+let [const] _ALPHA: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+let [const] _DIGIT: String = "0123456789"
+let [const] _UNRESERVED: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
+let [const] _SUBDELIMS: String = "!$&'()*+,;="
+let [const] _SCHEME: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-."
+let [const] _USERINFO: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,;=:"
+let [const] _REGNAME: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,;="
+let [const] _IPLITERAL: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,;=:"
+let [const] _PATH: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,;=:@/"
+let [const] _QUERY: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,;=:@/?"
+
+fun _checkScheme(s: String, l: _Layout): UriError|None
+  ret l.schemeEnd == 0 || !System::containsByte(_ALPHA, System::byteAt(s, 0)) ? UriError("a scheme starts with a letter", 0)
+    : System::skipAny(s, _SCHEME, 1) < l.schemeEnd ? UriError("a scheme is letters, digits, + - and .", System::skipAny(s, _SCHEME, 1))
+    : None
+
+fun _checkAuthority(s: String, l: _Layout): UriError|None
+  ret !l.hasAuth ? None
+    : (l.userEnd >= 0 ? _bad(s, l.authStart, l.userEnd, _USERINFO, "user information") : None)
+      ?? _checkHost(s, l)
+      ?? _checkPort(s, l)
+
+fun _checkHost(s: String, l: _Layout): UriError|None
+  ret l.hostStart < l.hostEnd && System::byteAt(s, l.hostStart) == '['
+    ? _checkLiteral(s, l)
+    : _bad(s, l.hostStart, l.hostEnd, _REGNAME, "host")
+
+# `[` ... `]` is the whole host: the closing bracket is its last byte.
+fun _checkLiteral(s: String, l: _Layout): UriError|None
+  ret System::byteAt(s, l.hostEnd - 1) != ']' || System::findByte(s, ']', l.hostStart) != l.hostEnd - 1
+    ? UriError("a bracketed host ends at its closing bracket", l.hostStart)
+    : _bad(s, l.hostStart + 1, l.hostEnd - 1, _IPLITERAL, "host")
+
+fun _checkPort(s: String, l: _Layout): UriError|None
+  ret l.portStart < 0 || System::skipAny(s, _DIGIT, l.portStart) >= l.authEnd ? None
+    : UriError("a port is digits", System::skipAny(s, _DIGIT, l.portStart))
+
+fun _checkPath(s: String, l: _Layout): UriError|None => _bad(s, l.pathStart, l.pathEnd, _PATH, "path")
+
+fun _checkQuery(s: String, l: _Layout): UriError|None
+  ret l.queryStart < 0 ? None : _bad(s, l.queryStart, l.queryEnd, _QUERY, "query")
+
+fun _checkFragment(s: String, l: _Layout): UriError|None
+  ret l.fragStart < 0 ? None : _bad(s, l.fragStart, System::length(s), _QUERY, "fragment")
+
+# The first byte of `s` from `i` to before `end` that is neither in `allowed`
+# nor the start of a well formed `%XX`.
+fun [tail] _bad(s: String, i: Int, end: Int, allowed: String, what: String): UriError|None
+  let j: Int = System::skipAny(s, allowed, i)
+  ret j >= end ? None
+    : System::byteAt(s, j) == '%' && _escapeAt(s, j, end) ? _bad(s, j + 3, end, allowed, what)
+    : UriError("a byte that may not be in the " + what, j)
+
+# True when the `%` at `i` is followed by two hex digits before `end`.
+fun _escapeAt(s: String, i: Int, end: Int): Bool
+  ret i + 2 < end && _isHex(System::byteAt(s, i + 1)) && _isHex(System::byteAt(s, i + 2))
+
+fun _isHex(b: Int32): Bool => hexValue(b) is Int32
+
+
+# ─── Encoding and decoding ───────────────────────────────────────────────
+
+fun [tail] _encode(s: String, i: Int, out: String, keep: String): String
+  if i >= System::length(s)
+    ret out
+  let b: Int32 = System::byteAt(s, i)
+  let plain: Bool = System::containsByte(_UNRESERVED, b) || System::containsByte(keep, b)
+  ret _encode(s, i + 1, plain ? out + asciiToString(b) : out + "%" + hexByte(b, true), keep)
+
+fun [tail] _decode(s: String, i: Int, out: String): String
+  if i >= System::length(s)
+    ret out
+  let b: Int32 = System::byteAt(s, i)
+  if b != '%'
+    ret _decode(s, i + 1, out + asciiToString(b))
+  ret match(hexValue(i + 1 < System::length(s) ? System::byteAt(s, i + 1) : -1i32),
+            hexValue(i + 2 < System::length(s) ? System::byteAt(s, i + 2) : -1i32))
+    (h: Int32, l: Int32) => _decode(s, i + 3, out + asciiToString(h * 16i32 + l))
+    ()                   => _decode(s, i + 1, out + "%")
+
+
+# ─── Files ───────────────────────────────────────────────────────────────
+
+fun _asUri(text: String): Uri|None => match(parseUri(text))
+  (u: Uri)      => u
+  (_: UriError) => None
+
+# `C:` then nothing, or a separator.
+fun _drivePath(p: String): Bool
+  ret System::length(p) >= 2 && System::containsByte(_ALPHA, System::byteAt(p, 0)) && System::byteAt(p, 1) == ':'
+    && (System::length(p) == 2 || System::byteAt(p, 2) == '/' || System::byteAt(p, 2) == '\\')
+
+# `//server/share/x`, already with forward slashes, as a URI.
+fun _uncUri(p: String): Uri|None
+  let slash: Int = System::findByte(p, '/', 2)
+  let end: Int = slash >= 0 ? slash : System::length(p)
+  ret _asUri("file://" + percentEncode(System::slice(p, 2, end)) + encodePath(System::slice(p, end, System::length(p))))
+
+fun _slashes(p: String): String => join(split(p, "\\"), "/")
+
+# `/C:` or `/C:/...` is the Windows path without its first slash.
+fun _withoutRoot(p: String): String
+  ret System::length(p) >= 3 && System::byteAt(p, 0) == '/' && System::containsByte(_ALPHA, System::byteAt(p, 1))
+      && System::byteAt(p, 2) == ':' && (System::length(p) == 3 || System::byteAt(p, 3) == '/')
+    ? System::slice(p, 1, System::length(p))
+    : p
+
+fun [tail] _lowerFrom(s: String, i: Int, out: String): String
+  if i >= System::length(s)
+    ret out
+  let b: Int32 = System::byteAt(s, i)
+  ret _lowerFrom(s, i + 1, out + asciiToString(b >= 'A' && b <= 'Z' ? b + 32i32 : b))
+
+fun _lowerAscii(s: String): String => _lowerFrom(s, 0, "")
