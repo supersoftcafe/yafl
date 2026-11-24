@@ -12,11 +12,10 @@
 
 #include "yafl.h"
 
-// The running executable's real path, written to `out` (`n` bytes, PATH_MAX is
-// ample). The OS first (/proc/self/exe on Linux, _NSGetExecutablePath on
-// macOS), then yafl_exe_path_from_argv0 on the process's own argv[0]. False
-// if neither says.
-HIDDEN bool yafl_exe_path(char* out, size_t n);
+// The running executable's real path, kept for the life of the process. The
+// OS first (/proc/self/exe on Linux, _NSGetExecutablePath on macOS), then
+// yafl_exe_path_from_argv0 on the process's own argv[0]. NULL if neither says.
+HIDDEN const char* yafl_exe_path(void);
 
 // The real path of the program a shell would start for `argv0`: itself if it
 // carries a `/` (relative to the working directory), else the first

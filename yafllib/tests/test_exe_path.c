@@ -29,10 +29,10 @@ static void write_file(const char* p, const char* body, mode_t mode) {
 int main(int argc, char** argv) {
     // Child: say where the OS and argv[0] put this executable, then stop.
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
-        char os[PATH_MAX], by_name[PATH_MAX];
-        bool a = yafl_exe_path(os, sizeof os);
+        char by_name[PATH_MAX];
+        const char* os = yafl_exe_path();
         bool b = yafl_exe_path_from_argv0(argv[0], by_name, sizeof by_name);
-        printf("%s\n%s\n", a ? os : "-", b ? by_name : "-");
+        printf("%s\n%s\n", os ? os : "-", b ? by_name : "-");
         return 0;
     }
 
@@ -100,8 +100,9 @@ int main(int argc, char** argv) {
     CHECK(!yafl_exe_path_from_argv0(link, got_path, 8), "buffer too small");
 
     // (5) The OS route, in this process.
-    CHECK(yafl_exe_path(got_path, sizeof got_path) && strcmp(got_path, self) == 0,
-          "yafl_exe_path names this binary");
+    const char* os_path = yafl_exe_path();
+    CHECK(os_path != NULL && strcmp(os_path, self) == 0, "yafl_exe_path names this binary");
+    CHECK(yafl_exe_path() == os_path, "and keeps it");
 
     chdir("/");
     unlink(link); unlink(plain); rmdir(bin); rmdir(base);

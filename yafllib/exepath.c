@@ -3,7 +3,7 @@
 #include "exepath.h"
 
 #include <limits.h>
-#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -77,30 +77,25 @@ static bool _from_os(char* out, size_t n) {
 }
 
 // The answer cannot change while the process runs, and asking costs a
-// readlink and a realpath, so it is worked out once. Callers (the compiler's
-// search path, its build-tree lookup) ask more than once.
-static pthread_once_t _exe_once = PTHREAD_ONCE_INIT;
-static char           _exe_path[PATH_MAX];
-static bool           _exe_known;      // false: neither the OS nor argv[0] said
+// readlink and a realpath, so it is kept once found. Two threads that ask at
+// the same moment both work it out and write the same bytes, which does no
+// harm; the flag is atomic only so a thread that sees it set also sees the path.
+static char        _exe_path[PATH_MAX];
+static atomic_bool _exe_found;
 
-static void _exe_find(void) {
-    _exe_known = _from_os(_exe_path, sizeof _exe_path)
-        || (_yafl_argc > 0 && yafl_exe_path_from_argv0(_yafl_argv[0], _exe_path, sizeof _exe_path));
-}
-
-bool yafl_exe_path(char* out, size_t n) {
-    pthread_once(&_exe_once, _exe_find);
-    if (!_exe_known) return false;
-    size_t len = strlen(_exe_path);
-    if (len >= n) return false;
-    memcpy(out, _exe_path, len + 1);
-    return true;
+const char* yafl_exe_path(void) {
+    if (atomic_load_explicit(&_exe_found, memory_order_acquire)) return _exe_path;
+    if (!_from_os(_exe_path, sizeof _exe_path)
+        && !(_yafl_argc > 0 && yafl_exe_path_from_argv0(_yafl_argv[0], _exe_path, sizeof _exe_path)))
+        return NULL;
+    atomic_store_explicit(&_exe_found, true, memory_order_release);
+    return _exe_path;
 }
 
 // System::exePath — `String|None`, None when neither the OS nor argv[0] and
 // PATH can say. Same representation as sys_getenv (object.c): None is word 0.
 EXPORT str_t sys_exe_path(object_t* self) {
     (void)self;
-    char path[PATH_MAX];
-    return yafl_exe_path(path, sizeof path) ? str_from_cstr(path) : str_word(NULL);
+    const char* path = yafl_exe_path();
+    return path == NULL ? str_word(NULL) : str_from_cstr(path);
 }
