@@ -92,6 +92,54 @@ class TestSystemMissing(TestCase):
                 self.fail(f"no System was asked for: {ex}")
 
 
+class TestShadowing(TestCase):
+    """A library found again at a lower-precedence search-path entry is the
+    SAME library, shadowed by the first (#144): `-L` can put a different copy
+    of an installed library in front of it."""
+
+    @staticmethod
+    def _lib(root: Path, dirname: str, name: str | None, namespaces: list[str]) -> None:
+        d = root / dirname
+        d.mkdir(parents=True)
+        ns = ", ".join(f'"{n}"' for n in namespaces)
+        (d / "yafl.toml").write_text((f'name = "{name}"\n' if name else "") + f"namespaces = [{ns}]\n")
+
+    def test_a_named_library_at_a_lower_entry_is_shadowed(self):
+        with tempfile.TemporaryDirectory() as hi, tempfile.TemporaryDirectory() as lo:
+            self._lib(Path(hi), "alpha", "alpha", ["Alpha", "Alpha::More"])
+            self._lib(Path(lo), "alpha", "alpha", ["Alpha"])
+            found = L.discover_libraries([Path(hi), Path(lo)])
+            self.assertEqual([Path(hi) / "alpha"], [lib.root for lib in found])
+            self.assertIn("Alpha::More", L.namespace_index(found))   # no 'declared by two'
+
+    def test_the_lower_entry_wins_nothing_when_it_comes_first_on_the_path(self):
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            self._lib(Path(a), "alpha", "alpha", ["Alpha"])
+            self._lib(Path(b), "alpha", "alpha", ["Alpha"])
+            self.assertEqual([Path(b) / "alpha"],
+                             [lib.root for lib in L.discover_libraries([Path(b), Path(a)])])
+
+    def test_two_libraries_of_one_name_at_one_entry_still_clash(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._lib(Path(td), "one", "twin", ["Shared"])
+            self._lib(Path(td), "two", "twin", ["Shared"])
+            with self.assertRaises(L.LibraryError):
+                L.namespace_index(L.discover_libraries([Path(td)]))
+
+    def test_different_names_claiming_one_namespace_still_clash_across_entries(self):
+        with tempfile.TemporaryDirectory() as hi, tempfile.TemporaryDirectory() as lo:
+            self._lib(Path(hi), "alpha", "alpha", ["Shared"])
+            self._lib(Path(lo), "beta", "beta", ["Shared"])
+            with self.assertRaises(L.LibraryError):
+                L.namespace_index(L.discover_libraries([Path(hi), Path(lo)]))
+
+    def test_unnamed_libraries_never_shadow_each_other(self):
+        with tempfile.TemporaryDirectory() as hi, tempfile.TemporaryDirectory() as lo:
+            self._lib(Path(hi), "one", None, ["One"])
+            self._lib(Path(lo), "two", None, ["Two"])
+            self.assertEqual(2, len(L.discover_libraries([Path(hi), Path(lo)])))
+
+
 class TestDirectoryAndZipLibraries(TestCase):
     def _write_dir_library(self, root: Path) -> None:
         root.mkdir(parents=True, exist_ok=True)

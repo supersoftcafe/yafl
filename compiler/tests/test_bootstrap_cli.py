@@ -441,6 +441,18 @@ class TestBootstrapCli(TimedTestCase):
         self.assertEqual(f"error:namespace 'System' is not provided by any library on the search path: "
                          f"{empty}, {prefix.resolve()}/lib/yafl\n", r.stdout)
 
+    def test_L_puts_a_copy_of_an_installed_library_in_front_of_it(self):
+        # #144: the libraries staged beside an installed copy of themselves, the
+        # directory library (system-test) as well as the System archive.
+        self._write("hello.yafl", _HELLO)
+        prefix = self._install()
+        shutil.copytree(self.libs / "system-test", prefix / "lib" / "yafl" / "system-test")
+        env = self._env()
+        env.pop("YAFL_LIBYAFL_A", None)
+        r = subprocess.run([str(prefix / "bin" / "yaflc"), "-L", str(self.libs), "-c", "out.c", "hello.yafl"],
+                           cwd=self.dir, env=env, capture_output=True, text=True, timeout=1800)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
     def test_unreadable_input(self):
         self._both("missing.yafl")
         self._write("real.yafl", _HELLO)

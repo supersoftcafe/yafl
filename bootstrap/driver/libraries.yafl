@@ -61,8 +61,12 @@ fun manifestFrom(entries: List<TomlEntry>, origin)
 
 # `str(data.get("name") or "unnamed")` — an EMPTY name is falsy in Python and
 # becomes "unnamed" there too, so an empty string must not be passed through.
-fun manifestName(entries: List<TomlEntry>) => tomlString(entries, "name", "unnamed")
-  |> (n) => n == "" ? "unnamed" : n
+# What a manifest without a `name` is called; such libraries never shadow one
+# another (see discoverLibraries).
+let [const] UNNAMED: String = "unnamed"
+
+fun manifestName(entries: List<TomlEntry>) => tomlString(entries, "name", UNNAMED)
+  |> (n) => n == "" ? UNNAMED : n
 
 
 # ── reading a library off disk ──────────────────────────────────────────────
@@ -370,18 +374,24 @@ fun [tail] spacesBefore(s: String, end: Int): Int
 
 # ── discovery ───────────────────────────────────────────────────────────────
 # Immediate children of each search path: directories carrying a manifest, and
-# `.yl` files. Earlier paths win; a later path re-declaring an owned namespace
-# is an ERROR rather than a silent shadow, because which copy you got would
-# otherwise depend on directory order.
+# `.yl` files.
 
-fun discoverLibraries(paths: List<String>) => discoverLoop(paths, List(), List())
+# Earlier entries take precedence: a library NAMED as one found at an earlier
+# entry is that library's shadow and is dropped whole, so `-L` can put a
+# different copy of an installed library in front of it (#144). Two libraries
+# of one name at the SAME entry, two with different names, and any without a
+# name are not shadows; if they claim one namespace, namespaceIndex rejects
+# them. Mirrors discover_libraries.
+fun discoverLibraries(paths: List<String>) => discoverLoop(paths, List(), List(), List())
 
-fun [tail] discoverLoop(ps: List<String>, seen: List<String>, acc) => match(head(ps))
+# `shadow`: the names found at earlier entries. `here`, in discoverInto: those
+# found at this one, which join `shadow` once the entry is done.
+fun [tail] discoverLoop(ps: List<String>, seen: List<String>, shadow: List<String>, acc) => match(head(ps))
   (v: String) => !exists(v)
-    ? discoverLoop(dropOne(ps), seen, acc)
+    ? discoverLoop(dropOne(ps), seen, shadow, acc)
     : match(listDir(v))
-      (e: IOError)         => discoverLoop(dropOne(ps), seen, acc)
-      (names: Set<String>) => discoverInto(dropOne(ps), v, sort(names), seen, acc)
+      (e: IOError)         => discoverLoop(dropOne(ps), seen, shadow, acc)
+      (names: Set<String>) => discoverInto(dropOne(ps), v, sort(names), seen, shadow, List(), acc)
   () => LibsOk(acc)
 
 # `seen` mirrors discover_libraries' seen_roots: the same directory reachable
@@ -394,17 +404,22 @@ fun [tail] discoverLoop(ps: List<String>, seen: List<String>, acc) => match(head
 # caught; two paths aliased through a SYMLINK are not, and would surface as
 # the duplicate-namespace error rather than being silently merged.
 fun [tail] discoverInto(rest: List<String>, base, ns: List<String>,
-                        seen: List<String>,
+                        seen: List<String>, shadow: List<String>, here: List<String>,
                         acc) => match(head(ns))
   (v: String) => isDotEntry(v) || contains(seen, base + "/" + v)
-    ? discoverInto(rest, base, dropOne(ns), seen, acc)
+    ? discoverInto(rest, base, dropOne(ns), seen, shadow, here, acc)
     : match(readEntry(base + "/" + v))
       (why: String)  => LibsErr(why)
       (lib: Library) => discoverInto(rest, base, dropOne(ns),
-                                     concat(seen, list1(base + "/" + v)),
-                                     append(acc, lib))
-      ()             => discoverInto(rest, base, dropOne(ns), seen, acc)
-  () => discoverLoop(rest, seen, acc)
+                                     concat(seen, list1(base + "/" + v)), shadow,
+                                     isShadow(lib, shadow) || lib.libManifest.libName == UNNAMED
+                                       ? here : concat(here, list1(lib.libManifest.libName)),
+                                     isShadow(lib, shadow) ? acc : append(acc, lib))
+      (_: None)      => discoverInto(rest, base, dropOne(ns), seen, shadow, here, acc)
+  (_: None) => discoverLoop(rest, seen, concat(shadow, here), acc)
+
+fun isShadow(lib: Library, shadow: List<String>): Bool =>
+  lib.libManifest.libName != UNNAMED && contains(shadow, lib.libManifest.libName)
 
 # Dispatch on WHAT THE ENTRY IS, not on its name: `_read_library_at` tests
 # `is_dir()` first and requires `is_file()` for the `.yl` branch. Keying on the
