@@ -389,6 +389,58 @@ class TestBootstrapCli(TimedTestCase):
                for b in ("py.bin", "port.bin")]
         self.assertEqual((ran[0].returncode, ran[0].stdout), (ran[1].returncode, ran[1].stdout))
 
+    def _install(self) -> Path:
+        # An installed layout: `${prefix}/bin/<exe>` beside `${prefix}/lib/yafl/system.yl`.
+        # No build tree above the copy, so the install is the only place System is.
+        prefix = self.dir / "prefix"
+        (prefix / "bin").mkdir(parents=True)
+        (prefix / "lib" / "yafl").mkdir(parents=True)
+        shutil.copy(self.binary, prefix / "bin" / "yaflc")
+        shutil.copy(self.libs / "system.yl", prefix / "lib" / "yafl" / "system.yl")
+        return prefix
+
+    def _compile_installed(self, exe: str, path_dirs: list[Path]):
+        env = self._env()
+        env.pop("YAFL_LIBYAFL_A", None)
+        env["PATH"] = os.pathsep.join([*map(str, path_dirs), env.get("PATH", "")])
+        return subprocess.run([exe, "-c", "out.c", "hello.yafl"], cwd=self.dir, env=env,
+                              capture_output=True, text=True, timeout=1800)
+
+    def test_installed_binary_started_by_bare_name_finds_its_libraries(self):
+        # `yaflc` found on PATH is given argv[0] = "yaflc", no directory (#145).
+        self._write("hello.yafl", _HELLO)
+        prefix = self._install()
+        r = self._compile_installed("yaflc", [prefix / "bin"])
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertTrue((self.dir / "out.c").is_file())
+
+    def test_installed_binary_reached_through_a_link_finds_its_libraries(self):
+        # A link from another `bin/`, started by bare name: the install is where
+        # the link points, not where it sits.
+        self._write("hello.yafl", _HELLO)
+        prefix = self._install()
+        other = self.dir / "other" / "bin"
+        other.mkdir(parents=True)
+        (other / "yaflc").symlink_to(prefix / "bin" / "yaflc")
+        r = self._compile_installed("yaflc", [other])
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
+    def test_a_program_importing_System_with_no_System_library_says_so(self):
+        # An installed layout with nothing under lib/yafl: one error naming the
+        # search path (#145). The binary is a copy, so no build tree is above it.
+        self._write("hello.yafl", _HELLO)
+        prefix = self._install()
+        (prefix / "lib" / "yafl" / "system.yl").unlink()
+        empty = self.dir / "empty"
+        empty.mkdir()
+        env = self._env()
+        env.pop("YAFL_LIBYAFL_A", None)
+        r = subprocess.run([str(prefix / "bin" / "yaflc"), "-L", str(empty), "-c", "out.c", "hello.yafl"],
+                           cwd=self.dir, env=env, capture_output=True, text=True, timeout=1800)
+        self.assertEqual(1, r.returncode, r.stdout + r.stderr)
+        self.assertEqual(f"error:namespace 'System' is not provided by any library on the search path: "
+                         f"{empty}, {prefix.resolve()}/lib/yafl\n", r.stdout)
+
     def test_unreadable_input(self):
         self._both("missing.yafl")
         self._write("real.yafl", _HELLO)

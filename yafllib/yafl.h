@@ -2216,6 +2216,7 @@ EXTERN object_t* sys_terminal_columns(object_t* self);
 // This process's private temp folder, created on first call and deleted at
 // exit (tempdir.c).
 EXTERN str_t     sys_tempdir(object_t* self);               // String|None
+EXTERN str_t     sys_exe_path(object_t* self);              // String|None
 
 // task_str_t: task subtype whose result is a String value, or a union that
 // shares its representation (the compiler's "task_str"). result.head sits at

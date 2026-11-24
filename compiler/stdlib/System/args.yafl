@@ -29,6 +29,13 @@ fun argv0(): System::String
   ret _argc() > 0 ? _argvAt(0) : ""
 
 
+# Where this program's executable really lives: an absolute path, symlinks
+# resolved. argv0() cannot say, since a program found on PATH is given a bare
+# name. The OS is asked where it will say (/proc/self/exe on Linux, the dyld
+# call on macOS), and elsewhere the path is rebuilt from argv[0] and PATH, the
+# way a shell found the program. None if neither can say.
+fun [foreign("sys_exe_path"), impure, sync] exePath(): System::String|System::None
+
 # Process environment. None when the variable is unset OR set to empty — never
 # the empty string — so a default is just `env("A") ?? "B"`. Added for the
 # library search path, which the self-hosted compiler could not read at all —

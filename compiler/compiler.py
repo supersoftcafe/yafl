@@ -1087,6 +1087,13 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
         user_statements = kept + test_stmts
 
     index = libraries.namespace_index(_gather_libraries(use_stdlib, lib_paths))
+    if use_stdlib and "System" not in index and "System" in _candidate_namespaces(user_statements):
+        # One error in place of an unresolved reference to every name the
+        # program takes from System, and a declared result reported as a missing
+        # `ret`. Mirrored by the port's loadProject.
+        searched = ", ".join(str(p) for p in libraries.search_paths(lib_paths)) or "(empty)"
+        raise libraries.LibraryError(
+            f"namespace 'System' is not provided by any library on the search path: {searched}")
 
     # Permissive worklist: load every referenced library to a fixpoint, following
     # the references of each newly-loaded library. Libraries are loaded as source
