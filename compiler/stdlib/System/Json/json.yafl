@@ -141,20 +141,16 @@ fun _unicodeEscape(s: String, at: Int): (text: String, next: Int)
 
 # The four hex digits at `at` as a number; -1 when there are not four.
 fun _hex4(s: String, at: Int): System::Int32
-  let d0: System::Int32 = _hexDigit(s, at)
-  let d1: System::Int32 = _hexDigit(s, at + 1)
-  let d2: System::Int32 = _hexDigit(s, at + 2)
-  let d3: System::Int32 = _hexDigit(s, at + 3)
+  fun digit(i: Int): System::Int32 => match(System::hexValue(i < System::length(s) ? System::byteAt(s, i) : -1i32))
+    (v: System::Int32) => v
+    (_: System::None)  => -1i32
+  let d0: System::Int32 = digit(at)
+  let d1: System::Int32 = digit(at + 1)
+  let d2: System::Int32 = digit(at + 2)
+  let d3: System::Int32 = digit(at + 3)
   ret d0 < 0i32 || d1 < 0i32 || d2 < 0i32 || d3 < 0i32
     ? -1i32
     : ((d0 * 16i32 + d1) * 16i32 + d2) * 16i32 + d3
-
-fun _hexDigit(s: String, at: Int): System::Int32
-  let b: System::Int32 = at < System::length(s) ? System::byteAt(s, at) : -1i32
-  ret b >= '0' && b <= '9' ? b - '0'
-    : b >= 'a' && b <= 'f' ? b - 'a' + 10i32
-    : b >= 'A' && b <= 'F' ? b - 'A' + 10i32
-    : -1i32
 
 # Caller has peeked but not consumed the opening quote.
 fun _parseString(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
@@ -301,13 +297,7 @@ fun _printEscapeFor(c: String): String
     ("\n") => "\\n"
     ("\r") => "\\r"
     ("\t") => "\\t"
-    (other) => "\\u00" + _hexByte(System::byteAt(c, 0))
-
-fun _hexByte(b: System::Int32): String
-  let digits: String = "0123456789abcdef"
-  let hi: Int = Int(b / 16i32)
-  let lo: Int = Int(b % 16i32)
-  ret System::slice(digits, hi, hi + 1) + System::slice(digits, lo, lo + 1)
+    (other) => "\\u00" + System::hexByte(System::byteAt(c, 0), false)
 
 # Quoted-string body: bulk-append each safe run, escape each special byte.
 # `[tail]` so a string with many escapes builds in constant stack.
