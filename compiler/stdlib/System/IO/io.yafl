@@ -246,7 +246,7 @@ fun _streamStr<E>(v: Result<System::String|System::None, E>): System::String
 
 # Monadic bind for IO chains. `pair ?> f` calls f(io, v) when `pair` is a
 # successful (io, v), otherwise propagates the error with the same io handle.
-# IO-specific for now; a generic bind over any monad is deferred per TODO.md.
+# IO-specific for now; a generic bind over any monad is deferred.
 
 fun [inline] `?>`<TIn, TOut>(pair: (io: IO, v: TIn|IOError),
                              f: (:IO, :TIn): (io: IO, v: TOut|IOError)):

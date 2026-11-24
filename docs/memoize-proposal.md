@@ -1,6 +1,7 @@
 # `memoize` — a function that wraps a function, same signature
 
-Status: PROPOSAL for discussion. Nothing implemented.
+Status: IMPLEMENTED as `System::memoize` (`compiler/stdlib/System/memoize.yafl`),
+whose header comment states the contract. This is the design record.
 
     fun memoize<A,B>(f: (:A): B): (:A): B where BasicEquality<A>
 

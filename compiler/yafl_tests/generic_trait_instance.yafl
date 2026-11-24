@@ -1,8 +1,8 @@
 # Generic trait instances: a generic type registered as a trait instance,
 # conditional on a `where` constraint over its own type parameter.
 #
-# This is the language feature underpinning fusible stream transducers (see
-# TODO.md "Fusible stream transformers via generic trait instances"): a wrapping
+# This is the language feature underpinning fusible stream transducers (fusible
+# stream transformers built on generic trait instances): a wrapping
 # combinator `Wrap<S>` is a `Box` *whenever* its inner `S` is, declared once and
 # monomorphised per concrete carrier.
 #

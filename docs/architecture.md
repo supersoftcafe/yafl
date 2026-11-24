@@ -22,7 +22,7 @@ There are dis-advantages, the biggest of which is that I can't enforce tail call
 
 ## Whole application build
 
-There are no libraries, unless they are source code. There is no incremental build. YAFL builds a whole application into a binary. This is mostly for convenience, not for performance reasons. Other architectural decisions have been made easier by this decision.
+A library is source code, kept as a folder with a `yafl.toml` manifest or packaged as a `.yl` archive, and a compile reads the libraries a program uses and builds them in. There is no incremental build and no separately compiled library. YAFL builds a whole application into a binary. This is mostly for convenience, not for performance reasons. Other architectural decisions have been made easier by this decision.
 
 ## Thread pool
 
@@ -78,11 +78,11 @@ We could leave all call sites doing a proper scan, in the knowledge that it'll r
 
 ## Memory management
 
-A mark sweep garbage collector is being developed specifically to take advantage of YAFLs runtime architecture. Ultimately I want to develop a compacting GC, but the initial version will not be. Stacks don't get scanned, only global roots and the heap. We have intimate knowledge of heap layout, so we only scan true pointers, but those pointers may in some cases point at an object that is not heap managed. Such objects will be marked in some way.
+The collector is concurrent, compacting and generational, and has no thread of its own: every allocating worker does a slice of the work as a side-quest of its allocation, and the compiler injects checkpoints into the back edges of loops so a thread reaches a safe point soon. It is precise about the heap, since the compiler knows every object's layout, so only true pointers are followed (some are tagged to say they are not heap managed). Thread stacks are scanned conservatively, at a safe point.
 
-The lack of stack scanning is down to the task-based async lowering and thread pool approach for work management. Each thread regularly exits all the way back to an event loop, where we know that there are no object references. To move between the major stages of a GC we need to wait for each thread in the thread pool to confirm that it has iterated once, which proves that all stacks have emptied since the decision to advance the GC stage.
+The runtime architecture is what makes this tractable. Each thread regularly exits all the way back to an event loop, so a stack is shallow when it is scanned, and moving between the stages of a cycle needs only each thread to confirm that it has passed a safe point since the decision. Objects are mostly immutable, so most can be moved, and an old object's pointers to young ones are tracked by a card rather than by rescanning the old generation.
 
-There are more details I want to write, but this may require a dedicated document.
+How the collector and the page allocator work is in [Internals](internals.md), and the generations in [Generations](generations-design.md).
 
 ## Tuples not precedence
 

@@ -1,6 +1,9 @@
 # `[test]` — the compiler builds the test binary
 
-Status: PROPOSAL for discussion. Nothing implemented.
+Status: IMPLEMENTED. `yaflc --test`, the `System::Test` library, `--list` and
+`--format json` all work, and the stdlib and compiler tests under
+`compiler/stdlib_tests/` and `compiler/yafl_tests/` are built this way. What
+follows is the design as proposed; §7 lists what was left open.
 
     yaflc --test -o build/mytests src/          # build the test binary
     ./build/mytests                             # run everything
@@ -248,8 +251,8 @@ should be the thing that does not need escaping.
 
 **Exit code is 0 or 1. Never a count.** Exit codes are 8 bits, and a suite
 with 256 failures that exits 0 is a green build that should have been red —
-the trap already recorded in `HANDOVER.md` ("exit codes are 8-bit; println
-totals over 255"). Totals go in the report; the exit code answers one
+a known trap (exit codes are 8-bit; a printed
+total over 255 wraps). Totals go in the report; the exit code answers one
 question.
 
 Reserve `2` for "the runner itself failed" — bad arguments, an unknown test

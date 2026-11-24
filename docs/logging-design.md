@@ -1,6 +1,10 @@
 # Structured logging and runtime metrics — design
 
-Status: DESIGN AGREED (§11), nothing implemented.
+Status: PARTLY IMPLEMENTED. `System::Log` is in the standard library (levels,
+the `log` overloads and spans; `compiler/stdlib/System/Log/log.yafl`) and the
+runtime end is in `yafllib`, which covers §10's phases 1 and 2. This document
+has not been checked against phases 3 and 4 (instrumenting the compiler
+pipeline, moving the `[GC …]` output onto it). The decisions are in §11.
 
 A YAFL-only facility, implemented mostly in `yafllib`, for measuring
 performance and logging facts at runtime. The Python compiler is out of scope —

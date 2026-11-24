@@ -202,6 +202,21 @@ fun <name><T, U>(<params>): <ReturnType> where Interface<T>
 
 Type variables are introduced in angle brackets after the function or interface name. They can be constrained with a `where` clause listing required interface implementations, separated by `|`.
 
+## Statements
+
+### `if`
+
+```
+if <condition>
+    <statements>
+else if <condition>
+    <statements>
+else
+    <statements>
+```
+
+Runs the block whose condition holds first, or the `else` block when none does. `else if` and `else` are optional and follow at the same indent. A `ret` in a block leaves the function. A function body must still end with a `ret` of its own: an `if` and `else` that both return do not count as returning.
+
 ## Expressions
 
 ### Literals
@@ -396,7 +411,7 @@ Attributes appear in square brackets before a declaration. Multiple attributes a
 | `[foreign("symbol")]` | Function, method, class | Binds to the named C symbol; no YAFL body is compiled |
 | `[final]` | Class | Prevents subclassing; enables direct dispatch instead of vtable lookup |
 | `[trait]` | `let` binding | Marks this binding as a trait instance for interface dispatch |
-| `[linear]` | Class, `let` binding | Planned — see [Roadmap](roadmap.md) |
+| `[linear]` | Class | Values of the class must be used exactly once on every code path; `System::IO::IO` is one. A linear value that is never used is released by a `Drop` instance for its type, if one is in scope |
 
 ## The System module
 
@@ -465,23 +480,31 @@ raw bytes read from IO may not be, which is what `isValidUtf8` checks.
 
 Import with `import System::IO`. All names below are qualified as `System::IO::<Name>`.
 
+`IO` is a `[linear]` class: a handle must be used exactly once, so every method that keeps it open returns it again in a tuple `(io: IO, v: ...)`, and `close` consumes it. An error is a value of the enum `IOError` (with variants such as `FileNotFoundError` and `PermissionDeniedError`, and `EOFError` for the end of input), never an exception.
+
 **Constructor functions:**
-
-| Signature | Attributes | Description |
-|-----------|------------|-------------|
-| `System::IO::stdin(): System::IO::IO` | `[sync]` | Standard input handle |
-| `System::IO::stdout(): System::IO::IO` | `[sync]` | Standard output handle |
-| `System::IO::stderr(): System::IO::IO` | `[sync]` | Standard error handle |
-| `System::IO::open_read(path: System::String): System::IO::IO\|System::Int` | `[impure]` | Open a file for reading |
-| `System::IO::open_write(path: System::String, truncate: System::Bool): System::IO::IO\|System::Int` | `[impure]` | Open a file for writing |
-| `System::IO::create(path: System::String): System::IO::IO\|System::Int` | `[impure]` | Create a new file |
-
-On failure the constructor functions return a negative `System::Int` error code.
-
-**`System::IO::IO` methods:**
 
 | Signature | Description |
 |-----------|-------------|
-| `read(length: System::Int): System::String\|System::Int\|System::None` | Read up to `length` bytes; `None` at end of file; negative `Int` on error |
-| `write(data: System::String): System::Int\|System::None` | Write data; returns bytes written or `None` on error |
-| `close(): System::Int\|System::None` | Close the handle; returns `0` on success or `None` on error |
+| `stdin(): IO` | Standard input handle |
+| `stdout(): IO` | Standard output handle |
+| `stderr(): IO` | Standard error handle |
+| `open_read(path: String): IO\|IOError` | Open a file for reading |
+| `open_write(path: String, truncate: Bool): IO\|IOError` | Open a file for writing |
+| `create(path: String): IO\|IOError` | Create a new file |
+
+**`IO` methods:**
+
+| Signature | Description |
+|-----------|-------------|
+| `read(length: Int): (io: IO, v: String\|IOError)` | Read up to `length` bytes; `EOFError` at the end of input |
+| `write(data: String): (io: IO, v: Int\|IOError)` | Write data; the value is the byte count accepted, which may be partial |
+| `write(data: String, offset: Int, length: Int): (io: IO, v: Int\|IOError)` | Write a sub-range of `data` without slicing it |
+| `flush(): (io: IO, v: IOError\|None)` | Send what has been written on its way |
+| `takeLine(maxLen: Int): (io: IO, v: String)` | The buffered bytes up to and including the next newline, or `maxLen` bytes; synchronous |
+| `refill(): (io: IO, v: Int\|None)` | Top up the buffer; `None` at the end of input |
+| `close(): IOError\|None` | Close the handle, consuming it (`[terminal]`) |
+
+**Functions over a handle:** `readAll(io)` reads the rest of the input into one `String`; `readLine(io)` and `readLine(io, maxLen)` read one line, verbatim; `writeAll(io, data)` writes all of `data`; `copy(src, dst)` copies one handle to another; `writeToFile(io, stream)` and `writeStream(io, stream)` drain a stream of strings into a handle.
+
+**Chaining and releasing:** `pair ?> f` calls `f(io, v)` when `pair` is a successful `(io, v)`, and otherwise passes the error on with the same `io`. `withFile(open, use)` and `withFiles(src, dst, use)` run `use` and close every handle on every path. A handle that is never used is closed when its scope ends, by the `Drop` instance for `IO`; where a close error matters (the final flush of a written file) call `close()` instead.

@@ -1,8 +1,10 @@
 # Port library discovery — decisions for review
 
-Status: **implemented and gated, NOT committed.** Every point below is a
-judgement call I made without being able to ask. They are ordered by how much
+Status: **implemented and merged** (the gate figures below are from when it
+landed). This is the record of the decisions taken, in the order of how much
 they could bite: things that change behaviour or admit a divergence first.
+Sections 12 to 14 are later: the executable's path (#145), shadowing by name
+(#144) and the language server's library folder (#144).
 
 Gate: **29/29, 7448s** (bootstrap_binary 852s, compiler_suite 5887s,
 self_compile 628s, stdlib_tests, 24 C tests). Two things had to happen first,
@@ -327,15 +329,53 @@ absolute path with symlinks resolved: from the OS where it says
 `argv[0]` and `PATH`, the way a shell found the program. None only if neither
 can say, and then the install contributes nothing.
 
-## 13. What is NOT done
+## 13. A library is shadowed by its name
 
-- The dev-System fallback (`dev_system_library`) and the `compiler/libs`
-  gating in `available_libraries`. These synthesise a System library from the
-  **source tree** — `compiler/stdlib` plus `yafllib/yafl.h` and a built
-  `libyafl.a` — for running un-installed. They are located relative to
-  `libraries.py`, and a compiled `ybootstrap` has no equivalent notion of "my
-  repository": there is no path it could look at that would be right. The
-  port's un-installed use is the test harnesses, which hand it the stdlib
-  directly. This is the one item I am recording as genuinely not portable
-  rather than not yet done — if you disagree, the fix is to teach the port a
-  configured build-tree root, and I would rather be told than guess.
+The search path is ordered: `-L` directories, then `YAFL_PATH`, then the
+install's `lib/yafl`. Two copies of one library on it used to be a clash. A
+directory library is identified by its root, a `.yl` by the folder it is
+unpacked to, so a work-in-progress copy staged under `-L` and the installed
+copy were two libraries claiming the same namespaces: `-L build/stage` with
+`yaflc` installed failed on any program with "namespace 'System::Test' is
+declared by two libraries" (#144). A `.yl` pair happened to share a root, so
+the outcome depended on how a library was packaged.
+
+The order already says which one is meant, so a library NAMED as one found at an
+earlier entry is that library's shadow and is dropped whole, in both compilers
+(`discover_libraries`, `discoverLibraries`), `.yl` and directory alike. Still
+errors, by `namespace_index`:
+
+- two libraries of one name at one entry;
+- different names claiming one namespace;
+- libraries with no `name` in their manifest. They are called `unnamed`, and
+  never shadow.
+
+The `System` library has a manifest in `compiler/stdlib/yafl.toml`, so that the
+source tree is a library like any other (see §14). A test keeps its namespaces
+equal to those of the manifest the installed archive is packaged with.
+
+## 14. The language server analyses a library folder as the library
+
+Opening the folder that is the `System` library, to edit it, used to analyse it
+as a program on top of the installed `System`: every declaration was a clash
+with its installed twin. The server now does what a compile does with `-L`:
+
+- A workspace folder with a `yafl.toml` is the library its manifest names, and
+  it is still analysed as the program on top of the libraries beneath it.
+- The installed libraries beneath it leave out the one it shadows by name, and
+  every library built on it, or on the folder, found by following namespace
+  references transitively. The libraries that remain are converged once and
+  checked, as before.
+- A library that declares a namespace the folder also declares is kept, so
+  the language server's rule that a program may not declare into a namespace a
+  library lists still reports the clash.
+- The manifest is read once per server start, with the libraries.
+
+Analysing the standard library this way takes about 2.5 s the first time and
+about 2 s after each edit, since the whole folder converges again.
+
+## 15. What is NOT done
+
+- Go to definition and find references inside a library folder have no tests,
+  and the editor has not been tried against it.
+- The `_NSGetExecutablePath` branch of `exePath` (macOS) is untested.

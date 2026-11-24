@@ -23,14 +23,17 @@ compiler and two to the client.
 
 The workspace folder is the program: every `.yafl` file under it, each named by
 its path relative to the folder, exactly the units `yaflc <folder>` compiles.
-Libraries are what is installed, outside it. A document the editor has open
+Libraries are what is installed, outside it, unless the folder is itself a
+library (below). A document the editor has open
 replaces the file on disk, until it is closed. A document outside the
 workspace folder has no diagnostics. With several folders open, the first
 is the workspace and the others get nothing.
 
 ## The libraries
 
-The installed libraries are found as a compile finds them. A compile prunes
+The installed libraries are found as a compile finds them: `YAFL_PATH`, then
+the install of the `yaflc` running, which it locates from its own real path
+however it was started. A compile prunes
 each library to the namespaces its program reaches; the server cannot, since
 an edit can add an import at any time, so it loads every library whole. The
 libraries are converged and checked once, each on the ones beneath it, the
@@ -45,6 +48,25 @@ A library installed as a `.yl` keeps its sources inside the zip, where an
 editor cannot open them. The server writes them out where a compile writes the
 library's native files, `<process temp folder>/libs/<name>/`, so a definition
 in one opens a file. That folder belongs to the server and goes when it exits.
+
+## A library folder
+
+A workspace folder with a `yafl.toml` is a library, and opening it is how a
+library is edited. The folder is still analysed as the program, on top of the
+installed libraries, but the installed copy of itself would clash with it, so
+the libraries beneath it leave out:
+
+- the installed library of the same name, which the folder shadows exactly as
+  `-L` would shadow it in a compile (a manifest with no name never shadows);
+- every installed library built on that one, or on the folder, found by
+  following the namespaces they refer to.
+
+A library that merely declares a namespace the folder also declares is kept,
+so the rule that a program may not declare into a namespace a library lists
+still reports the clash. Opening `compiler/stdlib` in the editor this way
+analyses it as `System` with the installed `System` out of the way, and takes
+about two seconds after each edit, since the whole folder converges again.
+The manifest is read once when the server starts, with the libraries.
 
 ## Analysis
 
