@@ -103,7 +103,7 @@ and runtime should decide what runs in parallel and what suspends.** No `async` 
   [`vscode-yafl/`](vscode-yafl/).
 
 Deeper reading: [Architecture](docs/architecture.md) · [Language Guide](docs/guide.md) ·
-[Reference](docs/reference.md) · [Roadmap](docs/roadmap.md) · [all docs](docs/README.md)
+[Reference](docs/reference.md) · [all docs](docs/README.md) · [planned work](https://github.com/supersoftcafe/yafl/issues)
 
 ## Garbage collector
 

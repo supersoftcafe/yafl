@@ -2,6 +2,8 @@
 
 This folder contains design and reference documentation for YAFL. These documents cover the language's design philosophy, runtime architecture, and implementation internals.
 
+Planned work is tracked in [GitHub issues](https://github.com/supersoftcafe/yafl/issues), not here.
+
 Documents with a status line at the top (proposal, parked, design agreed, implemented) say how far the design has gone. A design note describes what was decided when it was written, so where it and the code disagree, the code is right.
 
 ## Using the language
@@ -12,7 +14,6 @@ Documents with a status line at the top (proposal, parked, design agreed, implem
 | [Language Reference](reference.md) | Authoritative reference for every language construct and built-in type |
 | [Source layout](style.md) | The one layout `yaflc --format` puts source in: blank lines, `=>` or `ret`, wrapping, ternaries, pipelines, comments |
 | [Language server](language-server.md) | `yaflc --lsp`: what it serves, what the program is, how libraries and analysis work, and the `System::Server` loop it runs on |
-| [Roadmap](roadmap.md) | What is implemented, and what is planned |
 | [Language design](lang_info.md) | A pointer to the guide and the reference, where this page's content moved |
 
 ## How the compiler and runtime work
