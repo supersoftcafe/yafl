@@ -14,9 +14,8 @@ import Bootstrap::Types
 
 
 
-fun dLine(out, depth, kind,
-          lr: PLine, extra) => out + indentOf(depth) + kind + "|" + String(lr.plLine) + ":"
-                                      + String(lr.plCol) + ":" + String(lr.plLen) + "|" + extra + "\n"
+fun dLine(out: String, depth: Int, kind: String,
+          lr: PLine, extra: String) => $"{out}{indentOf(depth)}{kind}|{lr.plLine}:{lr.plCol}:{lr.plLen}|{extra}\n"
 
 fun [tail] indentLoop(n, acc) => n == 0 ? acc : indentLoop(n - 1, acc + "  ")
 

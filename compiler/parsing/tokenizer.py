@@ -31,8 +31,9 @@ class LineRef:
     """Where a token is written: file, line, the 1-based column it starts at,
     and its length in characters. Everything that makes one says what it
     marks, so `length` is at least 1. The one exception is a position the
-    compiler invents, with no source behind it: `synthetic` makes those, with
-    length 0, and nothing else does."""
+    compiler invents, with no source behind it: `synthetic` and `invented`
+    make those, with length 0, and nothing else does. `point` is the other
+    way to name a place without a token: one character wide."""
     filename: str
     line: int
     offset: int
@@ -49,6 +50,16 @@ class LineRef:
         source text of its own."""
         return LineRef(self.filename, self.line, self.offset, 0)
 
+    def point(self) -> "LineRef":
+        """The place this one starts at, one character wide: where a block
+        ends is a place, not a token."""
+        return LineRef(self.filename, self.line, self.offset, 1)
+
+    def same_start(self, other: "LineRef") -> bool:
+        """Whether both begin at the same place, whatever their lengths: the
+        compiler's made-up names begin where the code they stand for does."""
+        return (self.filename, self.line, self.offset) == (other.filename, other.line, other.offset)
+
     def __repr__(self):
         # The whole name, path included: a unit is identified by its path
         # relative to its root, and a diagnostic that says only `fs.yafl`
@@ -56,7 +67,7 @@ class LineRef:
         return f"{self.filename}[{self.line}:{self.offset}]"
 
     def hash6(self) -> str:
-        # Create string to hash from all fields
+        # Hash the place only (file, line, column): the length is not part of a name
         source = f"{self.filename}:{self.line}:{self.offset}"
 
         # Generate bytes hash

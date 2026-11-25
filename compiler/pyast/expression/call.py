@@ -161,9 +161,9 @@ class CallExpression(Expression):
         # and when there are any, they are the cause: an argument of unknown
         # type makes every `show` a candidate, so the call's own complaint
         # would only be noise.
-        own = [err for err in errors if err.line_ref == self.line_ref]
+        own = [err for err in errors if err.line_ref.same_start(self.line_ref)]
         if len(own) < len(errors):
-            return [err for err in errors if err.line_ref != self.line_ref]
+            return [err for err in errors if not err.line_ref.same_start(self.line_ref)]
         return [dataclasses.replace(err, message=self.origin.reword(err.message)) for err in own]
 
     def __check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:

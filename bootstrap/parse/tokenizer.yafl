@@ -284,7 +284,7 @@ fun tokenLength(t: Token): System::Int => match(t.kind)
 
 fun eofToken(toks: List<Token>) => match(head(takeLastOne(toks)))
   (t: Token) => Token(KEof(), "", 0, t.line,
-                      t.col + countChars(t.text, 0, System::length(t.text), 0))
+                      t.col + tokenLength(t))
   ()         => Token(KEof(), "", 0, 1, 1)
 
 fun tokenize(src) => tokenizeWithComments(src).scToks

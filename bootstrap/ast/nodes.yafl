@@ -27,7 +27,8 @@ import Bootstrap::Parse
 # line and the 1-based column it starts at, and its length in CHARACTERS
 # (#140). Everything that makes one says what it marks, so a length is at least
 # 1. The one exception is a position the compiler invents, with no source behind
-# it: `syntheticLine` makes those, with length 0, and nothing else does. The
+# it: `syntheticLine` and `inventedAt` make those, with length 0, and nothing
+# else does. The
 # length takes part in equality like the other fields; the unique-name hash is
 # of the file, line and column alone.
 enum PLine(plFile: String, plLine: Int, plCol: Int, plLen: Int)
@@ -37,6 +38,10 @@ fun syntheticLine(file: String, line: Int, col: Int): PLine => PLine(file, line,
 
 # The same place, for a node the compiler makes up there.
 fun inventedAt(lr: PLine): PLine => PLine(lr.plFile, lr.plLine, lr.plCol, 0)
+
+# Whether both begin at the same place, whatever their lengths: a made-up name
+# begins where the code it stands for does (Python LineRef.same_start).
+fun sameStart(a: PLine, b: PLine): Bool => a.plFile == b.plFile && a.plLine == b.plLine && a.plCol == b.plCol
 
 # One enum-constructor argument: the DECLARED field name and the argument
 # EXPRESSION (Python: NewEnumExpression.field_args dict entry). Never a bare
@@ -202,7 +207,9 @@ class [final] PAttr(attrName: String, attrValue: PExpr|None)
 # is taken from, so it stays where it is. Where its NAME is written is a second
 # position, `...NameAt`, with the name token's own length (#140): what an editor
 # points at for a definition. A declaration the compiler makes up has no name
-# written, and says so with `inventedAt`/`syntheticLine`.
+# written, and says so with `inventedAt`/`syntheticLine`. The name positions are
+# where an editor points, not part of what the program means: structural
+# equality and the AST dump leave them out, and Python has no counterpart.
 class [final] PGen(genName: String, genAttrs: List<PAttr>, pgLine: PLine, pgNameAt: PLine)
 
 # One vtable slot (ClassFunctionSlot): a callable member, and the SET of slot

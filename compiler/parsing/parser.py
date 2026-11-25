@@ -417,9 +417,7 @@ def __to_named_fully_qualified(value: tuple[e.NamedExpression, list[e.NamedExpre
     first, path, type_params = value
     # The name as written spans from its first token to its last (`System::length`),
     # when they share a line; a path broken across lines is marked by its first token.
-    f, l = first.line_ref, (path[-1].line_ref if path else first.line_ref)
-    span = l.offset + l.length - f.offset if l.line == f.line else f.length
-    expr = e.NamedExpression(p.LineRef(f.filename, f.line, f.offset, span),
+    expr = e.NamedExpression(_span_between(first.line_ref, path[-1].line_ref if path else first.line_ref),
                              "::".join(ne.name for ne in ([first] + path)), type_params=tuple(type_params))
     return expr
 
@@ -989,7 +987,12 @@ def _path_span(tokens: list[p.Token], count: int) -> p.LineRef:
     """The position of a name written as `count` tokens (`a`, `::`, `b`, ...):
     from the first to the end of the last, when they share a line, else the
     first token's own."""
-    first, last = tokens[0].line_ref, tokens[count - 1].line_ref
+    return _span_between(tokens[0].line_ref, tokens[count - 1].line_ref)
+
+
+def _span_between(first: p.LineRef, last: p.LineRef) -> p.LineRef:
+    """From the start of `first` to the end of `last`, when they share a line,
+    else `first`'s own."""
     span = last.offset + last.length - first.offset if last.line == first.line else first.length
     return p.LineRef(first.filename, first.line, first.offset, span)
 

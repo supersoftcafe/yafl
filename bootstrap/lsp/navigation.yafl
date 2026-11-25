@@ -91,7 +91,7 @@ fun armsDeclared(d: Dict<String, Place>, x: PExpr, pathOf: (:String): String): D
 fun uses(stmts: List<PStmt>, parsed: List<PStmt>, root: Resolver): Uses
   ret walkStmts(stmts, emptyResolverGlobal, typeUses(parsed, root),
                 Walk<List<Use>>((u, r, x) => (s = usedIn(u, x), r = None),
-                                (u, r, st) => (s = notedDecl(u, stmtName(st), stmtNameAt(st)), r = None),
+                                (u, r, st) => (s = notedUse(u, stmtName(st), stmtNameAt(st)), r = None),
                                 (u, r, sp) => (s = usedType(u, sp), r = None))).s
     |> (all) => usesIndexed(all)
 
@@ -99,8 +99,8 @@ fun usedIn(u: List<Use>, x: PExpr): List<Use> => match(x)
   (n: PeName)  => notedUse(u, n.refName, n.penLine)
   (d: PeDot)   => notedUse(u, d.member, d.pedLine)
   (m: PeMatch) => fold(m.arms, u, (u2: List<Use>, a: PArm) =>
-                    fold(a.armExtra, notedDecl(u2, a.armName, a.armNameAt),
-                         (u3: List<Use>, p: PPos) => notedDecl(u3, p.posName, p.posNameAt)))
+                    fold(a.armExtra, notedUse(u2, a.armName, a.armNameAt),
+                         (u3: List<Use>, p: PPos) => notedUse(u3, p.posName, p.posNameAt)))
   (other)      => u
 
 # Every type named in a parsed statement, in that statement's scope: its
@@ -137,9 +137,6 @@ fun notedUse(u: List<Use>, name: String, at: PLine): List<Use>
 fun notedAt(u: List<Use>, name: String, span: PLine|None): List<Use> => match(span)
   (n: PLine) => append(u, Use(n, name))
   ()         => u
-
-# A declaration, which is a use of itself, at the name where it is written.
-fun notedDecl(u: List<Use>, name: String, at: PLine): List<Use> => notedUse(u, name, at)
 
 fun isUnique(name: String): Bool => contains(name, "@")
 

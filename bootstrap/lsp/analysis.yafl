@@ -90,7 +90,7 @@ fun failureDiagnostics(f: LibraryFailure): Set<PErr>
   let why = "the libraries cannot be loaded: " + f.lfWhy
   ret isEmpty(f.lfErrs)
     ? Set(List(PErr(syntheticLine("", 1, 1), why)))
-    : Set(map(sortBy(f.lfErrs, errLess), (e) => PErr(syntheticLine("", 1, 1), why + ": " + errStr(e))))
+    : Set(map(sortBy(f.lfErrs, errLess), (e) => PErr(syntheticLine("", 1, 1), $"{why}: {errStr(e)}")))
 
 fun libraryName(l: Library): String|None => l.libManifest.libName
 

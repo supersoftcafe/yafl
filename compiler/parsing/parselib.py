@@ -334,7 +334,7 @@ def block(parser: Parser[T], ends_at_closer: bool = False) -> Parser[T]:
                     depth -= 1
             index += 1
 
-        result = parser(tokens[:index] + [Token(TokenKind.EOF, "", 0, tokens[index].line_ref)])
+        result = parser(tokens[:index] + [Token(TokenKind.EOF, "", 0, tokens[index].line_ref.point())])
 
         # Only fall back to the generic leftover-tokens message when the inner
         # parser MATCHED and nothing more specific was reported — a real

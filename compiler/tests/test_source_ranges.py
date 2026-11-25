@@ -95,10 +95,10 @@ class TestParsedLengths(TestCase):
 
     def test_a_member_after_a_dot_is_the_member_token(self):
         found = self._find("fun g(): Int => a.member\n", e.DotExpression)
-        self.assertEqual("member", found[0].member if hasattr(found[0], "member") else found[0].name)
+        self.assertEqual("member", found[0].name)
         self.assertEqual((19, 6), (found[0].line_ref.offset, found[0].line_ref.length))
 
-    def test_literals_are_their_spelling(self):
+    def test_literals_are_as_long_as_they_are_written(self):
         for text, kind in (("0x1F", e.IntegerExpression), ('"a\\nb"', e.StringExpression)):
             found = self._find(f"fun g(): Int => {text}\n", kind)
             self.assertEqual(len(text), found[0].line_ref.length, text)
@@ -163,3 +163,26 @@ class TestParityOfInventedNames(TestCase):
                            capture_output=True, text=True, timeout=120, env=_RUN_ENV)
         self.assertEqual(0, r.returncode, r.stderr)
         self.assertEqual(python.splitlines(), r.stdout.splitlines())
+
+
+class TestInventedNamesStillFilterTheirCascade(TestCase):
+    """The `show` an interpolation makes is a name with no length, beginning
+    where the slot does. The rule "when the argument has errors, the call's own
+    complaint is noise" must still see it as the call's own."""
+
+    SOURCE = ('namespace Main\nimport System\nfun main(): Int\n'
+              '  System::println($"a {nope} b")\n  ret 0\n')
+
+    def test_an_unresolved_slot_is_reported_alone_by_both_compilers(self):
+        from tests.testutil import compile_c_result, python_compiler_command, port_compiler_command
+        for command in (python_compiler_command(), port_compiler_command()):
+            out = compile_c_result(self.SOURCE, "t.yafl", command=command).stdout
+            self.assertIn("Failed to resolve nope", out, command)
+            self.assertNotIn("show", out, command)
+
+    def test_the_end_of_a_block_is_one_character_wide(self):
+        # `let x =` then a line that ends the block: the error is about the
+        # place the value should have been, not about the next line's token.
+        parsed = p.parse(tokenize("fun f(): Int\n  let x =\nfun gggg(): Int => 1\n", "x"))
+        lengths = {err.line_ref.length for err in parsed.errors}
+        self.assertEqual({1}, lengths, parsed.errors)
