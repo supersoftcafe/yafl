@@ -786,9 +786,11 @@ def __to_is(result: p.Result, tokens: list[p.Token]) -> p.Result[e.Expression]:
     return p.Result(m.MatchExpression(lr, left, arms), result.tokens, result.line_ref, result.errors)
 
 
-def __to_expr_tuple_entry(value: tuple[list[str], e.Expression]) -> e.TupleEntryExpression:
+def __to_expr_tuple_entry(value: tuple[list[str], e.Expression], line_ref: p.LineRef,
+                          tokens: list[p.Token]) -> e.TupleEntryExpression:
+    # A written name is the entry's first token: that is where it is.
     name, value = value
-    return e.TupleEntryExpression(p.first_or_none(name), value)
+    return e.TupleEntryExpression(p.first_or_none(name), value, name_at=tokens[0].line_ref if name else None)
 
 
 def __to_spread_entry(value: e.Expression) -> e.TupleEntryExpression:
@@ -1215,7 +1217,7 @@ __parse_maybe_type_params = p.maybe(p.requires(
     "missing generics")).map(__to_flat_list)
 
 __parse_expr_tuple_entry = (((p.discard_sym("*") & __parse_expression).map(__to_spread_entry))
-                            | ((p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression).map(__to_expr_tuple_entry)))
+                            | ((p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression).build_from(__to_expr_tuple_entry)))
 __parse_expr_tuple = p.requires(p.sym("("), p.delimited_list(__parse_expr_tuple_entry, ",") & p.discard_sym(")"), "invalid tuple").build(__to_expr_tuple)
 __parse_lambda = (__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_expr_lambda
 __parse_builtin_op = p.requires(p.sym("__builtin_op__"), p.discard_sym("<") & __parse_type & p.discard_sym(">") & __parse_expr_tuple, "invalid use of __builtin_op__") >> __to_builtin_op

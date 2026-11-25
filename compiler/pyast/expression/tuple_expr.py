@@ -65,6 +65,10 @@ class TupleEntryExpression:
     # positionally (names never travel through a spread). Expanded away by
     # TupleExpression.compile once the value's tuple arity is known.
     spread: bool = False
+    # Where `name` is written (`x` in `p(x = 9)`); None when the entry has no
+    # name, or the compiler made it up. It says where an editor points and is
+    # no part of what the entry means, so equality leaves it out (#140).
+    name_at: LineRef | None = field(default=None, compare=False)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> TupleEntryExpression:
         v = self.value.search_and_replace(resolver, replace)

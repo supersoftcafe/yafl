@@ -137,7 +137,7 @@ class WithExpression(Expression):
                 StringExpression(lr, "yafl_same"),
                 TupleExpression(lr, [
                     TupleEntryExpression(None, repl_ref[en.name]),
-                    TupleEntryExpression(None, e.DotExpression(lr, ref("$ws"), en.name))]))
+                    TupleEntryExpression(None, e.DotExpression(en.name_at, ref("$ws"), en.name))]))
             cond = one if cond is None else e.TernaryExpression(lr, cond, one, BoolExpression(lr, False))
 
         # The copy: constructor call(s) mixing carried fields with replacements.
