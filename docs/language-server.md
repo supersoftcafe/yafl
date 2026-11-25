@@ -36,6 +36,10 @@ says how long the token it marks is (#140), so a range is exact:
   `System`. A name the compiler wrote for the program, such as the `show` an
   interpolation calls, has no length and is no use.
 
+Backticks are part of a name: `` `my fn` `` is selected whole, wherever it is
+declared or used. An operator used as one is written without them (`+` in
+`a + b`) and is that single character.
+
 The text at a span is checked to be the name before it is offered to the
 client; a position that marks something else is dropped, not shown.
 

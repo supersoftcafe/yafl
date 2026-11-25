@@ -43,8 +43,8 @@ import Bootstrap::Types
 # A declaration: the file it is in, by path, and where its name is written.
 class [final] Place(pcPath: String, pcAt: PLine)
 
-# A name the program uses: where it is written, as a span of exactly the name,
-# and the unique name it resolved to.
+# A name the program uses: where it is written (all of what was written, a
+# qualified path included) and the unique name it resolved to.
 class [final] Use(useAt: PLine, useKey: String)
 
 # The uses, two ways: by where they are (`unit:line`), for the use under a
@@ -73,11 +73,7 @@ fun declared(d: Dict<String, Place>, st: PStmt, pathOf: (:String): String): Dict
   ret placed(d, stmtName(st), stmtNameAt(st), pathOf)
 
 fun placed(d: Dict<String, Place>, name: String, at: PLine, pathOf: (:String): String): Dict<String, Place>
-  ret isUnique(name) && get(d, name) is None ? placedAt(d, name, nameSpan(at, name), pathOf) : d
-
-fun placedAt(d: Dict<String, Place>, name: String, span: PLine|None, pathOf: (:String): String): Dict<String, Place> => match(span)
-  (n: PLine) => put(d, name, Place(pathOf(n.plFile), n))
-  ()         => d
+  ret isUnique(name) && get(d, name) is None && at.plLen > 0 ? put(d, name, Place(pathOf(at.plFile), at)) : d
 
 # A match's arms each declare their names, at every position.
 fun armsDeclared(d: Dict<String, Place>, x: PExpr, pathOf: (:String): String): Dict<String, Place> => match(x)
@@ -120,46 +116,44 @@ fun usedType(u: List<Use>, sp: Spec): List<Use> => match(sp)
   (e: SEnum)  => isEmpty(e.sePath) ? notedUse(u, e.seRoot, e.seLine) : u
   (other)     => u
 
-# The name `key` within the span `at` of what was written: all of it, or the
-# name without the backticks an operator may be written with, or the end of a
-# qualified path (`System::length`). None when the span marks nothing (length
-# 0: the compiler made the name up) or less than the name.
-fun nameSpan(at: PLine, key: String): PLine|None
-  let n = nameLength(key)
-  ret n == 0 || at.plLen < n ? None
-    : at.plLen == n + 2 ? PLine(at.plFile, at.plLine, at.plCol + 1, n)
-    : PLine(at.plFile, at.plLine, at.plCol + at.plLen - n, n)
-
-# A use of `name`, written at `at`.
+# A use of `name`, written at `at`: the whole of what was written, which for a
+# qualified `System::length` is the path. A length of 0 means the compiler made
+# the name up, and there is nothing to point at.
 fun notedUse(u: List<Use>, name: String, at: PLine): List<Use>
-  ret isUnique(name) ? notedAt(u, name, nameSpan(at, name)) : u
-
-fun notedAt(u: List<Use>, name: String, span: PLine|None): List<Use> => match(span)
-  (n: PLine) => append(u, Use(n, name))
-  ()         => u
+  ret isUnique(name) && at.plLen > 0 ? append(u, Use(at, name)) : u
 
 fun isUnique(name: String): Bool => contains(name, "@")
 
 
 # ── where a name is written ──────────────────────────────────────────────────
 
-# The name `key` declares, as written where it is used: an operator, `` `+` ``,
-# is written `+` there.
-fun writtenName(key: String): String
-  let bare = bareOfUnique(key)
+# The name `key` declares, as it is written, backticks and all: they are part
+# of the name.
+fun declaredName(key: String): String => bareOfUnique(key)
+
+# The same name as written where an operator is used as one: `+` in `a + b`,
+# where its declaration says `` `+` ``.
+fun operatorName(key: String): String
+  let bare = declaredName(key)
   let n = System::length(bare)
   ret n > 2 && startsWith(bare, "`") && endsWith(bare, "`") ? slice(bare, 1, n - 1) : bare
-
-# How many characters the name `key` is written with where it is used.
-fun nameLength(key: String): Int => codepointCount(writtenName(key))
 
 # The text a position covers, on its line.
 fun textOfSpan(text: String, at: PLine): String
   let from = charOffset(text, lineStart(text, at.plLine - 1, 0), at.plCol - 1)
   ret slice(text, from, charOffset(text, from, at.plLen))
 
-# True when the text at `at` is the name `key`.
-fun writtenAt(text: String, at: PLine, key: String): Bool => textOfSpan(text, at) == writtenName(key)
+# The name `key` at the end of the span `at` of what was written (all of it, or
+# the last part of a qualified path), as the way it is written there: with its
+# backticks, or as the operator it is. None when the text there is neither,
+# so a position that marks something else is never shown.
+fun nameIn(text: String, at: PLine, key: String): PLine|None
+  ret tailNamed(text, at, declaredName(key)) ?? tailNamed(text, at, operatorName(key))
+
+fun tailNamed(text: String, at: PLine, name: String): PLine|None
+  let n = codepointCount(name)
+  let tail = PLine(at.plFile, at.plLine, at.plCol + at.plLen - n, n)
+  ret n > 0 && n <= at.plLen && textOfSpan(text, tail) == name ? tail : None
 
 # A name as written in a file: the file's path and text, and the span of the
 # name.
@@ -167,8 +161,9 @@ class [final] Spot(spPath: String, spText: String, spAt: PLine)
 
 # The spot of the name `key`, at `at` in the file at `path`; None when the
 # text there is not that name.
-fun spotOf(path: String, text: String, at: PLine, key: String): Spot|None
-  ret writtenAt(text, at, key) ? Spot(path, text, at) : None
+fun spotOf(path: String, text: String, at: PLine, key: String): Spot|None => match(nameIn(text, at, key))
+  (n: PLine) => Spot(path, text, n)
+  ()         => None
 
 fun spotLocation(s: Spot): JsonValue
   ret JsonObj(List(JsonPair("uri", JsonStr(pathUri(s.spPath))),
@@ -199,8 +194,9 @@ fun useIn(r: Report, unit: String, row: Int, units: Int): Use|None
   let col = compilerColumn(text, row, units)
   ret firstWhere(get(r.rpUses.usByLine, lineKey(unit, row + 1)) ?? List(), (u) => covers(text, u, col))
 
-fun covers(text: String, u: Use, col: Int): Bool
-  ret col >= u.useAt.plCol && col < u.useAt.plCol + u.useAt.plLen && writtenAt(text, u.useAt, u.useKey)
+fun covers(text: String, u: Use, col: Int): Bool => match(nameIn(text, u.useAt, u.useKey))
+  (n: PLine) => col >= n.plCol && col < n.plCol + n.plLen
+  ()         => false
 
 # The declaration `key` names, in the program or a library.
 fun placeOf(sv: Server, r: Report, key: String): Place|None => match(get(r.rpPlaces, key))

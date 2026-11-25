@@ -454,12 +454,36 @@ class TestNavigation(_Workspace):
             self._at(4, "textDocument/definition", "main.yafl", 10, 8),   # `>` on Int, in System
             self._at(5, "textDocument/references", "main.yafl", 8, 8,
                      context={"includeDeclaration": False}))
-        self.assertEqual((main, 3, "+"), self._where(got[2]))
-        self.assertEqual((main, 5, "-"), self._where(got[3]))
-        self.assertEqual(">", self._text(got[4]))
+        self.assertEqual((main, 3, "`+`"), self._where(got[2]))
+        self.assertEqual((main, 5, "`-`"), self._where(got[3]))
+        self.assertEqual("`>`", self._text(got[4]))
         self.assertIn("/compiler/stdlib/System/", got[4]["uri"])
         self.assertEqual([(8, 8), (8, 12)],
                          sorted((x["range"]["start"]["line"], x["range"]["start"]["character"]) for x in got[5]))
+
+    def test_backticks_are_part_of_a_name(self):
+        # A name written in backticks is that whole token, backticks included,
+        # wherever it is: declared, used, or asked for. An operator used as an
+        # operator is written without them, and is just the operator.
+        self._write("main.yafl", "namespace Main\nimport System\n"
+                                 "class V(x: Int)\n"
+                                 "fun `+`(a: V, b: V): V\n  ret V(a.x + b.x)\n"
+                                 "fun `my fn`(a: Int): Int => a\n"
+                                 "fun main(): Int\n"
+                                 "  let v = `+`(V(1), V(2))\n"
+                                 "  ret `my fn`(v.x) + `my fn`(2)\n")
+        got = self._session(
+            self._at(2, "textDocument/definition", "main.yafl", 7, 12),   # inside `+` written with backticks
+            self._at(3, "textDocument/definition", "main.yafl", 8, 6),    # the opening backtick of `my fn`
+            self._at(4, "textDocument/definition", "main.yafl", 8, 12),   # the closing backtick
+            self._at(5, "textDocument/references", "main.yafl", 8, 8,
+                     context={"includeDeclaration": True}))
+        self.assertEqual("`+`", self._text(got[2]))
+        self.assertEqual("`my fn`", self._text(got[3]))
+        self.assertEqual("`my fn`", self._text(got[4]))
+        spans = sorted((x["range"]["start"]["line"], x["range"]["start"]["character"],
+                        x["range"]["end"]["character"]) for x in got[5])
+        self.assertEqual([(5, 4, 11), (8, 6, 13), (8, 21, 28)], spans)
 
     def test_references(self):
         self._write("main.yafl", self._MAIN)
