@@ -17,10 +17,10 @@ import Bootstrap::Types
 
 fun hashName(name, lr: PLine) => name + "@" + hash6(lr.plFile, lr.plLine, lr.plCol)
 
-fun oneEntryTuple(x, lr) => PeTuple(prepend(PTupEnt("", false, x), List()), lr)
+fun oneEntryTuple(x, lr) => PeTuple(prepend(madeEntry("", false, x), List()), lr)
 
 fun twoEntryTuple(a, b, lr)
-  ret PeTuple(append(append(List(), PTupEnt("", false, a)), PTupEnt("", false, b)), lr)
+  ret PeTuple(append(append(List(), madeEntry("", false, a)), madeEntry("", false, b)), lr)
 
 fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr, None)
 
@@ -88,7 +88,7 @@ fun lowerInterp(ip: PeInterp): PExpr
 
 fun interpOperand(part: PInterpPart, lr: PLine): PExpr => match(part)
   (t2: PipText) => PeStr(t2.ipText, lr, "")
-  (sl: PipSlot) => PeCall(PeName("show", List(), sl.ipLine), slotArgs(sl), sl.ipLine,
+  (sl: PipSlot) => PeCall(PeName("show", List(), inventedAt(sl.ipLine)), slotArgs(sl), sl.ipLine,
                           PoInterpolation(sl.ipText))
 
 # `show`'s arguments for a slot: its expression, and its spec when it has one.
@@ -120,7 +120,7 @@ fun [tail] splitOps(ops: List<PExpr>, k: Int, first: List<PExpr>): (first: List<
 # One str_concat_n over `n` operands.
 fun joinOps(ops: List<PExpr>, n: Int, lr: PLine): PExpr =>
   PeBuiltinOp(SBuiltin("str", lr), PeStr("str_concat_n", lr, ""),
-              PeTuple(map(prepend(PeInt(n, 32, lr, ""), ops), (o) => PTupEnt("", false, o)), lr), lr)
+              PeTuple(map(prepend(PeInt(n, 32, lr, ""), ops), (o) => madeEntry("", false, o)), lr), lr)
 
 # `l |> stage`: a lambda stage beta-reduces to a Block binding its params
 # from l; a call stage with one `_` placeholder binds l to $pipe@hash and
@@ -167,13 +167,13 @@ fun pipePlaceholder(last, stage): PExpr
   let filled = match(stage)
     (c: PeCall) => PeCall(c.function, fillHole(c.parameter, tmp, lr), c.pecLine, c.pecOrigin)
     (other)     => stage
-  let bind = PsLet(tmp, List(), List(), None, last, "", List(), lr)
+  let bind = PsLet(tmp, List(), List(), None, last, "", List(), lr, inventedAt(lr))
   ret PeBlock(prepend(bind, List()), filled, "", lr)
 
 fun fillHole(param, tmp, lr): PExpr => match(param)
   (t2: PeTuple) => PeTuple(map(t2.exprs, (en) =>
       isHole(en.tupValue)
-        ? PTupEnt(en.tupName, en.tupSpread, PeName(tmp, List(), lr))
+        ? PTupEnt(en.tupName, en.tupSpread, PeName(tmp, List(), lr), en.tupLine)
         : en), t2.petLine)
   (other)       => param
 
@@ -187,7 +187,7 @@ fun pipeBeta(last, lm: PeLambda)
   let ref = PeName(tmp, List(), lr)
   let binder = betaBinder(lm.lamParams, ref, lr)
   let inner = PeBlock(prepend(binder, List()), lm.lamBody, "", lr)
-  let outer = PsLet(tmp, List(), List(), None, last, "", List(), lr)
+  let outer = PsLet(tmp, List(), List(), None, last, "", List(), lr, inventedAt(lr))
   ret PeBlock(prepend(outer, List()), inner, "", lr)
 
 fun betaBinder(params, ref, lr: PLine) => match(params)
@@ -200,7 +200,7 @@ fun betaBinder(params, ref, lr: PLine) => match(params)
 
 fun letWithValue(target, value) => match(target)
   (l: PsLet) => PsLet(l.lName, l.lAttrs, l.lGens, l.lType, value, l.lArrayLen,
-                      l.lWheres, l.pslLine)
+                      l.lWheres, l.pslLine, l.lNameAt)
   (o: PStmt) => o
 
 # A DestructureStatement WITH a default value: the holder binds the piped
@@ -227,7 +227,7 @@ fun classConstructor(c: PsClass): PStmt
                                  map(fields, ctorParam), None, lr)
   # The constructor COPIES its class's ImportGroup (create_constructor).
   ret PsFun(c.cName, List(), c.cGens, ctorParams, body, clsTy, c.cWheres,
-            lr, false, false, c.cImports)
+            lr, c.cNameAt, false, false, c.cImports)
 
 # An array field is CONSTRUCTED from an initialiser function `(:Int32): Elem`
 # whose results are tabulated into the trailing storage (utils.__constructor_param).
@@ -241,14 +241,14 @@ fun ctorParam(f) => match(f)
                                                  List()),
                                          l.pslLine),
                                   el, l.pslLine),
-                        l.lDefault, l.lArrayLen, l.lWheres, l.pslLine)
+                        l.lDefault, l.lArrayLen, l.lWheres, l.pslLine, l.lNameAt)
 
     ()        => l
   (o: PStmt) => o
 
 fun ctorEntry(f) => match(f)
-  (l: PsLet) => PTupEnt(l.lName, false, PeName(l.lName, List(), l.pslLine))
-  (o: PStmt) => PTupEnt("", false, PeNothing(stmtLine(o)))
+  (l: PsLet) => madeEntry(l.lName, false, PeName(l.lName, List(), l.pslLine))
+  (o: PStmt) => madeEntry("", false, PeNothing(stmtLine(o)))
 
 fun stmtLine(st) => match(st)
   (f: PsFun) => f.psfLine
@@ -267,6 +267,16 @@ fun stmtLine(st) => match(st)
   (fa: PsFieldAssign) => fa.psfaLine
   (inst: PsTraitInstance) => inst.pstiLine
 
+# Where a declaration's NAME is written: its token, at its own length. A
+# statement with no name of its own is at its line.
+fun stmtNameAt(st) => match(st)
+  (f: PsFun) => f.fNameAt
+  (l: PsLet) => l.lNameAt
+  (c: PsClass) => c.cNameAt
+  (e: PsEnum) => e.eNameAt
+  (ta: PsTypealias) => ta.taNameAt
+  (o: PStmt) => stmtLine(o)
+
 # ── array accessor (pyast/utils.create_array_accessor) ─────────────────────
 # A class with a trailing array field gains an accessor member `field@hash6r`
 # — a `(Int32): Elem` function reading the element via ArrayRead.
@@ -276,7 +286,7 @@ fun withArrayAccessor(c) => match(accessorFor(paramsOf(c.cParams)))
                           c.cWheres,
                           append(c.cMembers, acc),
                           c.cIsInterface,
-                          c.pscLine, c.cAllParents, c.cAllSlots, c.cImports)
+                          c.pscLine, c.cNameAt, c.cAllParents, c.cAllSlots, c.cImports)
   ()           => c
 
 # The accessor is built INSIDE the narrowed arm — a field read through a
@@ -287,7 +297,7 @@ fun accessorFor(ps: List<PStmt>) =>
 
 fun accessorOf(st: PStmt): PStmt|None => match(st)
   (let2: PsLet) => match(arrayElem(let2.lType))
-    (el: Spec) => arrayAccessor(bareName(let2.lName), el, let2.pslLine)
+    (el: Spec) => arrayAccessor(bareName(let2.lName), el, let2.pslLine, let2.lNameAt)
     ()         => None
   (o: PStmt)    => None
 
@@ -299,17 +309,18 @@ fun arrayElemOf(t2: Spec) => match(t2)
   (af: SArrayField) => af.safElem
   (o)                => None
 
-fun arrayAccessor(field, elem, lr)
+# The accessor is named for the field, and is written where the field is.
+fun arrayAccessor(field, elem, lr, nameAt)
   let idxName = hashName("index", lr)
   let idx = PsLet(idxName, List(), List(), SBuiltin("int32", lr),
-                  None, "", List(), lr)
+                  None, "", List(), lr, inventedAt(lr))
   let body = PeBlock(List(),
                      PeArrayRead(PeName("this", List(), lr),
                                  PeName(idxName, List(), lr), lr), "", lr)
   ret PsFun(field + "@" + hash6(lr.plFile, lr.plLine, lr.plCol) + "r",
             List(), List(),
             PsDestructure("_", List(), None, prepend(idx, List()), None, lr),
-            body, elem, List(), lr)
+            body, elem, List(), lr, nameAt)
 
 fun bareName(name)
   let at = findByte(name, '@', 0)
@@ -362,7 +373,7 @@ fun leafConstructor(root: PsEnum, leaf: PsEnum, params,
   # A leaf constructor carries the file's ImportGroup, like any top-level fun.
   ret PsFun(leaf.eName, List(), root.eGens,
             PsDestructure("_", List(), None, params, None, lr),
-            body, retTy, List(), lr, false, false, grp)
+            body, retTy, List(), lr, leaf.eNameAt, false, false, grp)
 
 fun letName(p) => match(p)
   (l: PsLet) => l.lName
@@ -392,6 +403,10 @@ fun startLine(x: PExpr): PLine => match(x)
 
 fun earlier(a: PLine, b: PLine): PLine
   ret b.plLine < a.plLine || (b.plLine == a.plLine && b.plCol < a.plCol) ? b : a
+
+# An entry the compiler makes up around `value`: it begins where the value
+# does and marks no source text of its own (Python TupleEntryExpression.invented).
+fun madeEntry(name: String, spread: Bool, value: PExpr): PTupEnt => PTupEnt(name, spread, value, inventedAt(exprLine(value)))
 
 fun exprLine(x) => match(x)
   (i: PeInt) => i.peiLine
@@ -477,21 +492,21 @@ fun fixupStep(fx: Fixup, s: PStmt) => match(s)
 fun withImports(st, grp) => match(st)
   (f: PsFun)  => with f(fImports = grp)
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType, l.lDefault,
-                       l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
+                       l.lArrayLen, l.lWheres, l.pslLine, l.lNameAt, l.lTypeInferred,
                        grp)
   (c: PsClass) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams,
                           c.cImplements, c.cWheres, c.cMembers,
-                          c.cIsInterface, c.pscLine, c.cAllParents,
+                          c.cIsInterface, c.pscLine, c.cNameAt, c.cAllParents,
                           c.cAllSlots, grp)
   (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
-                                   ta.taType, ta.taWheres, ta.pstLine, grp)
+                                   ta.taType, ta.taWheres, ta.pstLine, ta.taNameAt, grp)
   (ti: PsTraitInstance) => PsTraitInstance(ti.tiName, ti.tiAttrs,
                                            ti.tiAmbient,
                                            ti.tiGens, ti.tiPattern,
                                            ti.tiWheres, ti.tiMembers,
                                            ti.pstiLine, grp)
   (e: PsEnum) => PsEnum(e.eName, e.eAttrs, e.eGens, e.eParams, e.eVariants,
-                        e.eHasParams, e.pseLine, e.eRootName, e.eSpec, grp)
+                        e.eHasParams, e.pseLine, e.eNameAt, e.eRootName, e.eSpec, grp)
   (other)     => st
 
 # A class emits itself then its constructor (interfaces get neither).
@@ -517,14 +532,14 @@ fun namespacedEnum(e, ns) => match(addNamespace(e, ns))
 
 fun addNamespace(st, ns) => match(st)
   (f: PsFun)  => PsFun(ns + f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
-                       f.fRet, f.fWheres, f.psfLine)
+                       f.fRet, f.fWheres, f.psfLine, f.fNameAt)
   (l: PsLet)  => PsLet(ns + l.lName, l.lAttrs, l.lGens, l.lType, l.lDefault,
-                       l.lArrayLen, l.lWheres, l.pslLine)
+                       l.lArrayLen, l.lWheres, l.pslLine, l.lNameAt)
   (c: PsClass) => PsClass(ns + c.cName, c.cAttrs, c.cGens, c.cParams,
                           c.cImplements, c.cWheres, c.cMembers,
-                          c.cIsInterface, c.pscLine)
+                          c.cIsInterface, c.pscLine, c.cNameAt)
   (ta: PsTypealias) => PsTypealias(ns + ta.taName, ta.taAttrs, ta.taGens,
-                                   ta.taType, ta.taWheres, ta.pstLine)
+                                   ta.taType, ta.taWheres, ta.pstLine, ta.taNameAt)
   (ti: PsTraitInstance) => PsTraitInstance(ns + ti.tiName, ti.tiAttrs,
                                            ti.tiAmbient,
                                            ti.tiGens, ti.tiPattern,
@@ -532,5 +547,5 @@ fun addNamespace(st, ns) => match(st)
                                            ti.pstiLine, ti.tiImports)
   (e: PsEnum) => PsEnum(ns + e.eName, e.eAttrs, e.eGens, e.eParams,
                         map(e.eVariants, (v) => addNamespace(v, ns)),
-                        e.eHasParams, e.pseLine)
+                        e.eHasParams, e.pseLine, e.eNameAt)
   (other)     => st

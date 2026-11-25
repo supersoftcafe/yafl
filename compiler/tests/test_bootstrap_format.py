@@ -62,7 +62,7 @@ def _tree(dump: str) -> str:
     hashes made from them. The names `true` and `false` count as the literals:
     `a ? b : false` prints as `a && b`, whose parse holds the literal (USER
     RULING #91)."""
-    dump = re.sub(r"\|\d+:\d+\|", "||", dump)
+    dump = re.sub(r"\|\d+:\d+:\d+\|", "||", dump)
     dump = re.sub(r"Name\|\|(true|false)\|", lambda m: "Bool||" + m[1].capitalize(), dump)
     return re.sub(r"[@$][A-Za-z0-9]{6}", "@H", dump)
 

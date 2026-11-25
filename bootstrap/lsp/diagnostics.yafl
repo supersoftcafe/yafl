@@ -2,9 +2,11 @@
 # client asks for one document's diagnostics, and gets every error and
 # warning the latest analysis found in it.
 #
-# The compiler gives a diagnostic a point, not a span, so its range is empty;
-# a client shows an empty range as the word at that point. A diagnostic with
-# no file (the libraries cannot be loaded) is shown in every document.
+# A diagnostic's range is the token the compiler points at: a position says
+# how long it is (#140). A position with no length, one the compiler made up,
+# is an empty range, which a client shows as the word at that point. A
+# diagnostic with no file (the libraries cannot be loaded) is shown in every
+# document.
 
 namespace Bootstrap::Lsp
 
@@ -32,8 +34,7 @@ fun itemsFor(r: Report, unit: String): List<JsonValue>
     |> (es) => map(es, (e) => diagnostic(text, e))
 
 fun diagnostic(text: String, e: PErr): JsonValue
-  let at = lspPosition(text, e.errLine.plLine, e.errLine.plCol)
-  ret JsonObj(append(List(JsonPair("range", JsonObj(List(JsonPair("start", at), JsonPair("end", at)))),
+  ret JsonObj(append(List(JsonPair("range", lspRange(text, e.errLine.plLine, e.errLine.plCol, e.errLine.plLen)),
                           JsonPair("severity", JsonInt(e.errWarn ? 2 : 1)),
                           JsonPair("source", JsonStr("yaflc"))),
                      JsonPair("message", JsonStr(e.errMsg))))

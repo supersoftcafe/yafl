@@ -154,7 +154,7 @@ fun eqExpr(a: PExpr, b: PExpr) => match(a, b)
   ()                               => false
 
 fun eqTupEnt(a: PTupEnt, b: PTupEnt) => a.tupName == b.tupName && eqBool(a.tupSpread, b.tupSpread)
-    && eqExpr(a.tupValue, b.tupValue)
+    && eqExpr(a.tupValue, b.tupValue) && eqLine(a.tupLine, b.tupLine)
 
 fun eqInterpPart(a: PInterpPart, b: PInterpPart) => match(a, b)
   (x: PipText, y: PipText) => x.ipText == y.ipText
@@ -184,7 +184,7 @@ fun eqGen(a: PGen, b: PGen) => a.genName == b.genName && eqAttrs(a.genAttrs, b.g
 # `==` has no Bool instance in the stdlib, and YAFL derives nothing.
 fun eqBool(a, b) => a ? b : !b
 
-fun eqLine(a: PLine, b: PLine) => a.plLine == b.plLine && a.plCol == b.plCol && a.plFile == b.plFile
+fun eqLine(a: PLine, b: PLine) => a.plLine == b.plLine && a.plCol == b.plCol && a.plLen == b.plLen && a.plFile == b.plFile
 
 # ── statements ──────────────────────────────────────────────────────────────
 # The `inferred` flags and the enum's cached root/spec are derived caches —

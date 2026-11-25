@@ -263,7 +263,7 @@ fun main(): System::Int
     def test_iterate_and_compile_raises_on_non_convergence(self):
         """__iterate_and_compile must raise RuntimeError with a descriptive message when
         the compile loop fails to converge, rather than recursing without bound."""
-        line_ref = tok.LineRef("test.yafl", 0, 0)
+        line_ref = tok.LineRef.synthetic("test.yafl", 0, 0)
 
         # A Statement whose compile() always returns a structurally different fresh copy
         # (counter increments), so new_statements != statements every iteration.

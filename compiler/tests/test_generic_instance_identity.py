@@ -29,7 +29,7 @@ from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_c_result
 
 
-_lr = LineRef("f", 0, 0)
+_lr = LineRef.synthetic("f", 0, 0)
 _INT = t.BuiltinSpec(_lr, "bigint")
 _STR = t.BuiltinSpec(_lr, "str")
 _LEAVES = ("System::ListEmpty@1", "System::ListFull@1")

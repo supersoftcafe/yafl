@@ -93,7 +93,7 @@ fun flipErrs(before: List<PStmt>, after: List<PStmt>, otherwise: String): Set<PE
 
 # The line of the first statement that differs, walking the two in step.
 fun movedLine(as2: List<PStmt>, bs: List<PStmt>): PLine =>
-  zipFold<PStmt, PStmt, PLine|None>(as2, bs, None, movedStep) ?? PLine("none", 0, 0)
+  zipFold<PStmt, PStmt, PLine|None>(as2, bs, None, movedStep) ?? syntheticLine("none", 0, 0)
 
 fun movedStep(found: PLine|None, a: PStmt, b: PStmt) => found ?? (eqStmt(a, b) ? None : stmtLine(a))
 

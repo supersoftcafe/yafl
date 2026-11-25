@@ -477,9 +477,9 @@ def __collect_diagnostics(statements: list[s.Statement],
     mains = [stmt for stmt in statements
              if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
     if whole_program and not mains:
-        diagnostics += [Error(LineRef("none", 0, 0), "No main function found")]
+        diagnostics += [Error(LineRef.synthetic("none", 0, 0), "No main function found")]
     elif whole_program and len(mains) > 1:
-        diagnostics += [Error(LineRef("none", 0, 0), "Too many main functions defined")]
+        diagnostics += [Error(LineRef.synthetic("none", 0, 0), "Too many main functions defined")]
 
     # Warnings never fail the build: split them out and carry them to the
     # caller. On failure return everything — errors and warnings print together.
@@ -563,7 +563,7 @@ def __flip_errors(before: list[s.Statement], after: list[s.Statement],
     if errors:
         return sorted(errors)
     moved = [a for a, b in zip(before, after) if a != b]
-    return [Error(moved[0].line_ref if moved else LineRef("none", 0, 0), otherwise)]
+    return [Error(moved[0].line_ref if moved else LineRef.synthetic("none", 0, 0), otherwise)]
 
 
 class ConvergenceError(RuntimeError):
@@ -1078,7 +1078,7 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
         if not tests:
             # A test binary with nothing in it must NOT be built and exit 0 —
             # that is a green run reporting coverage it does not have.
-            return __print_errors([Error(LineRef("", 0, 0),
+            return __print_errors([Error(LineRef.synthetic("", 0, 0),
                 "--test: no [test] functions found")]), None, []
         kept = [st for st in user_statements if not __is_source_main(st)]
         test_stmts, test_errors = __tokenize_and_parse([__test_registry_source(tests)])

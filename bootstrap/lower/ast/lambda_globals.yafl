@@ -23,7 +23,7 @@ fun llgOne(st) => match(st)
 # function wants just the result.
 fun globalFunOf(l: PsLet, lm: PeLambda)
   ret PsFun(l.lName, l.lAttrs, l.lGens, lm.lamParams, lm.lamBody,
-            lambdaRetResult(lm), l.lWheres, l.pslLine, false, false,
+            lambdaRetResult(lm), l.lWheres, l.pslLine, inventedAt(l.pslLine), false, false,
             l.lImports)
 
 fun lambdaRetResult(lm: PeLambda) => match(lm.lamRet)

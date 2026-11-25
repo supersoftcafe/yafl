@@ -526,7 +526,7 @@ fun positionBinds(a: PArm, subs, gens,
   ret bindsLoop(prepend(posOfArm(a), a.armExtra), subs, gens, r,
                 None)
 
-fun posOfArm(a: PArm) => PPos(a.armName, a.armType, a.parmLine)
+fun posOfArm(a: PArm) => PPos(a.armName, a.armType, a.parmLine, a.armNameAt)
 
 # THREADS the resolver: each position binds over the scope the previous ones
 # built, so the body sees EVERY position's name. Binding each independently
@@ -562,7 +562,7 @@ fun bindPosition(p: PPos, sub: PExpr|None, g: GBundle|None,
   (e2: PExpr, b: GBundle, pt: Spec) => match(exprType(e2, r))
     (st: Spec) => reprPositionBind(classifyRepr(st, r),
                                    PArm(p.posName, p.posType, PeNothing(p.pposLine),
-                                        List(), None, p.pposLine, List()),
+                                        List(), None, p.pposLine, List(), p.posNameAt),
                                    mustResult(b), pt, st, r)
     ()         => None
   ()                                => None

@@ -299,10 +299,10 @@ fun createSpecializedVersion(st, args: List<Spec>,
 
 fun renameSpecialized(st, newName, args: List<Spec>) => match(st)
   (f: PsFun)  => PsFun(newName, f.fAttrs, List(), f.fParams, f.fBody,
-                       f.fRet, f.fWheres, f.psfLine, f.fRetInferred,
+                       f.fRet, f.fWheres, f.psfLine, f.fNameAt, f.fRetInferred,
                        f.fNested, f.fImports, f.fGlobal)
   (l: PsLet)  => PsLet(newName, l.lAttrs, List(), l.lType, l.lDefault,
-                       l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
+                       l.lArrayLen, l.lWheres, l.pslLine, l.lNameAt, l.lTypeInferred,
                        l.lImports)
   (c: PsClass) => specializedClass(c, newName, args)
   # The VARIANT tree renames with the same $generic$ suffix — the redirect
@@ -312,10 +312,10 @@ fun renameSpecialized(st, newName, args: List<Spec>) => match(st)
   # spec silently skipped union boxing at emit).
   (e2: PsEnum) => PsEnum(newName, e2.eAttrs, List(), e2.eParams,
                          renameVariantTree(e2.eVariants, args),
-                         e2.eHasParams, e2.pseLine, e2.eRootName, e2.eSpec,
+                         e2.eHasParams, e2.pseLine, e2.eNameAt, e2.eRootName, e2.eSpec,
                          e2.eImports)
   (ta: PsTypealias) => PsTypealias(newName, ta.taAttrs, List(),
-                                   ta.taType, ta.taWheres, ta.pstLine,
+                                   ta.taType, ta.taWheres, ta.pstLine, ta.taNameAt,
                                    ta.taImports)
   (o: PStmt)  => st
 
@@ -325,7 +325,7 @@ fun renameVariant(v, args: List<Spec>) => match(v)
   (ve: PsEnum) => PsEnum(mangledName(ve.eName, args), ve.eAttrs, ve.eGens,
                          ve.eParams,
                          renameVariantTree(ve.eVariants, args),
-                         ve.eHasParams, ve.pseLine, ve.eRootName, ve.eSpec,
+                         ve.eHasParams, ve.pseLine, ve.eNameAt, ve.eRootName, ve.eSpec,
                          ve.eImports)
   (o: PStmt)   => v
 
@@ -335,7 +335,7 @@ fun specializedClass(c: PsClass, newName, args: List<Spec>)
   ret PsClass(newName, c.cAttrs, List(), c.cParams, c.cImplements,
               c.cWheres,
               renameMembers(c.cMembers, rn, List()),
-              c.cIsInterface, c.pscLine, c.cAllParents,
+              c.cIsInterface, c.pscLine, c.cNameAt, c.cAllParents,
               renameSlots(c.cAllSlots, rn), c.cImports)
 
 class [final] Binding2(b2From: String, b2To: String)
@@ -361,7 +361,7 @@ fun renameMembersStep(a: List<PStmt>, x: PStmt, rn: List<Binding2>) => match(x)
     ? x
     : PsFun(renamedTo(rn, f.fName), f.fAttrs, f.fGens,
             f.fParams, f.fBody, f.fRet, f.fWheres,
-            f.psfLine, f.fRetInferred, f.fNested,
+            f.psfLine, f.fNameAt, f.fRetInferred, f.fNested,
             f.fImports, f.fGlobal))
   (o: PStmt) => append(a, x)
 
@@ -996,7 +996,7 @@ fun enumNamesLoopStep(a: List<String>, x: PStmt) => match(x)
 fun monoErrors(statements, seenMono: List<GRef>)
   let offenders = sort(offenderNames(seenMono))
   ret isEmpty(offenders)
-    ? GIter(statements, add(Set(),PErr(PLine("$generics", 1, 1),
+    ? GIter(statements, add(Set(),PErr(syntheticLine("$generics", 1, 1),
         "generic instantiation did not stabilise after 64 rounds — likely polymorphic recursion through mutually recursive generics; recursive calls must use the functions' own type parameters")))
     : GIter(statements, offenderErrs(offenders, statements, seenMono,
                                      Set()))
@@ -1025,7 +1025,7 @@ fun offenderMsg(name, count: Int)
 
 # Python's by_name dict: later statements with the same name overwrite, so the
 # LAST match wins.
-fun offenderLine(ss, name): PLine => offLineLoop(ss, name, PLine("$generics", 1, 1))
+fun offenderLine(ss, name): PLine => offLineLoop(ss, name, syntheticLine("$generics", 1, 1))
 
 fun offLineLoop(ss: List<PStmt>, name, best: PLine) =>
   fold(ss, best, (a, x) => stmtName(x) == name ? stmtLine(x) : a)

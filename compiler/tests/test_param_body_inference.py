@@ -254,7 +254,7 @@ class TestIncompleteSearchIsUnsettled(TimedTestCase):
             def find_data(self, name):
                 return g.INCOMPLETE
 
-        lr = LineRef("x", 0, 0)
+        lr = LineRef.synthetic("x", 0, 0)
         for name in ("plus", "System::`+`@AbCdEf"):
             with self.subTest(name=name):
                 _expr, _glb, hints = NamedExpression(lr, name).compile(Blocked(), None)
@@ -275,7 +275,7 @@ class TestIncompleteSearchIsUnsettled(TimedTestCase):
             def find_data(self, name):
                 return g.INCOMPLETE
 
-        lr = LineRef("x", 0, 0)
+        lr = LineRef.synthetic("x", 0, 0)
         rhs = e.TernaryExpression(lr, e.BoolExpression(lr, True),
                                   e.NamedExpression(lr, "System::blocked@AbCdEf"),
                                   e.IntegerExpression(lr, 5))

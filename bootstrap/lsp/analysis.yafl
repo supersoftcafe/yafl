@@ -89,8 +89,8 @@ fun checkedLibraries(ordered: List<Loaded>, converged: List<List<PStmt>>, idx: L
 fun failureDiagnostics(f: LibraryFailure): Set<PErr>
   let why = "the libraries cannot be loaded: " + f.lfWhy
   ret isEmpty(f.lfErrs)
-    ? Set(List(PErr(PLine("", 1, 1), why)))
-    : Set(map(sortBy(f.lfErrs, errLess), (e) => PErr(PLine("", 1, 1), why + ": " + errStr(e))))
+    ? Set(List(PErr(syntheticLine("", 1, 1), why)))
+    : Set(map(sortBy(f.lfErrs, errLess), (e) => PErr(syntheticLine("", 1, 1), $"{why}: {errStr(e)}")))
 
 fun libraryName(l: Library): String|None => l.libManifest.libName
 

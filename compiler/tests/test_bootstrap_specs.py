@@ -25,7 +25,7 @@ from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 
 _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
-_LR = LineRef("x", 0, 0)
+_LR = LineRef.synthetic("x", 0, 0)
 
 
 def _spec(text: str) -> t.TypeSpec | None:

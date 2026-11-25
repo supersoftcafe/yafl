@@ -888,7 +888,7 @@ def _coalesce_mutual_scc(scc_fns: list[s.FunctionStatement],
     # the closure object identity stable across cross-method calls; cheaper
     # too — single allocation.
     shared_name = f"$mutual::shared@{lr.hash6()}" + spec_suffix
-    capture_args = [e.TupleEntryExpression(field_names[src], e.NamedExpression(lr, src))
+    capture_args = [e.TupleEntryExpression.invented(field_names[src], e.NamedExpression(lr, src))
                     for src in capture_sources]
     cls_type = t.ClassSpec(lr, cls_name)
     shared_expr = e.NewExpression(lr, cls_type, e.TupleExpression(lr, capture_args))

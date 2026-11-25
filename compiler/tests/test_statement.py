@@ -11,7 +11,7 @@ import pyast.typespec as t
 from parsing.tokenizer import LineRef
 
 
-lr = LineRef("test", 1, 0)
+lr = LineRef("test", 1, 0, 1)
 
 
 @dataclass

@@ -163,10 +163,10 @@ def __rx_layer(layer: list[s.Statement], library: str | None) -> tuple[list[s.St
     # One global per distinct pattern. Sorted before numbering, like
     # $strings — set/dict order must never reach name generation.
     def create_global(index: int, pattern: str) -> s.LetStatement:
-        lr = LineRef("$regexes", index + 1, 1)
+        lr = LineRef.synthetic("$regexes", index + 1, 1)
         init = e.CallExpression(lr,
             e.NamedExpression(lr, "System::Regex"),
-            e.TupleExpression(lr, [e.TupleEntryExpression(None, e.StringExpression(lr, pattern))]))
+            e.TupleExpression(lr, [e.TupleEntryExpression.invented(None, e.StringExpression(lr, pattern))]))
         return s.LetStatement(lr, __rx_name(library, index), ImportGroup(()), {}, (),
                               init, t.NamedSpec(lr, "System::Regex"))
 

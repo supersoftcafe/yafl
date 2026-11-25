@@ -75,7 +75,7 @@ fun pngOne(let2, r)
   # Attributes are asked only whether they are present, so order is free.
   ret PsLet(let2.lName, prepend(PAttr("lazy", None), let2.lAttrs),
             let2.lGens, let2.lType, let2.lDefault, let2.lArrayLen,
-            let2.lWheres, let2.pslLine, let2.lTypeInferred, let2.lImports)
+            let2.lWheres, let2.pslLine, let2.lNameAt, let2.lTypeInferred, let2.lImports)
 
 # ── the forward-reference check ──────────────────────────────────────────────
 # A [lazy] body that forward-references a NON-lazy let in the SAME block would
@@ -211,7 +211,7 @@ fun lllWrapLet(let2: PsLet) => match(let2.lDefault)
                                  SCallable(STuple(List(),
                                                   let2.pslLine),
                                            t2, let2.pslLine)),
-                        let2.lArrayLen, let2.lWheres, let2.pslLine,
+                        let2.lArrayLen, let2.lWheres, let2.pslLine, let2.lNameAt,
                         let2.lTypeInferred, let2.lImports)
     ()         => None
   ()          => None

@@ -93,7 +93,7 @@ fun toLetLambda(f)
   ret match(f.fBody)
     (b: PExpr) => PsLet(f.fName, List(), List(), callableType,
                         PeLambda(f.fParams, b, f.psfLine, callableType),
-                        "", List(), f.psfLine, false, f.fImports)
+                        "", List(), f.psfLine, inventedAt(f.psfLine), false, f.fImports)
     ()         => f
 
 # ── outer var types ──────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ fun coalesceMutualScc(sccFns: List<PsFun>, outer: OuterTypes,
   let cls = PsClass(clsName, prepend(PAttr("final", PeInt(1, 32, lr)),
                                      List()),
                     List(), coClassParam(caps, lr), List(),
-                    List(), methods, false, lr, List<Spec>(),
+                    List(), methods, false, lr, inventedAt(lr), List<Spec>(),
                     List<Slot>(), List<PStmt>())
   let sharedName = "$mutual::shared@" + hash6(lr.plFile, lr.plLine, lr.plCol)
                    + specSuffix
@@ -204,13 +204,13 @@ fun coalesceMutualScc(sccFns: List<PsFun>, outer: OuterTypes,
                                                     List()),
                                       lr),
                               lr),
-                        "", List(), lr, false, List<PStmt>())
+                        "", List(), lr, inventedAt(lr), false, List<PStmt>())
   ret Coalesced(cls, coMethodLets(sccFns, renames, sharedName, lr,
                                   prepend(sharedLet, List())))
 
 fun coFirstLine(sccFns: List<PsFun>) => match(head(sccFns))
   (f: PsFun) => f.psfLine
-  ()         => PLine("$mutual", 1, 1)
+  ()         => syntheticLine("$mutual", 1, 1)
 
 # Union captures: every outer var referenced by any member of the SCC.
 #
@@ -267,7 +267,7 @@ fun coMethod(f: PsFun, renames: ThisMap, thisMap: ThisMap)
     (n: String) => n
     ()          => f.fName
   ret PsFun(newName, f.fAttrs, f.fGens, f.fParams,
-            rcmOpt(f.fBody, thisMap), f.fRet, f.fWheres, f.psfLine,
+            rcmOpt(f.fBody, thisMap), f.fRet, f.fWheres, f.psfLine, f.fNameAt,
             f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
 
 fun coClassParam(caps: OuterTypes, lr)
@@ -294,14 +294,14 @@ fun coParamLets(ns: List<String>, caps: OuterTypes, lr, acc: List<PStmt>) =>
 fun coParamLetsStep(a: List<PStmt>, x: String, caps: OuterTypes, lr) => match(get(caps.otMap, x))
   (sp: Spec) => append(a, PsLet(capturedFieldName(x, lr), List(),
     List(), sp,
-    None, "", List(), lr, false,
+    None, "", List(), lr, inventedAt(lr), false,
     List<PStmt>()))
   () => a
 
 # The entry NAME is the closure field; the value still reads the outer binding
 # under the name it has here.
 fun coCaptureArgs(ns: List<String>, lr, acc: List<PTupEnt>): List<PTupEnt> =>
-  concat(acc, map(ns, (n) => PTupEnt(capturedFieldName(n, lr), false, PeName(n, List(), lr, None))))
+  concat(acc, map(ns, (n) => madeEntry(capturedFieldName(n, lr), false, PeName(n, List(), lr, None))))
 
 # One shared instance, then one let per method exposing it under the
 # original nested-fn name.
@@ -309,7 +309,7 @@ fun coMethodLets(fs: List<PsFun>, renames: ThisMap, sharedName, lr, acc: List<PS
   fold(fs, acc, (a, x) => append(a, PsLet(x.fName, List(), List(),
                 funType(x),
                 PeDot(PeName(sharedName, List(), lr, None), coRenameOf(renames, x.fName), lr),
-                "", List(), lr, false, List<PStmt>())))
+                "", List(), lr, inventedAt(lr), false, List<PStmt>())))
 
 fun coRenameOf(renames: ThisMap, name) => match(tmLookup(renames, name))
   (n: String) => n
@@ -856,7 +856,7 @@ fun hoRebuiltBody(f: PsFun, body, value) => match(f.fBody)
 
 fun hoWithBody(f: PsFun, body)
   ret PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, body, f.fRet, f.fWheres,
-            f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
+            f.psfLine, f.fNameAt, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
 
 # ── rename application ───────────────────────────────────────────────────────
 
@@ -1052,7 +1052,7 @@ fun aiLetRenStmt(st, m: ThisMap): PStmt|None => match(st)
   (let2: PsLet) => match(tmLookup(m, let2.lName))
     (t2: String) => PsLet(t2, let2.lAttrs, let2.lGens, let2.lType,
                           let2.lDefault, let2.lArrayLen, let2.lWheres,
-                          let2.pslLine, let2.lTypeInferred, let2.lImports)
+                          let2.pslLine, let2.lNameAt, let2.lTypeInferred, let2.lImports)
     ()           => None
   (o: PStmt)    => None
 
@@ -1240,7 +1240,7 @@ fun aiParamPrologue(ps: List<PStmt>, as2: List<PExpr>,
                     acc: List<PStmt>): List<PStmt> =>
   zipFold(ps, as2, acc,
           (a, p, arg) => append(a, PsLet(stmtName(p) + suffix, List(), List(), aiLetTypeOf(p), arg,
-                                         "", List(), lineRef, false, List<PStmt>())))
+                                         "", List(), lineRef, inventedAt(lineRef), false, List<PStmt>())))
 
 fun aiLetTypeOf(st) => match(st)
   (l: PsLet) => l.lType
@@ -1300,7 +1300,7 @@ fun aiTis3(c: PeCall, targetName: String, st, catalog: Catalog,
 fun aiWrap(st, kindSel: Int, x) => match(st)
   (rt: PsRet)   => PsRet(x, rt.psrLine)
   (let2: PsLet) => PsLet(let2.lName, let2.lAttrs, let2.lGens, let2.lType,
-                         x, let2.lArrayLen, let2.lWheres, let2.pslLine,
+                         x, let2.lArrayLen, let2.lWheres, let2.pslLine, let2.lNameAt,
                          let2.lTypeInferred, let2.lImports)
   (a: PsAction) => PsAction(x, a.psaLine)
   (o: PStmt)    => st
@@ -1354,7 +1354,7 @@ fun aiBoundRenStmt(st: PStmt, bound: Set<String>,
                    suffix: String): PStmt|None => match(st)
   (l: PsLet) => contains(bound, l.lName)
     ? PsLet(l.lName + suffix, l.lAttrs, l.lGens, l.lType, l.lDefault,
-            l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
+            l.lArrayLen, l.lWheres, l.pslLine, l.lNameAt, l.lTypeInferred,
             l.lImports)
     : None
   (o: PStmt) => None
@@ -1397,7 +1397,7 @@ fun [tail] aiIlbPrologue(ps: List<PStmt>, as2: List<PExpr>,
     (a: PExpr) => match(aiBindType(p, a, r))
       (bt: Spec) => aiIlbPrologue(dropOne(ps), dropOne(as2), r, suffix,
                                   append(acc, PsLet(stmtName(p) + suffix, List(), List(), bt, a, "",
-                                                    List(), exprLine(a), false, None)))
+                                                    List(), exprLine(a), inventedAt(exprLine(a)), false, None)))
       ()         => None
     ()         => acc
   ()         => acc
@@ -1659,7 +1659,7 @@ fun aiRwf2(f: PsFun, bk: PeBlock, catalog: Catalog, r,
                                PeBlock(dropLastOne(p2.rnssStmts),
                                        rt.retValue, bk.blockTag,
                                        bk.pebkLine),
-                               f.fRet, f.fWheres, f.psfLine,
+                               f.fRet, f.fWheres, f.psfLine, f.fNameAt,
                                f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
                          true)
     ()          => RfOut(p2.rnssN, f, false)

@@ -132,7 +132,7 @@ fun compileClass(c, r0): StmtOut
   ret StmtOut(PsClass(c.cName, c.cAttrs, c.cGens, stmtOr(params, c.cParams),
                       resolvedImplements(inh, List()),
                       wheres.psSpecs, stripOwnerWheres(members.slStmts, c.cWheres),
-                      c.cIsInterface, c.pscLine, allParents, allSlots,
+                      c.cIsInterface, c.pscLine, c.cNameAt, allParents, allSlots,
                       c.cImports),
               concat(params.soExtra,
                      concat(wheres.psGlobals, members.slGlobals)),
@@ -148,7 +148,7 @@ fun withOwnerWheres(ms: List<PStmt>, wheres: List<Spec>): List<PStmt>
 fun ownerWhereFn(m, wheres) => match(m)
   (f: PsFun) => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
                       f.fRet, isEmpty(wheres) ? f.fWheres : wheres,
-                      f.psfLine, f.fRetInferred, f.fNested,
+                      f.psfLine, f.fNameAt, f.fRetInferred, f.fNested,
                       f.fImports, false)
   (o: PStmt) => m
 
@@ -157,7 +157,7 @@ fun stripOwnerWheres(ms, wheres: List<Spec>): List<PStmt>
 
 fun strippedWhereFn(m) => match(m)
   (f: PsFun) => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
-                      f.fRet, List(), f.psfLine, f.fRetInferred,
+                      f.fRet, List(), f.psfLine, f.fNameAt, f.fRetInferred,
                       f.fNested, f.fImports, f.fGlobal)
   (o: PStmt) => m
 
@@ -224,7 +224,7 @@ fun compileEnum(e: PsEnum, r0): StmtOut
   # variant to run the layout over the freshly compiled node.
   ret StmtOut(layoutEnum(PsEnum(e.eName, e.eAttrs, e.eGens,
                                 stmtOr(params, e.eParams),
-                                variants.slStmts, e.eHasParams, e.pseLine,
+                                variants.slStmts, e.eHasParams, e.pseLine, e.eNameAt,
                                 None, None, e.eImports)),
               concat(glb, derived), noHints())
 
@@ -327,7 +327,7 @@ fun assignSpecs(e: PsEnum, root, allLeaves, path: List<String>)
   ret PsEnum(e.eName, e.eAttrs, e.eGens, e.eParams,
              assignAllSpecs(e.eVariants, root, allLeaves, path,
                             List()),
-             e.eHasParams, e.pseLine, root,
+             e.eHasParams, e.pseLine, e.eNameAt, root,
              SEnum(root, collectLeafNames(e), allLeaves, List(),
                    e.pseLine, path),
              e.eImports)

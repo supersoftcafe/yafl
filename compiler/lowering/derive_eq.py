@@ -258,12 +258,12 @@ def __false(lr): return e.BoolExpression(lr, False)
 def __op(lr, rtype: str, name: str, *args) -> e.Expression:
     return e.BuiltinOpExpression(lr, t.BuiltinSpec(lr, rtype),
         e.StringExpression(lr, name),
-        e.TupleExpression(lr, [e.TupleEntryExpression(None, a) for a in args]))
+        e.TupleExpression(lr, [e.TupleEntryExpression.invented(None, a) for a in args]))
 
 
 def __call(lr, fn: str, *args) -> e.Expression:
     return e.CallExpression(lr, e.NamedExpression(lr, fn),
-        e.TupleExpression(lr, [e.TupleEntryExpression(None, a) for a in args]))
+        e.TupleExpression(lr, [e.TupleEntryExpression.invented(None, a) for a in args]))
 
 
 def __param(lr, name: str, type_name: str) -> s.LetStatement:

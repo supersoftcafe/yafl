@@ -70,7 +70,7 @@ fun drClassMembers(c: PsClass, r, insts: List<TraitInst>)
   ret out.dmChanged
     ? DrS(PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
                   c.cWheres, out.dmStmts, c.cIsInterface,
-                  c.pscLine, c.cAllParents, c.cAllSlots, c.cImports),
+                  c.pscLine, c.cNameAt, c.cAllParents, c.cAllSlots, c.cImports),
           true)
     : DrS(c, false)
 
@@ -314,7 +314,7 @@ fun withDrops(body, drops: List<PStmt>): PExpr
   let stmts = concat(
       append(stmts0,
            PsLet(keep, List(), List(), None,
-                 value0, "", List(), lr)),
+                 value0, "", List(), lr, inventedAt(lr))),
       dropCalls(drops, List()))
   ret PeBlock(stmts, PeName(keep, List(), lr), "", lr)
 
@@ -577,7 +577,7 @@ fun drFixMatch(st: DrFix, mt: PeMatch, let2: PsLet): (s: DrFix, r: PExpr|None)
 # `where Drop<T>`.
 fun dropCall(let2: PsLet)
   ret PsAction(PeCall(PeName("drop", List(), let2.pslLine),
-                      PeTuple(prepend(PTupEnt("", false,
+                      PeTuple(prepend(madeEntry("", false,
                                              PeName(let2.lName, List(),
                                                     let2.pslLine)), List()),
                               let2.pslLine),

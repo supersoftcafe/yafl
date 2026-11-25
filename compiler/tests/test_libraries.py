@@ -265,8 +265,8 @@ class TestUnitNamesAreRelativePaths(TestCase):
 
     def test_same_basename_in_two_directories_hashes_apart(self):
         from parsing.tokenizer import LineRef
-        a = LineRef("Math/util.yafl", 12, 15)
-        b = LineRef("Text/util.yafl", 12, 15)
+        a = LineRef("Math/util.yafl", 12, 15, 1)
+        b = LineRef("Text/util.yafl", 12, 15, 1)
         self.assertNotEqual(a.hash6(), b.hash6(),
                             "the directory must reach hash6, or the two units "
                             "generate colliding symbol names")

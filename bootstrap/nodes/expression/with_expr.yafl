@@ -50,7 +50,7 @@ fun withLets(wx: PeWith, tag, uniques: List<String>, r): List<PStmt>
   # these are STATEMENTS, so the order is the program.
   let base = append<PStmt>(List(),
                          PsLet("$ws@" + tag, List(), List(),
-                               None, wx.withSubject, "", List(), lr))
+                               None, wx.withSubject, "", List(), lr, inventedAt(lr)))
   ret withReplLets(withEntryList(wx), 0, tag, lr,
                          exprType(wx.withSubject, r), uniques, r, base)
 
@@ -65,7 +65,7 @@ fun withReplLetsStep(st: (i: Int, acc: List<PStmt>), x: PTupEnt, tag, lr, subjTy
   acc = append(st.acc,
       PsLet("$w" + String(st.i) + "@" + tag, List(), List(),
             withFieldType(subjTy, x.tupName, uniques, r),
-            x.tupValue, "", List(), lr)))
+            x.tupValue, "", List(), lr, inventedAt(lr))))
 
 fun withFieldType(subjTy: Spec|None, bare: String, uniques: List<String>, r) => match(subjTy)
   (st: Spec) => match(head(filter(uniques, (u) => bareName(u) == bare)))
@@ -88,11 +88,11 @@ fun withGuardLoopStep(st: (i: Int, acc: PExpr|None), x: PTupEnt, lr) =>
   (i = st.i + 1,
   acc = withAnd(st.acc,
       PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_same", lr),
-                  PeTuple(list2(PTupEnt("", false,
+                  PeTuple(list2(madeEntry("", false,
                            PeName("$w" + String(st.i), List(), lr)),
-                          PTupEnt("", false,
+                          madeEntry("", false,
                            PeDot(PeName("$ws", List(), lr),
-                                 x.tupName, lr))), lr), lr),
+                                 x.tupName, x.tupLine))), lr), lr),
       lr))
 
 fun withAnd(acc: PExpr|None, one, lr) => match(acc)
@@ -109,7 +109,7 @@ fun withCtorArgs(fs: List<PStmt>, repls: List<PTupEnt>, carrier, lr, acc: List<P
   fold(fs, acc, (a, x) => withCtorArgsStep(a, x, repls, carrier, lr))
 
 fun withCtorArgsStep(a: List<PTupEnt>, x: PStmt, repls: List<PTupEnt>, carrier, lr) => match(x)
-  (p: PsLet) => append(a, PTupEnt("", false, withCtorArg(bareName(p.lName), repls, carrier, lr)))
+  (p: PsLet) => append(a, madeEntry("", false, withCtorArg(bareName(p.lName), repls, carrier, lr)))
   (o: PStmt) => a
 
 fun withCtorArg(bare, repls: List<PTupEnt>, carrier,
@@ -203,7 +203,7 @@ fun withArmsStep(st: (i: Int, acc: List<PArm>), x: String, set: List<PStmt>, tag
      ? append(st.acc, PArm("$wx" + String(st.i) + "@" + tag,
                            SNamed(x, List(), wx.pewLine),
                            withConstruct(x, set, withEntryList(wx), "$wx" + String(st.i), wx.pewLine),
-                           List(), None, wx.pewLine, List()))
+                           List(), None, wx.pewLine, List(), inventedAt(wx.pewLine)))
      : st.acc)
 
 fun withAssemble(wx: PeWith, copy, uniques: List<String>, r)

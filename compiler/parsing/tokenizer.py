@@ -28,9 +28,37 @@ class TokenKind(Enum):
 
 @dataclass(frozen=True, order=True)
 class LineRef:
+    """Where a token is written: file, line, the 1-based column it starts at,
+    and its length in characters. Everything that makes one says what it
+    marks, so `length` is at least 1. The one exception is a position the
+    compiler invents, with no source behind it: `synthetic` and `invented`
+    make those, with length 0, and nothing else does. `point` is the other
+    way to name a place without a token: one character wide."""
     filename: str
     line: int
     offset: int
+    length: int
+
+    @staticmethod
+    def synthetic(filename: str, line: int, offset: int) -> "LineRef":
+        """A position that marks no source text (a made-up name, a generated
+        unit). Length 0 is what says so."""
+        return LineRef(filename, line, offset, 0)
+
+    def invented(self) -> "LineRef":
+        """The same place, for a node the compiler makes up there: it marks no
+        source text of its own."""
+        return LineRef(self.filename, self.line, self.offset, 0)
+
+    def point(self) -> "LineRef":
+        """The place this one starts at, one character wide: where a block
+        ends is a place, not a token."""
+        return LineRef(self.filename, self.line, self.offset, 1)
+
+    def same_start(self, other: "LineRef") -> bool:
+        """Whether both begin at the same place, whatever their lengths: the
+        compiler's made-up names begin where the code they stand for does."""
+        return (self.filename, self.line, self.offset) == (other.filename, other.line, other.offset)
 
     def __repr__(self):
         # The whole name, path included: a unit is identified by its path
@@ -39,7 +67,7 @@ class LineRef:
         return f"{self.filename}[{self.line}:{self.offset}]"
 
     def hash6(self) -> str:
-        # Create string to hash from all fields
+        # Hash the place only (file, line, column): the length is not part of a name
         source = f"{self.filename}:{self.line}:{self.offset}"
 
         # Generate bytes hash
@@ -120,15 +148,16 @@ def tokenize(content: str, filename: str) -> List[Token]:
                     if kind:
                         if kind == TokenKind.IDENTIFIER and match in __keywords:
                             kind = TokenKind.SYMBOLS
-                        tokens.append(Token(kind, match, indent, LineRef(filename, lineno, offset+1)))
+                        tokens.append(Token(kind, match, indent, LineRef(filename, lineno, offset+1, len(match))))
                     offset += len(match)
                     break
 
     if tokens:
         tk = tokens[-1]
-        lr = LineRef(filename, tk.line_ref.line, tk.line_ref.offset + len(tk.value))
+        # The end of the file: the place the next character would be, one wide.
+        lr = LineRef(filename, tk.line_ref.line, tk.line_ref.offset + tk.line_ref.length, 1)
     else:
-        lr = LineRef(filename, 1, 1)
+        lr = LineRef(filename, 1, 1, 1)
     tokens.append(Token(TokenKind.EOF, "", 0, lr))
 
     return tokens

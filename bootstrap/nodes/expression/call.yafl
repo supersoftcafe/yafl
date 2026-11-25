@@ -64,7 +64,7 @@ fun checkCall(c: PeCall, r) => match(c.pecOrigin)
 # of unknown type makes every candidate fit, so the call's own complaint would
 # only be noise.
 fun originErrs(o: POrigin, lr: PLine, errs: Set<PErr>): Set<PErr>
-  let others = filter(errs, (e2) => e2.errLine != lr)
+  let others = filter(errs, (e2) => !sameStart(e2.errLine, lr))
   ret !isEmpty(others) ? others
     : map(errs, (e2) => PErr(e2.errLine, originReword(o, e2.errMsg), e2.errWarn, e2.errCategory))
 

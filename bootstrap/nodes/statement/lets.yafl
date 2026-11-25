@@ -35,7 +35,7 @@ fun compileLet(l: PsLet, r)
   let inferredNow = settled ? (declared ? l.lTypeInferred : true) : l.lTypeInferred
   let finalTy = settled ? inferType(declaredTy, initType(init, r), declared, r) : declaredTy
   ret StmtOut(PsLet(l.lName, l.lAttrs, l.lGens, finalTy, exprOf(init),
-                    l.lArrayLen, wheres.psSpecs, l.pslLine, inferredNow,
+                    l.lArrayLen, wheres.psSpecs, l.pslLine, l.lNameAt, inferredNow,
                     l.lImports),
               concat(globalsOf(init), concat(globalsOfSpec(ty), wheres.psGlobals)),
               hintsOf(init))
@@ -99,7 +99,7 @@ fun adoptLet(l: PsLet, entryTy: Spec|None, r)
   let declared = hasDeclaredType(l)
   let ty = inferType(l.lType, entryTy, declared, r)
   ret PsLet(l.lName, l.lAttrs, l.lGens, ty, l.lDefault, l.lArrayLen,
-            l.lWheres, l.pslLine, declared ? l.lTypeInferred : true)
+            l.lWheres, l.pslLine, l.lNameAt, declared ? l.lTypeInferred : true)
 
 fun isKnownLetAttr(n) => n == "terminal" || n == "const" || n == "lazy" || n == "trait"
  || n == "future" || n == "linear" || n == "final" || n == "mutable"

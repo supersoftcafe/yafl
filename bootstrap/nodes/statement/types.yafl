@@ -22,7 +22,7 @@ fun compileTypealias(ta: PsTypealias, r0)
   let ty = compileSpec(ta.taType, r)
   let wheres = compileParams(ta.taWheres, r)
   ret StmtOut(PsTypealias(ta.taName, ta.taAttrs, ta.taGens, ty.soSpec,
-                          wheres.psSpecs, ta.pstLine, ta.taImports),
+                          wheres.psSpecs, ta.pstLine, ta.taNameAt, ta.taImports),
               concat(ty.soGlobals, wheres.psGlobals), noHints())
 
 fun isKnownEnumAttr(n) => n == "hashed" || n == "refeq" || n == "linear" || n == "final"

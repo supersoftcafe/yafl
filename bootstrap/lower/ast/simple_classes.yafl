@@ -489,7 +489,7 @@ fun scRenameBody(body: PExpr|None): PExpr|None => match(body)
   ()         => None
 
 fun scThisLet(tupleSpec, lr) => PsLet("$this", List(), List(), tupleSpec, None, "",
-                                      List(), lr, false, List<PStmt>())
+                                      List(), lr, inventedAt(lr), false, List<PStmt>())
 
 fun scPrependThis(params, tupleSpec, lr) => match(params)
   (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
@@ -500,7 +500,7 @@ fun scPrependThis(params, tupleSpec, lr) => match(params)
 fun scLiftMethod(clsName, tupleSpec, method: PsFun)
   ret PsFun(clsName + "__" + method.fName, method.fAttrs, method.fGens,
             scPrependThis(method.fParams, tupleSpec, method.psfLine),
-            scRenameBody(method.fBody), method.fRet, method.fWheres, method.psfLine,
+            scRenameBody(method.fBody), method.fRet, method.fWheres, method.psfLine, method.fNameAt,
             method.fRetInferred, method.fNested, method.fImports, method.fGlobal)
 
 fun scLiftMembers(ms: List<PStmt>, clsName, tupleSpec, acc: List<PStmt>) =>
@@ -626,7 +626,7 @@ fun scMakeLiftedCall(c: PeCall, d: PeDot, clsName)
   let args = match(c.parameter)
     (tp: PeTuple) => tp.exprs
     (o: PExpr)    => List()
-  let newArgs = PeTuple(concat(prepend(PTupEnt("", false, d.base), List()), args), lr)
+  let newArgs = PeTuple(concat(prepend(madeEntry("", false, d.base), List()), args), lr)
   ret PeCall(PeName(clsName + "__" + d.member, List(), lr), newArgs, lr, c.pecOrigin)
 
 fun scBuildMethodCall(c: PeCall, d: PeDot, clsName, cands: ScCands)

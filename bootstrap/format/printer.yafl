@@ -93,7 +93,7 @@ fun printImports(run: List<PStmt>, first: Bool): List<Doc>
   let paths = sort(dedupe(map(run, importPath)))
   let sys = filter(paths, isSystemPath)
   let rest = filter(paths, (p) => !isSystemPath(p))
-  let firstLine = stmtLine(head(run) ?? PsImport("", PLine("", 0, 0)))
+  let firstLine = stmtLine(head(run) ?? PsImport("", syntheticLine("", 0, 0)))
   ret concat(importGroup(sys, firstLine, first, first ? 0 : 1),
              importGroup(rest, firstLine, first && isEmpty(sys), first && isEmpty(sys) ? 0 : 1))
 
@@ -169,8 +169,8 @@ fun whereDoc(sig: Doc, ws: List<Spec>): Doc => isEmpty(ws)
   : group(cat(sig, nest(4, cat(line(), text("where "), specDoc(unionOf(ws))))))
 
 fun unionOf(ws: List<Spec>): Spec => match(head(ws))
-  (only: Spec) => isEmpty(dropOne(ws)) ? only : SCombination(ws, PLine("", 0, 0))
-  ()           => SCombination(ws, PLine("", 0, 0))
+  (only: Spec) => isEmpty(dropOne(ws)) ? only : SCombination(ws, syntheticLine("", 0, 0))
+  ()           => SCombination(ws, syntheticLine("", 0, 0))
 
 fun bodyDoc(bk: PeBlock): Doc => isEmpty(bk.blockStmts)
   ? arrowDoc(bk.blockValue)
@@ -183,7 +183,7 @@ fun withRet(bk: PeBlock): List<PStmt> => match(bk.blockValue)
 
 fun printLet(l: PsLet): Doc =>
   whereDoc(cat(text("let "), targetDoc(PsLet(l.lName, l.lAttrs, l.lGens, l.lType, None, l.lArrayLen,
-                                                     List(), l.pslLine)),
+                                                     List(), l.pslLine, l.lNameAt)),
                     defaultDoc(l.lDefault)),
            l.lWheres)
 
@@ -403,7 +403,7 @@ fun operatorShape(name: String, args: List<PExpr>): Shape|None
   let op = operatorOf(name)
   if op == ""
     ret None
-  let first = head(args) ?? PeNothing(PLine("", 0, 0))
+  let first = head(args) ?? PeNothing(syntheticLine("", 0, 0))
   if itemCount(args) == 1
     ret isUnaryOp(op) ? ShUnary(op, first) : None
   ret itemCount(args) == 2 ? twoArgShape(op, first, head(dropOne(args)) ?? first) : None
@@ -612,11 +612,11 @@ fun nestIf(yes: Bool, d: Doc): Doc => yes ? nest(4, d) : d
 # The chain's first `cond ? result`, then each later `: cond ? result` (or the
 # final `: value`), as expressions to print with ternaryArm.
 fun ternaryLines(t: ShTernary): (first: PExpr, rest: List<PExpr>)
-  let first = PeTernary(t.tCond, t.tThen, PeNothing(PLine("", 0, 0)), PLine("", 0, 0))
+  let first = PeTernary(t.tCond, t.tThen, PeNothing(syntheticLine("", 0, 0)), syntheticLine("", 0, 0))
   ret (first = first, rest = elseLinks(t.tElse))
 
 fun elseLinks(x: PExpr): List<PExpr> => match(shapeOf(x))
-  (t: ShTernary) => prepend(PeTernary(t.tCond, t.tThen, PeNothing(PLine("", 0, 0)), PLine("", 0, 0)), elseLinks(t.tElse))
+  (t: ShTernary) => prepend(PeTernary(t.tCond, t.tThen, PeNothing(syntheticLine("", 0, 0)), syntheticLine("", 0, 0)), elseLinks(t.tElse))
   ()             => List(x)
 
 # `cond ? result` for a link (a ternary whose else is the placeholder), or
@@ -669,8 +669,8 @@ fun builtinTypeText(sp: Spec): String => match(sp)
   ()            => render(specDoc(sp), lineWidth())
 
 fun prependArg(name: PExpr, args: PExpr): PExpr => match(args)
-  (t2: PeTuple) => PeTuple(prepend(PTupEnt("", false, name), t2.exprs), t2.petLine)
-  ()            => PeTuple(List(PTupEnt("", false, name), PTupEnt("", false, args)), exprLine(args))
+  (t2: PeTuple) => PeTuple(prepend(madeEntry("", false, name), t2.exprs), t2.petLine)
+  ()            => PeTuple(List(madeEntry("", false, name), madeEntry("", false, args)), exprLine(args))
 
 # `=> body`. A ternary chain starts a line of its own four in; anything else
 # stays on the arrow's line and wraps inside itself, or moves down when it

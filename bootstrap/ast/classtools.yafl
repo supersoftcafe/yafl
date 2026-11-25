@@ -283,7 +283,7 @@ fun thisFound(cs: PsClass, query) => query == "this"
   : List()
 
 fun thisLet(cs: PsClass) => PsLet("this", List(), List(), thisType(cs), None, "",
-                                  List(), cs.pscLine)
+                                  List(), cs.pscLine, inventedAt(cs.pscLine))
 
 fun thisType(cs: PsClass)
   ret SClass(cs.cName,

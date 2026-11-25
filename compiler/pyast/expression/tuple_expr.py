@@ -59,12 +59,22 @@ def _unwrap_one_tuple(expr: "Expression") -> "Expression":
 
 @dataclass
 class TupleEntryExpression:
+    # Where the entry is written: its first token, which for `x = 9` is the
+    # name `x` and for a bare `f(a.b)` argument is `a`. An entry the compiler
+    # makes up marks nothing, and says so with `invented`.
+    line_ref: LineRef
     name: str|None
     value: Expression
     # `*value` — splice the tuple value's fields into the enclosing tuple,
     # positionally (names never travel through a spread). Expanded away by
     # TupleExpression.compile once the value's tuple arity is known.
     spread: bool = False
+
+    @staticmethod
+    def invented(name: str|None, value: Expression, spread: bool = False) -> TupleEntryExpression:
+        """An entry the compiler makes up around `value`: it begins where the
+        value does and marks no source text of its own."""
+        return TupleEntryExpression(value.line_ref.invented(), name, value, spread)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> TupleEntryExpression:
         v = self.value.search_and_replace(resolver, replace)
@@ -131,7 +141,7 @@ class TupleExpression(Expression):
             fresh = [f"$spread{idx}$f{i}@{lr.hash6()}" for i in range(len(stype.entries))]
             targets = [s.LetStatement(lr, nm, None, {}, (), None, None) for nm in fresh]
             binders.append(s.DestructureStatement(lr, '_', None, {}, (), x.value, None, targets))
-            entries.extend(TupleEntryExpression(None, NamedExpression(lr, nm)) for nm in fresh)
+            entries.extend(TupleEntryExpression.invented(None, NamedExpression(lr, nm)) for nm in fresh)
         block = BlockExpression(self.line_ref, binders,
                                 TupleExpression(self.line_ref, entries))
         expr, block_globals, block_hints = block.compile(resolver, expected_type)

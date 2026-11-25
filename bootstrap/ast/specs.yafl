@@ -405,7 +405,7 @@ fun parseSpecText(s): Spec|None
     ret parseTupleText(inParens(t2))
   ret None
 
-fun noLine(): PLine => PLine("x", 0, 0)
+fun noLine(): PLine => syntheticLine("x", 0, 0)
 
 fun afterColon(s)
   let c = findByte(s, ':', 0)

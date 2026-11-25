@@ -19,6 +19,30 @@ Documents are synchronised whole on every change. Positions are UTF-16 units,
 the protocol's default: a character beyond U+FFFF is one column to the
 compiler and two to the client.
 
+## Positions
+
+The compiler counts lines and columns from 1, columns in characters; the
+protocol counts from 0, in UTF-16 units. Every position the compiler keeps
+says how long the token it marks is (#140), so a range is exact:
+
+- a diagnostic's range is the token the error points at, the whole of a
+  qualified name such as `System::nosuch`; a position the compiler made up has
+  no length, and its range is empty, which a client shows as the word there;
+- a declaration records where its name is written, apart from the position its
+  unique name is taken from (`fun` and `let` keep theirs), so a definition
+  points at the name;
+- a use is the name as written. For a qualified path it is the last segment,
+  so `System::length` leads to `length` from `length` and nowhere from
+  `System`. A name the compiler wrote for the program, such as the `show` an
+  interpolation calls, has no length and is no use.
+
+Backticks are part of a name: `` `my fn` `` is selected whole, wherever it is
+declared or used. An operator used as one is written without them (`+` in
+`a + b`) and is that single character.
+
+The text at a span is checked to be the name before it is offered to the
+client; a position that marks something else is dropped, not shown.
+
 ## The program
 
 The workspace folder is the program: every `.yafl` file under it, each named by

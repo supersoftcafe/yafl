@@ -147,6 +147,18 @@ class Parser(Generic[T]):
                           left.line_ref, left.errors)
         return Parser(p)
 
+    def build_from(self, transform: Callable[[T, LineRef, List[Token]], Y]) -> Parser[Y]:
+        """`build`, with the tokens the parser was given as well: for a node
+        whose position spans several of them, which `line_ref` (the first
+        token's) cannot say."""
+        def p(tokens: List[Token]) -> Result[Y]:
+            left = self(tokens)
+            if not left:
+                return left
+            return Result(transform(left.value, left.line_ref, tokens), left.tokens,
+                          left.line_ref, left.errors)
+        return Parser(p)
+
     def __getitem__(self, index) -> Parser[list[T]]:
         #   [:] == any amount
         #   [1:] == 1 or more
@@ -234,7 +246,9 @@ def close_angle() -> Parser[Tuple]:
         if head.kind == TokenKind.SYMBOLS and head.value.startswith(">"):
             if head.value == ">":
                 return Result((), tokens[1:], head.line_ref, [])
-            remainder = Token(head.kind, head.value[1:], head.indent, head.line_ref)
+            remainder = Token(head.kind, head.value[1:], head.indent,
+                              LineRef(head.line_ref.filename, head.line_ref.line,
+                                      head.line_ref.offset + 1, head.line_ref.length - 1))
             return Result((), [remainder, *tokens[1:]], head.line_ref, [])
         return Result.none(tokens, head.line_ref)
     return Parser(p)
@@ -320,7 +334,7 @@ def block(parser: Parser[T], ends_at_closer: bool = False) -> Parser[T]:
                     depth -= 1
             index += 1
 
-        result = parser(tokens[:index] + [Token(TokenKind.EOF, "", 0, tokens[index].line_ref)])
+        result = parser(tokens[:index] + [Token(TokenKind.EOF, "", 0, tokens[index].line_ref.point())])
 
         # Only fall back to the generic leftover-tokens message when the inner
         # parser MATCHED and nothing more specific was reported — a real

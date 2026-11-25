@@ -335,7 +335,7 @@ fun redirectSelfRef(nm: PeName, selfNames: List<String>, methodName,
 fun buildFunctionFromLambda(lm: PeLambda, nme, body)
   ret PsFun(nme, List(), List(), lm.lamParams,
             PeBlock(List(), body, "", lm.pelLine),
-            lambdaResultType(lm.lamRet), List(), lm.pelLine, false, false,
+            lambdaResultType(lm.lamRet), List(), lm.pelLine, inventedAt(lm.pelLine), false, false,
             List<PStmt>())
 
 fun lambdaResultType(lamRet: Spec|None) => match(lamRet)
@@ -351,7 +351,7 @@ fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn)
              List(),
              PsDestructure("_", List(), STuple(entries, lr), paramLets,
                           None, lr, false),
-             List(), List(), prepend(fn, List()), false, lr,
+             List(), List(), prepend(fn, List()), false, lr, inventedAt(lr),
              List<Spec>(), List<Slot>(), List<PStmt>())
 
 fun clEntries(ns: List<String>, cpt: ClCaps, lr: PLine, acc: List<SEntry>) =>
@@ -360,7 +360,7 @@ fun clEntries(ns: List<String>, cpt: ClCaps, lr: PLine, acc: List<SEntry>) =>
 fun clParamLets(ns: List<String>, cpt: ClCaps, lr, acc: List<PStmt>) =>
   fold(ns, acc, (a, x) => append(a, PsLet(capturedFieldName(x, lr), List(),
                 List(),
-                ccTypeOf(cpt, x), None, "", List(), lr,
+                ccTypeOf(cpt, x), None, "", List(), lr, inventedAt(lr),
                 false, List<PStmt>())))
 
 fun captureRead(name, xtype: Spec|None, lr) => match(xtype)
@@ -377,7 +377,7 @@ fun clStubRead(name, ls: SLazyStub, lr) => match(ls.slsTarget)
 # The entry NAME is the closure field; the value still reads the outer
 # binding under the name it has here.
 fun captureArgs(ns: List<String>, cpt: ClCaps, lr, acc: List<PTupEnt>) =>
-  concat(acc, map(ns, (n) => PTupEnt(capturedFieldName(n, lr), false,
+  concat(acc, map(ns, (n) => madeEntry(capturedFieldName(n, lr), false,
                                      captureRead(n, ccTypeOf(cpt, n), lr))))
 
 fun replacementExprFor(nme, cpt: ClCaps, lr)

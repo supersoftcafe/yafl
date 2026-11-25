@@ -56,7 +56,7 @@ fun llInBlock(f0: PsFun, bk0: PeBlock)
   let rebuilt = PsFun(f0.fName, f0.fAttrs, f0.fGens, f0.fParams,
                       PeBlock(bodyStmts, bk0.blockValue, bk0.blockTag,
                               bk0.pebkLine),
-                      f0.fRet, f0.fWheres, f0.psfLine, f0.fRetInferred,
+                      f0.fRet, f0.fWheres, f0.psfLine, f0.fNameAt, f0.fRetInferred,
                       f0.fNested, f0.fImports, f0.fGlobal)
   let nested = hoNestedFns2(bodyStmts, List())
   if isEmpty(nested)
@@ -241,7 +241,7 @@ fun llExtrasFor(ctx: LiftCtx, name: String)
 fun llCallArgs(p) => match(p)
   (tp: PeTuple)   => tp.exprs
   (ng: PeNothing) => List()
-  (o: PExpr)      => prepend(PTupEnt("", false, p), List())
+  (o: PExpr)      => prepend(madeEntry("", false, p), List())
 
 # rewrite: one callback per kind over the whole function. A call to a lifted
 # member gains the captured names as extra args; the member gains the copies.
@@ -266,7 +266,7 @@ fun llWithParams(st, extras: List<String>,
                              llParamCopies(extras, paramLets,
                                            List())),
                       d.dDefault, d.psdLine, d.dTypeInferred),
-        f.fBody, f.fRet, f.fWheres, f.psfLine, f.fRetInferred, f.fNested,
+        f.fBody, f.fRet, f.fWheres, f.psfLine, f.fNameAt, f.fRetInferred, f.fNested,
         f.fImports, f.fGlobal)
     (o: PStmt)         => f
   (o2: PStmt) => st
@@ -291,4 +291,4 @@ fun llCallExpr(x: PExpr, ctx: LiftCtx): PExpr|None => match(x)
   (o: PExpr) => None
 
 fun llExtraEnts(ns: List<String>, lr, acc: List<PTupEnt>) =>
-  fold(ns, acc, (a, x) => append(a, PTupEnt("", false, PeName(x, List(), lr, None))))
+  fold(ns, acc, (a, x) => append(a, madeEntry("", false, PeName(x, List(), lr, None))))

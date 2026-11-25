@@ -293,7 +293,7 @@ class BuiltinSpec(TypeSpec):
 
 
 def Bool() -> BuiltinSpec:
-    return BuiltinSpec(LineRef("none", 0, 0), "bool")
+    return BuiltinSpec(LineRef.synthetic("none", 0, 0), "bool")
 
 
 @dataclass(frozen=True)
@@ -1022,7 +1022,7 @@ class TupleEntrySpec:
         err1 = self.type.check(resolver) if self.type else []
         err2 = self.default.check(resolver, self.type) if self.default else []
         err3 = default_value_errors(self.default, resolver,
-                                    self.type.line_ref if self.type else LineRef("", 0, 0),
+                                    self.type.line_ref if self.type else LineRef.synthetic("", 0, 0),
                                     "tuple field")
         return err1 + err2 + err3
 

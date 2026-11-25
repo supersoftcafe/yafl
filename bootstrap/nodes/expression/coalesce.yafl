@@ -65,8 +65,8 @@ fun coalesceDesugar(qq: PeCoalesce, narrowed, r,
   let fl = exprLine(fallback)
   let binder = "$qq" + hash6(fl.plFile, fl.plLine, fl.plCol)
   let hit = PArm(binder, narrowed, PeName(binder, List(), lr),
-                 List(), None, lr, List())
-  let els = PArm("", None, fallback, List(), None, lr, List())
+                 List(), None, lr, List(), inventedAt(lr))
+  let els = PArm("", None, fallback, List(), None, lr, List(), inventedAt(lr))
   # The arms MUST be given a target. A match's arms converge on the RECEIVER's
   # type, and that is what makes each arm wrap itself when they differ — which
   # they do whenever the fallback is itself an option (`a ?? b ?? c`: hit arm

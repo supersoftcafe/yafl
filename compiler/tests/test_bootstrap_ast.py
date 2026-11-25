@@ -92,5 +92,5 @@ class TestBootstrapAst(TestCase):
         # And the positions are the bracket's, not the first token inside it.
         starts = [l.strip() for l in expected.splitlines()
                   if l.strip().split("|")[0] in ("If", "ElseIf", "Ret", "Action")]
-        self.assertEqual(["If|2:6|", "Ret|3:9|0", "ElseIf|4:11|", "Ret|5:9|0", "Ret|7:9|0",
-                          "If|8:6|", "Ret|9:9|0", "Action|10:3|", "Action|11:3|"], starts)
+        self.assertEqual(["If|2:6:1|", "Ret|3:9:1|0", "ElseIf|4:11:1|", "Ret|5:9:1|0", "Ret|7:9:1|0",
+                          "If|8:6:1|", "Ret|9:9:1|0", "Action|10:3:1|", "Action|11:3:5|"], starts)
