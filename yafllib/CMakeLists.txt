@@ -318,6 +318,13 @@ set_tests_properties(test_gc_overflow_window PROPERTIES ENVIRONMENT "YAFL_GC_POI
 add_yafl_test(test_gc_reset_window)
 target_compile_definitions(test_gc_reset_window PRIVATE YAFL_GC_RESET_PROBE=1)
 set_tests_properties(test_gc_reset_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_claim_epoch: stepped. The overflow re-scan must not bump the epoch
+# while a page is claimed (#148). Builds its own object.c with
+# YAFL_GC_RESET_PROBE and YAFL_GC_PUBLISH_PROBE, which hook the re-scan's
+# decision and a claim's publication.
+add_yafl_test(test_gc_claim_epoch)
+target_compile_definitions(test_gc_claim_epoch PRIVATE YAFL_GC_RESET_PROBE=1 YAFL_GC_PUBLISH_PROBE=1)
+set_tests_properties(test_gc_claim_epoch PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_pace_rate: the pacing rates' definition (scan and prune alike) —
 # base while the heap is at most half full, doubling each time the free heap
 # halves, capped.
