@@ -113,7 +113,7 @@ fun checkEntry(en: SEntry, r)
 
 fun entryLine(en: SEntry) => match(en.seType)
   (t2: Spec) => ctSpecLine(t2)
-  ()         => PLine("", 0, 0)
+  ()         => syntheticLine("", 0, 0)
 
 # ── the default-value rule ──────────────────────────────────────────────────
 # A default is cloned into every site that omits the field, so it must be a
@@ -188,7 +188,7 @@ fun instantiation(gs: List<PGen>, cs: List<Spec>, acc: List<Binding>): List<Bind
 
 fun callerGenFounds(gs: List<PGen>, cs: List<Spec>, acc: List<Found>) =>
   concat(acc, zipMap(gs, cs, (g, c) =>
-    Found(g.genName, PsTypealias(g.genName, List(), List(), c, List(), g.pgLine), ScLocal())))
+    Found(g.genName, PsTypealias(g.genName, List(), List(), c, List(), g.pgLine, g.pgNameAt), ScLocal())))
 
 # Each constraint, instantiated for this use, must be provided: by a `where`
 # in scope, a `[trait]` let, or an instance. The first that is not is the

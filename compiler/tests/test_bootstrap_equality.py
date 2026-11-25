@@ -75,13 +75,13 @@ class TestBootstrapEquality(TestCase):
         """The port mirrors these exclusions; pin the Python behaviour they
         mirror, so a change to it is caught here rather than as a mysterious
         non-terminating fixpoint later."""
-        a = t.NamedSpec(LineRef("f", 1, 1), "Foo", ())
-        b = t.NamedSpec(LineRef("g", 9, 9), "Foo", ())
+        a = t.NamedSpec(LineRef("f", 1, 1, 1), "Foo", ())
+        b = t.NamedSpec(LineRef("g", 9, 9, 1), "Foo", ())
         self.assertEqual(a, b, "specs must compare without their line refs")
 
     def test_python_excludes_derived_caches_from_node_equality(self):
         import pyast.expression as e
-        lr = LineRef("f", 1, 1)
+        lr = LineRef("f", 1, 1, 1)
         a = e.NamedExpression(lr, "x")
         b = e.NamedExpression(lr, "x")
         b.resolved_trait_scope = t.ClassSpec(lr, "Some")
@@ -89,6 +89,6 @@ class TestBootstrapEquality(TestCase):
 
     def test_python_compares_expression_line_refs(self):
         import pyast.expression as e
-        self.assertNotEqual(e.IntegerExpression(LineRef("f", 1, 1), 1, 0),
-                            e.IntegerExpression(LineRef("f", 2, 1), 1, 0),
+        self.assertNotEqual(e.IntegerExpression(LineRef("f", 1, 1, 1), 1, 0),
+                            e.IntegerExpression(LineRef("f", 2, 1, 1), 1, 0),
                             "expressions DO compare their line refs")

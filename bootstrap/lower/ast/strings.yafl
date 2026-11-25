@@ -42,9 +42,9 @@ fun gsGlobals(vs: List<String>, index: Int, acc: List<PStmt>)
 fun gsGlobal(v: String, index: Int): PStmt
   ret PsLet("$strings::string@" + String(index),
             List(), List(),
-            SBuiltin("str", PLine("$strings", index + 1, 1)),
-            PeStr(v, PLine("$strings", index + 1, 1)),
-            "", List(), PLine("$strings", index + 1, 1),
+            SBuiltin("str", syntheticLine("$strings", index + 1, 1)),
+            PeStr(v, syntheticLine("$strings", index + 1, 1)),
+            "", List(), syntheticLine("$strings", index + 1, 1), inventedAt(syntheticLine("$strings", index + 1, 1)),
             false, List<PStmt>())
 
 fun gsReplace(x, values: List<String>) => match(x)
@@ -52,9 +52,9 @@ fun gsReplace(x, values: List<String>) => match(x)
                           + String(gsIndexOf(values, s2.strValue,
                                              0)),
                         List(),
-                        PLine("$strings",
-                              gsIndexOf(values, s2.strValue, 0) + 1,
-                              1),
+                        syntheticLine("$strings",
+                                      gsIndexOf(values, s2.strValue, 0) + 1,
+                                      1),
                         None)
   (o: PExpr)  => None
 

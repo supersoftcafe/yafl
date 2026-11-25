@@ -296,8 +296,8 @@ def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None
     lr = head.line_ref
     # The column of body[0]: the token's own column, past `$"`.
     base = lr.offset + 2
-    def at(index: int) -> p.LineRef:
-        return p.LineRef(lr.filename, lr.line, base + index)
+    def at(index: int, length: int) -> p.LineRef:
+        return p.LineRef(lr.filename, lr.line, base + index, length)
 
     parts: list = []
     raw: list[str] = []
@@ -333,15 +333,15 @@ def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None
             if body[j] in '"\'':
                 end = _skip_quoted(body, j)
                 if end < 0:
-                    return parts, p.Error(at(j), "unterminated literal in interpolation slot")
+                    return parts, p.Error(at(j, 1), "unterminated literal in interpolation slot")
                 j = end
             elif body[j] == '{':
-                return parts, p.Error(at(j), "`{` inside an interpolation slot — "
+                return parts, p.Error(at(j, 1), "`{` inside an interpolation slot — "
                                              "write `\\{` for a literal brace")
             else:
                 j += 1
         if j >= len(body):
-            return parts, p.Error(at(i), "unterminated interpolation slot — "
+            return parts, p.Error(at(i, 1), "unterminated interpolation slot — "
                                          "write `\\{` for a literal brace")
         slot = body[i+1:j]
         comma = _spec_comma(slot)
@@ -352,16 +352,16 @@ def _split_interpolation(body: str, head: p.Token) -> tuple[list, p.Error | None
             # before its escapes decode (so a written `\t` survives).
             spec_text = slot[comma+1:].strip(_TRIM)
             if not spec_text:
-                return parts, p.Error(at(i + 1 + comma), "empty format spec after `,`")
+                return parts, p.Error(at(i + 1 + comma, 1), "empty format spec after `,`")
             spec, err = _unescape_string(spec_text)
             if err is not None:
-                return parts, p.Error(at(i + 1 + comma + 1), err)
+                return parts, p.Error(at(i + 1 + comma + 1, len(slot) - comma - 1), err)
         if not text.strip(_TRIM):
-            return parts, p.Error(at(i), "empty interpolation slot")
-        expression, err = _parse_slot(text, at(i + 1), head.indent)
+            return parts, p.Error(at(i, j - i + 1), "empty interpolation slot")
+        expression, err = _parse_slot(text, at(i + 1, len(text)), head.indent)
         if err is not None:
             return parts, err
-        parts.append(e.InterpolationSlot(at(i), expression, spec, text.strip(_TRIM)))
+        parts.append(e.InterpolationSlot(at(i, j - i + 1), expression, spec, text.strip(_TRIM)))
         i = j + 1
     if (err := flush()) is not None:
         return parts, err
@@ -373,7 +373,8 @@ def _parse_slot(text: str, start: p.LineRef, indent: int) -> tuple[e.Expression 
     first character sits in the source; every token is moved there."""
     from parsing.tokenizer import tokenize
     tokens = [dataclasses.replace(tok, indent=indent,
-                  line_ref=p.LineRef(start.filename, start.line, start.offset + tok.line_ref.offset - 1))
+                  line_ref=p.LineRef(start.filename, start.line, start.offset + tok.line_ref.offset - 1,
+                                     tok.line_ref.length))
               for tok in tokenize(text, start.filename)]
     nested = next((tok for tok in tokens if tok.kind == p.TokenKind.INTERP), None)
     if nested is not None:
@@ -414,7 +415,12 @@ def __to_dot_op(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Resu
 
 def __to_named_fully_qualified(value: tuple[e.NamedExpression, list[e.NamedExpression], list[t.TypeSpec]]) -> e.Expression:
     first, path, type_params = value
-    expr = e.NamedExpression(first.line_ref, "::".join(ne.name for ne in ([first] + path)), type_params=tuple(type_params))
+    # The name as written spans from its first token to its last (`System::length`),
+    # when they share a line; a path broken across lines is marked by its first token.
+    f, l = first.line_ref, (path[-1].line_ref if path else first.line_ref)
+    span = l.offset + l.length - f.offset if l.line == f.line else f.length
+    expr = e.NamedExpression(p.LineRef(f.filename, f.line, f.offset, span),
+                             "::".join(ne.name for ne in ([first] + path)), type_params=tuple(type_params))
     return expr
 
 
@@ -427,8 +433,10 @@ def __to_pin_set(result, tokens: list[p.Token]) -> p.Result[e.Expression]:
         return p.Result.error("__builtin_pin_set__ takes three arguments: (obj, obj.field, value)",
                               tokens, params_tuple.line_ref)
     obj, target, value = (en.value for en in entries)
+    # The node sits at its first argument; what encloses it (a `match` over it)
+    # starts at the `__builtin_pin_set__` token, like any other expression.
     return p.Result(e.PinSetExpression(result.line_ref, obj, target, value),
-                    result.tokens, result.line_ref, result.errors)
+                    result.tokens, tokens[0].line_ref, result.errors)
 
 
 def __to_builtin_op(result, tokens: list[p.Token]) -> p.Result[e.Expression]:
@@ -582,7 +590,7 @@ def lower_interpolation(x: e.InterpolatedStringExpression) -> e.Expression:
     an error, phrased through the call's origin as the slot the user wrote."""
     return _concat_of(x.line_ref, [
         e.StringExpression(x.line_ref, part) if isinstance(part, str) else
-        e.CallExpression(part.line_ref, e.NamedExpression(part.line_ref, "show"),
+        e.CallExpression(part.line_ref, e.NamedExpression(part.line_ref.invented(), "show"),
             e.TupleExpression(part.line_ref,
                 [e.TupleEntryExpression(None, part.expression)]
                 + ([] if part.spec is None else
@@ -977,9 +985,21 @@ def __to_namespace_statement(value: list[str], line_ref: p.LineRef) -> s.Namespa
     return s.NamespaceStatement(line_ref, '::'.join(value))
 
 
-def __to_named_spec(value: tuple[list[str], str, list[t.TypeSpec]], line_ref: p.LineRef) -> t.NamedSpec:
+def _path_span(tokens: list[p.Token], count: int) -> p.LineRef:
+    """The position of a name written as `count` tokens (`a`, `::`, `b`, ...):
+    from the first to the end of the last, when they share a line, else the
+    first token's own."""
+    first, last = tokens[0].line_ref, tokens[count - 1].line_ref
+    span = last.offset + last.length - first.offset if last.line == first.line else first.length
+    return p.LineRef(first.filename, first.line, first.offset, span)
+
+
+def __to_named_spec(value: tuple[list[str], str, list[t.TypeSpec]], line_ref: p.LineRef,
+                    tokens: list[p.Token]) -> t.NamedSpec:
     path, name, generics = value
-    ns = t.NamedSpec(line_ref, '::'.join(path + [name]), tuple(generics))
+    # The name is the path's identifiers and the `::` between them; any type
+    # arguments follow it and are not part of it.
+    ns = t.NamedSpec(_path_span(tokens, 2 * len(path) + 1), '::'.join(path + [name]), tuple(generics))
     return ns
 
 
@@ -1139,7 +1159,7 @@ __parse_maybe_generic_spec = p.maybe(p.requires(
     "missing generics")).map(__to_flat_list)
 
 __parse_type_builtin = (p.discard_sym("__builtin_type__") & p.discard_sym("<") & p.ident() & p.discard_sym(">")).build(__to_builtin_spec)
-__parse_type_named = (p.many(p.ident() & p.discard_sym("::")) & p.ident() & __parse_maybe_generic_spec).build(__to_named_spec)
+__parse_type_named = (p.many(p.ident() & p.discard_sym("::")) & p.ident() & __parse_maybe_generic_spec).build_from(__to_named_spec)
 # A tuple-type entry: the colon PRECEDES the type, always. `name[: Type][=
 # default]` is a named field (type optional — inference may fill it), and
 # `:Type` is an unnamed typed field. So `(Int, Int)` is two fields NAMED

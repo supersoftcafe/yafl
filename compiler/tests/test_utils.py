@@ -13,7 +13,7 @@ from parsing.tokenizer import LineRef
 
 class Test(TestCase):
     def test_create_constructor(self):
-        lr = LineRef("file", 1, 1)
+        lr = LineRef("file", 1, 1, 1)
         itype = t.BuiltinSpec(lr, "int32")
         params = s.DestructureStatement(lr, "_@9338i", None, {}, (), None, t.TupleSpec(lr, [
             TupleEntrySpec("first@123", itype),

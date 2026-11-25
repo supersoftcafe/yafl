@@ -119,7 +119,7 @@ fun genFound(g: PGen) => Found(g.genName, genAlias(g), ScLocal())
 
 fun genAlias(g: PGen) => PsTypealias(g.genName, List(), List(),
                                      SGeneric(g.genName, isLinearGen(g), g.pgLine),
-                                     List(), g.pgLine)
+                                     List(), g.pgLine, g.pgNameAt)
 
 fun isLinearGen(g: PGen) => hasAttr(g.genAttrs, "linear")
 

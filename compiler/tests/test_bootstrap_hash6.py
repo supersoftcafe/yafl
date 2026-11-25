@@ -53,7 +53,7 @@ class TestBootstrapHash6(TestCase):
                            timeout=60, text=True, env=_RUN_ENV)
         self.assertEqual(0, r.returncode)
         got = r.stdout.splitlines()
-        expected = [LineRef(f, l, c).hash6() for f, l, c in cases]
+        expected = [LineRef(f, l, c, 1).hash6() for f, l, c in cases]
         self.assertEqual(len(expected), len(got))
         for i, (e, g) in enumerate(zip(expected, got)):
             if e != g:

@@ -16,7 +16,7 @@ import Bootstrap::Types
 
 fun dLine(out, depth, kind,
           lr: PLine, extra) => out + indentOf(depth) + kind + "|" + String(lr.plLine) + ":"
-                                      + String(lr.plCol) + "|" + extra + "\n"
+                                      + String(lr.plCol) + ":" + String(lr.plLen) + "|" + extra + "\n"
 
 fun [tail] indentLoop(n, acc) => n == 0 ? acc : indentLoop(n - 1, acc + "  ")
 

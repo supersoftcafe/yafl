@@ -107,7 +107,7 @@ fun fnRebuilt(x: PExpr, ss: List<SEntry>, ts: List<SEntry>, binding: List<Int>, 
 # they only move.
 fun fnMoved(tp: PeTuple, ts: List<SEntry>, binding: List<Int>): PExpr|None => isIdentityBinding(binding)
   ? None
-  : PeTuple(zipMap(ts, binding, (field, b) => PTupEnt("", false, fnMovedValue(tp.exprs, field, b))),
+  : PeTuple(zipMap(ts, binding, (field, b) => PTupEnt("", false, fnMovedValue(tp.exprs, field, b), noName())),
             tp.petLine)
 
 fun fnMovedValue(es: List<PTupEnt>, field: SEntry, b: Int): PExpr => match(b >= 0 ? head(drop(es, b)) : None)
@@ -130,7 +130,7 @@ fun fnHeld(x: PExpr, ss: List<SEntry>, ts: List<SEntry>, binding: List<Int>, r,
                     (st, field, b) => fnHeldField(st, field, b, ss, held, lr, r, path))
   ret out.changed
     ? PeBlock(List<PStmt>(PsLet(held + "@" + hash6(lr.plFile, lr.plLine, lr.plCol), List(), List(),
-                                None, x, "", List(), lr)),
+                                None, x, "", List(), lr, inventedAt(lr))),
               PeTuple(out.fields, lr), "", lr)
     : None
 
@@ -138,7 +138,7 @@ fun fnHeldField(st: (i: Int, changed: Bool, fields: List<PTupEnt>), field: SEntr
                 ss: List<SEntry>, held: String, lr: PLine, r,
                 path: String): (i: Int, changed: Bool, fields: List<PTupEnt>) => b < 0
   ? (i = st.i + 1, changed = st.changed,
-     fields = append(st.fields, PTupEnt("", false, fnDefault(field))))
+     fields = append(st.fields, PTupEnt("", false, fnDefault(field), noName())))
   : fnHeldRead(st, field, PeDot(PeName(held, List(), lr), fnNameAt(ss, b), lr, b),
                entryAt(ss, b), r, path + "_" + String(st.i))
 
@@ -147,9 +147,9 @@ fun fnHeldRead(st: (i: Int, changed: Bool, fields: List<PTupEnt>), field: SEntry
                path: String): (i: Int, changed: Bool, fields: List<PTupEnt>) =>
   match(fnBoundField(read, source, field.seType, r, path))
     (inner: PExpr) => (i = st.i + 1, changed = true,
-                       fields = append(st.fields, PTupEnt("", false, inner)))
+                       fields = append(st.fields, PTupEnt("", false, inner, noName())))
     ()             => (i = st.i + 1, changed = st.changed,
-                       fields = append(st.fields, PTupEnt("", false, read)))
+                       fields = append(st.fields, PTupEnt("", false, read, noName())))
 
 fun fnBoundField(read: PExpr, source: Spec|None, target: Spec|None, r, path: String): PExpr|None => match(source, target)
   (s2: Spec, t2: Spec) => fnBoundByPosition(read, s2, t2, r, path)
@@ -169,6 +169,6 @@ fun fnUnnamedType(sp: Spec): Spec|None => match(sp)
 
 fun fnUnnamedValue(x: PExpr): PExpr|None => match(x)
   (tp: PeTuple) => any(tp.exprs, (en) => en.tupName != "")
-    ? PeTuple(map(tp.exprs, (en) => PTupEnt("", en.tupSpread, en.tupValue)), tp.petLine)
+    ? PeTuple(map(tp.exprs, (en) => PTupEnt("", en.tupSpread, en.tupValue, noName())), tp.petLine)
     : None
   (o: PExpr)    => None

@@ -28,9 +28,26 @@ class TokenKind(Enum):
 
 @dataclass(frozen=True, order=True)
 class LineRef:
+    """Where a token is written: file, line, the 1-based column it starts at,
+    and its length in characters. Everything that makes one says what it
+    marks, so `length` is at least 1. The one exception is a position the
+    compiler invents, with no source behind it: `synthetic` makes those, with
+    length 0, and nothing else does."""
     filename: str
     line: int
     offset: int
+    length: int
+
+    @staticmethod
+    def synthetic(filename: str, line: int, offset: int) -> "LineRef":
+        """A position that marks no source text (a made-up name, a generated
+        unit). Length 0 is what says so."""
+        return LineRef(filename, line, offset, 0)
+
+    def invented(self) -> "LineRef":
+        """The same place, for a node the compiler makes up there: it marks no
+        source text of its own."""
+        return LineRef(self.filename, self.line, self.offset, 0)
 
     def __repr__(self):
         # The whole name, path included: a unit is identified by its path
@@ -120,15 +137,16 @@ def tokenize(content: str, filename: str) -> List[Token]:
                     if kind:
                         if kind == TokenKind.IDENTIFIER and match in __keywords:
                             kind = TokenKind.SYMBOLS
-                        tokens.append(Token(kind, match, indent, LineRef(filename, lineno, offset+1)))
+                        tokens.append(Token(kind, match, indent, LineRef(filename, lineno, offset+1, len(match))))
                     offset += len(match)
                     break
 
     if tokens:
         tk = tokens[-1]
-        lr = LineRef(filename, tk.line_ref.line, tk.line_ref.offset + len(tk.value))
+        # The end of the file: the place the next character would be, one wide.
+        lr = LineRef(filename, tk.line_ref.line, tk.line_ref.offset + tk.line_ref.length, 1)
     else:
-        lr = LineRef(filename, 1, 1)
+        lr = LineRef(filename, 1, 1, 1)
     tokens.append(Token(TokenKind.EOF, "", 0, lr))
 
     return tokens

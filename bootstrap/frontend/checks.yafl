@@ -63,9 +63,9 @@ fun stmtChecks(ss: List<PStmt>, r: Resolver, acc: Set<PErr>): Set<PErr> =>
 fun withMainCount(statements: List<PStmt>, acc): Set<PErr>
   let mains = countMains(statements, 0)
   if mains == 0
-    ret add(acc, PErr(PLine("none", 0, 0), "No main function found"))
+    ret add(acc, PErr(syntheticLine("none", 0, 0), "No main function found"))
   if mains > 1
-    ret add(acc, PErr(PLine("none", 0, 0), "Too many main functions defined"))
+    ret add(acc, PErr(syntheticLine("none", 0, 0), "Too many main functions defined"))
   ret acc
 
 fun countMains(ss: List<PStmt>, n) =>

@@ -987,7 +987,7 @@ fun unitsLoop(ss: List<LibSource>, acc: List<PStmt>, errs: Set<PErr>): List<PStm
 fun unitsLoopStep(st: (acc: List<PStmt>, errs: Set<PErr>), x: LibSource) => match(parseProgram(x.libText, x.libFileName))
   (f: PFail) => (acc = st.acc,
     errs = union(st.errs, Set(map(failuresOf(f),
-        (e) => PErr(PLine(x.libFileName, e.line, e.col), e.msg)))))
+        (e) => PErr(PLine(x.libFileName, e.line, e.col, e.len), e.msg)))))
   (stmts: List<PStmt>) => (acc = concat(st.acc, stmts), errs = st.errs)
 
 
@@ -1028,7 +1028,7 @@ fun testRegistered(stmts: List<PStmt>, tests: List<PsFun>): List<PStmt>|String
   ret match(parseProgram(testRegistrySource(tests), "$test_main.yafl"))
     (gen: List<PStmt>) => concat(dropSourceMains(stmts, List()), gen)
     (f: PFail)         => printedDiagnostics(Set(list1(PErr(
-        PLine("$test_main.yafl", f.line, f.col), f.msg))))
+        syntheticLine("$test_main.yafl", f.line, f.col), f.msg))))
 
 fun testFunsOf(sts: List<PStmt>, b: List<PsFun>) =>
   fold(sts, b, testFunsOfStep)

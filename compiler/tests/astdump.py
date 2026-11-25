@@ -2,7 +2,7 @@
 
 One line per node, depth-first, indented by tree depth:
 
-    <Depth spaces>TypeName|line:col|salient,fields
+    <Depth spaces>TypeName|line:col:length|salient,fields
 
 The ported parser (bootstrap) must reproduce this byte for byte over the
 whole corpus. Field selection is exhaustive over everything parse() decides:
@@ -22,7 +22,7 @@ import pyast.typespec as t
 
 def _lr(x) -> str:
     lr = getattr(x, "line_ref", None)
-    return f"{lr.line}:{lr.offset}" if lr is not None else "-"
+    return f"{lr.line}:{lr.offset}:{lr.length}" if lr is not None else "-"
 
 
 def _ty(spec) -> str:

@@ -46,7 +46,7 @@ fun markOne(st) => match(st)
   (f: PsFun) => f.fNested
     ? st
     : PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody, f.fRet,
-            f.fWheres, f.psfLine, f.fRetInferred, true, f.fImports, false)
+            f.fWheres, f.psfLine, f.fNameAt, f.fRetInferred, true, f.fImports, false)
   (o: PStmt) => st
 
 fun checkBlock(bk: PeBlock, r0, expected: Spec|None): Set<PErr>

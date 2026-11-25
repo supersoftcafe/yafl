@@ -16,12 +16,14 @@
 # of the statement it is in. And a match arm's name is declared by the arm,
 # which is not a statement.
 #
-# Positions in the tree are the compiler's: a declaration's is where its
-# statement starts (`fun area` is at `fun`), a use's where it is written (a
-# qualified `System::length` is at `System`). The name itself is looked for
-# on that line, from there on; a use whose name is not there — something the
-# compiler wrote for the program, such as the `show` an interpolation calls —
-# is no use the client can point at.
+# Positions in the tree say where a name is written and how long it is (#140).
+# A declaration records where its NAME is, apart from the position its unique
+# name is taken from; a use is at the name as written, which for a qualified
+# `System::length` is the whole path, and the name is the end of it. A name
+# the compiler made up, such as the `show` an interpolation calls, has no
+# length, and is no use the client can point at. Before a span is handed to
+# the client the text there is checked to be the name, so a position that
+# marks something else is dropped rather than shown.
 
 namespace Bootstrap::Lsp
 
@@ -38,10 +40,11 @@ import Bootstrap::Types
 
 # ── the index ────────────────────────────────────────────────────────────────
 
-# A declaration: the file it is in, by path, and where its statement starts.
+# A declaration: the file it is in, by path, and where its name is written.
 class [final] Place(pcPath: String, pcAt: PLine)
 
-# A name the program uses: where, and the unique name it resolved to.
+# A name the program uses: where it is written, as a span of exactly the name,
+# and the unique name it resolved to.
 class [final] Use(useAt: PLine, useKey: String)
 
 # The uses, two ways: by where they are (`unit:line`), for the use under a
@@ -67,16 +70,20 @@ fun declarations(stmts: List<PStmt>, pathOf: (:String): String,
                 (d: Dict<String, Place>, x: PExpr) => armsDeclared(d, x, pathOf), acc)
 
 fun declared(d: Dict<String, Place>, st: PStmt, pathOf: (:String): String): Dict<String, Place>
-  ret placed(d, stmtName(st), stmtLine(st), pathOf)
+  ret placed(d, stmtName(st), stmtNameAt(st), pathOf)
 
 fun placed(d: Dict<String, Place>, name: String, at: PLine, pathOf: (:String): String): Dict<String, Place>
-  ret isUnique(name) && get(d, name) is None ? put(d, name, Place(pathOf(at.plFile), at)) : d
+  ret isUnique(name) && get(d, name) is None ? placedAt(d, name, nameSpan(at, name), pathOf) : d
+
+fun placedAt(d: Dict<String, Place>, name: String, span: PLine|None, pathOf: (:String): String): Dict<String, Place> => match(span)
+  (n: PLine) => put(d, name, Place(pathOf(n.plFile), n))
+  ()         => d
 
 # A match's arms each declare their names, at every position.
 fun armsDeclared(d: Dict<String, Place>, x: PExpr, pathOf: (:String): String): Dict<String, Place> => match(x)
   (m: PeMatch) => fold(m.arms, d, (d2: Dict<String, Place>, a: PArm) =>
-                    fold(a.armExtra, placed(d2, a.armName, a.parmLine, pathOf),
-                         (d3: Dict<String, Place>, p: PPos) => placed(d3, p.posName, p.pposLine, pathOf)))
+                    fold(a.armExtra, placed(d2, a.armName, a.armNameAt, pathOf),
+                         (d3: Dict<String, Place>, p: PPos) => placed(d3, p.posName, p.posNameAt, pathOf)))
   (other)      => d
 
 # Every use in the converged `stmts`, and every declaration as a use of
@@ -84,16 +91,16 @@ fun armsDeclared(d: Dict<String, Place>, x: PExpr, pathOf: (:String): String): D
 fun uses(stmts: List<PStmt>, parsed: List<PStmt>, root: Resolver): Uses
   ret walkStmts(stmts, emptyResolverGlobal, typeUses(parsed, root),
                 Walk<List<Use>>((u, r, x) => (s = usedIn(u, x), r = None),
-                                (u, r, st) => (s = noted(u, stmtName(st), stmtLine(st)), r = None),
+                                (u, r, st) => (s = notedDecl(u, stmtName(st), stmtNameAt(st)), r = None),
                                 (u, r, sp) => (s = usedType(u, sp), r = None))).s
     |> (all) => usesIndexed(all)
 
 fun usedIn(u: List<Use>, x: PExpr): List<Use> => match(x)
-  (n: PeName)  => noted(u, n.refName, n.penLine)
-  (d: PeDot)   => noted(u, d.member, d.pedLine)
+  (n: PeName)  => notedUse(u, n.refName, n.penLine)
+  (d: PeDot)   => notedUse(u, d.member, d.pedLine)
   (m: PeMatch) => fold(m.arms, u, (u2: List<Use>, a: PArm) =>
-                    fold(a.armExtra, noted(u2, a.armName, a.parmLine),
-                         (u3: List<Use>, p: PPos) => noted(u3, p.posName, p.pposLine)))
+                    fold(a.armExtra, notedDecl(u2, a.armName, a.armNameAt),
+                         (u3: List<Use>, p: PPos) => notedDecl(u3, p.posName, p.posNameAt)))
   (other)      => u
 
 # Every type named in a parsed statement, in that statement's scope: its
@@ -104,48 +111,71 @@ fun typeUses(parsed: List<PStmt>, root: Resolver): List<Use>
 
 fun namedType(u: List<Use>, sp: Spec, r: Resolver): List<Use> => match(sp)
   (n: SNamed) => match(soleItem(findType(r, n.snName)))
-    (f: Found) => noted(u, f.fName, n.snLine)
+    (f: Found) => notedUse(u, f.fName, n.snLine)
     ()         => u
   (other)     => u
 
 fun usedType(u: List<Use>, sp: Spec): List<Use> => match(sp)
-  (c: SClass) => noted(u, c.scName, c.scLine)
-  (e: SEnum)  => isEmpty(e.sePath) ? noted(u, e.seRoot, e.seLine) : u
+  (c: SClass) => notedUse(u, c.scName, c.scLine)
+  (e: SEnum)  => isEmpty(e.sePath) ? notedUse(u, e.seRoot, e.seLine) : u
   (other)     => u
 
-fun noted(u: List<Use>, name: String, at: PLine): List<Use>
-  ret isUnique(name) ? append(u, Use(at, name)) : u
+# The name `key` within the span `at` of what was written: all of it, or the
+# name without the backticks an operator may be written with, or the end of a
+# qualified path (`System::length`). None when the span marks nothing (length
+# 0: the compiler made the name up) or less than the name.
+fun nameSpan(at: PLine, key: String): PLine|None
+  let n = nameLength(key)
+  ret n == 0 || at.plLen < n ? None
+    : at.plLen == n + 2 ? PLine(at.plFile, at.plLine, at.plCol + 1, n)
+    : PLine(at.plFile, at.plLine, at.plCol + at.plLen - n, n)
+
+# A use of `name`, written at `at`.
+fun notedUse(u: List<Use>, name: String, at: PLine): List<Use>
+  ret isUnique(name) ? notedAt(u, name, nameSpan(at, name)) : u
+
+fun notedAt(u: List<Use>, name: String, span: PLine|None): List<Use> => match(span)
+  (n: PLine) => append(u, Use(n, name))
+  ()         => u
+
+# A declaration, which is a use of itself, at the name where it is written.
+fun notedDecl(u: List<Use>, name: String, at: PLine): List<Use> => notedUse(u, name, at)
 
 fun isUnique(name: String): Bool => contains(name, "@")
 
 
 # ── where a name is written ──────────────────────────────────────────────────
 
-# The name `key` declares, as written: an operator, `` `+` ``, is written `+`
-# where it is used.
+# The name `key` declares, as written where it is used: an operator, `` `+` ``,
+# is written `+` there.
 fun writtenName(key: String): String
   let bare = bareOfUnique(key)
   let n = System::length(bare)
   ret n > 2 && startsWith(bare, "`") && endsWith(bare, "`") ? slice(bare, 1, n - 1) : bare
 
-# Where the name is written, from `at` on, and its length in characters.
-fun nameSpan(text: String, at: PLine, key: String): PLine|None => namedAt(text, at, writtenName(key))
+# How many characters the name `key` is written with where it is used.
+fun nameLength(key: String): Int => codepointCount(writtenName(key))
 
-fun nameLength(key: String): Int => charsBetween(writtenName(key), 0, System::length(writtenName(key)), 0)
+# The text a position covers, on its line.
+fun textOfSpan(text: String, at: PLine): String
+  let from = charOffset(text, lineStart(text, at.plLine - 1, 0), at.plCol - 1)
+  ret slice(text, from, charOffset(text, from, at.plLen))
 
-# A name as written in a file: the file's path and text, where the name
-# starts, and how many characters it has.
-class [final] Spot(spPath: String, spText: String, spAt: PLine, spLength: Int)
+# True when the text at `at` is the name `key`.
+fun writtenAt(text: String, at: PLine, key: String): Bool => textOfSpan(text, at) == writtenName(key)
 
-# The spot of the name `key`, written from `at` in the file at `path`; None
-# when it is not written there.
-fun spotOf(path: String, text: String, at: PLine, key: String): Spot|None => match(nameSpan(text, at, key))
-  (n: PLine) => Spot(path, text, n, nameLength(key))
-  ()         => None
+# A name as written in a file: the file's path and text, and the span of the
+# name.
+class [final] Spot(spPath: String, spText: String, spAt: PLine)
+
+# The spot of the name `key`, at `at` in the file at `path`; None when the
+# text there is not that name.
+fun spotOf(path: String, text: String, at: PLine, key: String): Spot|None
+  ret writtenAt(text, at, key) ? Spot(path, text, at) : None
 
 fun spotLocation(s: Spot): JsonValue
   ret JsonObj(List(JsonPair("uri", JsonStr(pathUri(s.spPath))),
-                   JsonPair("range", lspRange(s.spText, s.spAt.plLine, s.spAt.plCol, s.spLength))))
+                   JsonPair("range", lspRange(s.spText, s.spAt.plLine, s.spAt.plCol, s.spAt.plLen))))
 
 # In file order, then line, then column.
 fun spotLess(a: Spot, b: Spot): Bool
@@ -172,9 +202,8 @@ fun useIn(r: Report, unit: String, row: Int, units: Int): Use|None
   let col = compilerColumn(text, row, units)
   ret firstWhere(get(r.rpUses.usByLine, lineKey(unit, row + 1)) ?? List(), (u) => covers(text, u, col))
 
-fun covers(text: String, u: Use, col: Int): Bool => match(nameSpan(text, u.useAt, u.useKey))
-  (n: PLine) => col >= n.plCol && col < n.plCol + nameLength(u.useKey)
-  ()         => false
+fun covers(text: String, u: Use, col: Int): Bool
+  ret col >= u.useAt.plCol && col < u.useAt.plCol + u.useAt.plLen && writtenAt(text, u.useAt, u.useKey)
 
 # The declaration `key` names, in the program or a library.
 fun placeOf(sv: Server, r: Report, key: String): Place|None => match(get(r.rpPlaces, key))

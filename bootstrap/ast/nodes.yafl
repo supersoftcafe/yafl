@@ -22,7 +22,21 @@ import Bootstrap::Parse
 # the bottom of nearly every AST node — without an instance here, nothing
 # containing a source location can derive equality either. Python's LineRef is
 # a frozen dataclass, so structural equality matches on both sides.
-enum PLine(plFile: String, plLine: Int, plCol: Int)
+#
+# A position says where a token is written and how long it is: the file, the
+# line and the 1-based column it starts at, and its length in CHARACTERS
+# (#140). Everything that makes one says what it marks, so a length is at least
+# 1. The one exception is a position the compiler invents, with no source behind
+# it: `syntheticLine` makes those, with length 0, and nothing else does. The
+# length takes part in equality like the other fields; the unique-name hash is
+# of the file, line and column alone.
+enum PLine(plFile: String, plLine: Int, plCol: Int, plLen: Int)
+
+# A position that marks no source text: a made-up name, a generated unit.
+fun syntheticLine(file: String, line: Int, col: Int): PLine => PLine(file, line, col, 0)
+
+# The same place, for a node the compiler makes up there.
+fun inventedAt(lr: PLine): PLine => PLine(lr.plFile, lr.plLine, lr.plCol, 0)
 
 # One enum-constructor argument: the DECLARED field name and the argument
 # EXPRESSION (Python: NewEnumExpression.field_args dict entry). Never a bare
@@ -146,7 +160,11 @@ enum PExpr
     enum PeLazy(stubName: String, lzTarget: Spec, lzCaptured: String|None,
                 lzStubOnly: Bool, pelzLine: PLine)
 
-class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr)
+# `tupNameAt` is where the entry's name is written (`x` in `p(x = 9)`); an
+# entry with no name, or a made-up one, says so with `noName()`.
+class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr, tupNameAt: PLine)
+
+fun noName(): PLine => syntheticLine("", 0, 0)
 
 # One piece of an interpolated string: decoded text, or a slot — its
 # expression, the decoded spec after the separating comma (None when there is
@@ -170,17 +188,22 @@ enum PLit
 # One arm's pattern for a subject AFTER the first. Position 0 stays on PArm
 # itself, so a one-subject arm is byte-for-byte the node it always was and
 # every single-subject path is untouched by multi-subject support.
-class [final] PPos(posName: String, posType: Spec|None, pposLine: PLine)
+class [final] PPos(posName: String, posType: Spec|None, pposLine: PLine, posNameAt: PLine)
 
 class [final] PArm(armName: String, armType: Spec|None,
                    armBody: PExpr, armLiterals: List<PLit>,
                    armGuard: PExpr|None, parmLine: PLine,
-                   armExtra: List<PPos>)
+                   armExtra: List<PPos>, armNameAt: PLine)
 
 # ── statements ───────────────────────────────────────────────────────────────
 
 class [final] PAttr(attrName: String, attrValue: PExpr|None)
-class [final] PGen(genName: String, genAttrs: List<PAttr>, pgLine: PLine)
+# A declaration's own position (`fun`'s, `let`'s) is what its unique `name@hash`
+# is taken from, so it stays where it is. Where its NAME is written is a second
+# position, `...NameAt`, with the name token's own length (#140): what an editor
+# points at for a definition. A declaration the compiler makes up has no name
+# written, and says so with `inventedAt`/`syntheticLine`.
+class [final] PGen(genName: String, genAttrs: List<PAttr>, pgLine: PLine, pgNameAt: PLine)
 
 # One vtable slot (ClassFunctionSlot): a callable member, and the SET of slot
 # names it PROVIDES an implementation for — its own name when it can dispatch
@@ -201,7 +224,7 @@ enum PStmt
   # compare=False), so equality sees it; None on nested statements.
   enum PsFun(fName: String, fAttrs: List<PAttr>, fGens: List<PGen>,
              fParams: PStmt, fBody: PExpr|None, fRet: Spec|None,
-             fWheres: List<Spec>, psfLine: PLine, fRetInferred: Bool = false,
+             fWheres: List<Spec>, psfLine: PLine, fNameAt: PLine, fRetInferred: Bool = false,
              fNested: Bool = false, fImports: List<PStmt>|None = None,
              # fGlobal: false when declared anywhere other than top level — in
              # a block, or as a class / instance member. Set by whoever
@@ -215,7 +238,7 @@ enum PStmt
                      dTypeInferred: Bool = false)
   enum PsLet(lName: String, lAttrs: List<PAttr>, lGens: List<PGen>,
              lType: Spec|None, lDefault: PExpr|None,
-             lArrayLen: String, lWheres: List<Spec>, pslLine: PLine,
+             lArrayLen: String, lWheres: List<Spec>, pslLine: PLine, lNameAt: PLine,
              lTypeInferred: Bool = false, lImports: List<PStmt>|None = None)
   # cAllParents: the transitive interface closure, computed by the class's own
   # compile. ABSENT (None) means "not worked out yet" — assignability must
@@ -227,17 +250,17 @@ enum PStmt
   # fixpoint is not settled until they are.
   enum PsClass(cName: String, cAttrs: List<PAttr>, cGens: List<PGen>,
                cParams: PStmt, cImplements: List<Spec>, cWheres: List<Spec>,
-               cMembers: List<PStmt>, cIsInterface: Bool, pscLine: PLine,
+               cMembers: List<PStmt>, cIsInterface: Bool, pscLine: PLine, cNameAt: PLine,
                cAllParents: List<Spec>|None = None,
                cAllSlots: List<Slot>|None = None,
                cImports: List<PStmt>|None = None)
   enum PsEnum(eName: String, eAttrs: List<PAttr>, eGens: List<PGen>,
               eParams: PStmt,
-              eVariants: List<PStmt>, eHasParams: Bool, pseLine: PLine,
+              eVariants: List<PStmt>, eHasParams: Bool, pseLine: PLine, eNameAt: PLine,
               eRootName: String|None = None, eSpec: Spec|None = None,
               eImports: List<PStmt>|None = None)
   enum PsTypealias(taName: String, taAttrs: List<PAttr>, taGens: List<PGen>,
-                   taType: Spec, taWheres: List<Spec>, pstLine: PLine,
+                   taType: Spec, taWheres: List<Spec>, pstLine: PLine, taNameAt: PLine,
                    taImports: List<PStmt>|None = None)
   enum PsImport(importPath: String, psiLine: PLine)
   enum PsNamespace(nsPath: String, psnLine: PLine)

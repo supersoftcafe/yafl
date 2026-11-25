@@ -198,7 +198,7 @@ fun mgIsHole(x: Spec|None, binds: List<MBind>, calleeSide: Bool, r): Bool => mat
 
 fun mgLine(x: Spec|None) => match(x)
   (s2: Spec) => specLine(s2)
-  ()         => PLine("", 0, 0)
+  ()         => syntheticLine("", 0, 0)
 
 fun mgOk(sp: Spec|None, binds: List<MBind>) => MergeOut(sp, binds, noErrs())
 

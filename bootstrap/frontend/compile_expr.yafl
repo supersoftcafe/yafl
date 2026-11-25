@@ -173,9 +173,9 @@ fun [tail] fieldNames(prefix: String, suffix: String, i: Int, n: Int,
 fun spreadOne(v: PExpr, names: List<String>): (binder: PStmt, refs: List<PTupEnt>)
   let lr = exprLine(v)
   ret (PsDestructure("_", List(), None,
-                     map(names, (nm) => PsLet(nm, List(), List(), None, None, "", List(), lr)),
+                     map(names, (nm) => PsLet(nm, List(), List(), None, None, "", List(), lr, inventedAt(lr))),
                      v, lr),
-       map(names, (nm) => PTupEnt("", false, PeName(nm, List(), lr, None))))
+       map(names, (nm) => PTupEnt("", false, PeName(nm, List(), lr, None), noName())))
 
 class [final] TupEntsOut(teEntries: List<PTupEnt>, teGlobals: List<PStmt>,
                          teHints: Dict<String, List<Hint>>)
@@ -189,7 +189,7 @@ fun compileTupEntsStep(st: (i: Int, acc: List<PTupEnt>, glb: List<PStmt>, hints:
                        x: PTupEnt, r, slots: List<SEntry>) =>
   compileExpr(x.tupValue, r, entryAt(slots, st.i))
   |> (v) => (i = st.i + 1,
-    acc = append(st.acc, PTupEnt(x.tupName, x.tupSpread, v.eoExpr)),
+    acc = append(st.acc, PTupEnt(x.tupName, x.tupSpread, v.eoExpr, x.tupNameAt)),
     glb = concat(st.glb, v.eoGlobals),
     hints = mergeHints(st.hints, v.eoHints))
 
@@ -406,7 +406,7 @@ fun posUniqueName(p: PPos) => p.posName == "" || p.posName == "_" || contains(p.
                                p.pposLine.plCol)
 
 fun posBinderLet(p: PPos, ty) => PsLet(posUniqueName(p), List(), List(), ty, None, "",
-                                       List(), p.pposLine)
+                                       List(), p.pposLine, p.posNameAt)
 
 # The arm's bound name resolves to a LOCAL let of the arm's own type (a bound
 # else arm: of the subject's type) under a per-arm UNIQUE name — two arms may
@@ -461,7 +461,7 @@ fun bindingScope(a: PArm, ty: Spec|None, r): Resolver => a.armName == "" || a.ar
     ()         => r
 
 fun armBinderLet(a: PArm, ty) => PsLet(armUniqueName(a), List(), List(), ty, None, "",
-                                       List(), a.parmLine)
+                                       List(), a.parmLine, a.armNameAt)
 
 fun propagateSubjParams(a, subjTy: Spec|None, r): PArm => match(subjTy)
   (st: Spec) if resolvedParams(typeParamsOf(st), r) => withSubjParams(a, typeParamsOf(st))

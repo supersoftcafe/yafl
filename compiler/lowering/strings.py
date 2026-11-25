@@ -28,7 +28,7 @@ def fix_global_strings(statements: list[s.Statement]) -> list[s.Statement]:
 
     # Create global 'let' declarations for each unique string literal
     def create_string(index: int, value: str) -> s.LetStatement:
-        lr = LineRef("$strings", index + 1, 1)
+        lr = LineRef.synthetic("$strings", index + 1, 1)
         return s.LetStatement(lr, f"$strings::string@{index}",
                               ImportGroup(()), {}, (),
                               e.StringExpression(lr, value),

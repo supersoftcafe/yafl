@@ -262,6 +262,18 @@ counter**. The same input always produces the same names, at every stage
 `OperationBundle.with_prefix`, same principle). If you find yourself wanting a
 monotonic counter for a generated name, derive a path-based name instead.
 
+A source position (`LineRef` in Python, `PLine` in the port) is more than that
+hash's input: it is the file, the line, the 1-based column a token starts at,
+and the token's length in characters (#140). The length is compared like the
+other fields but is not in the hash. Every position made from source carries
+the length of what it marks (a qualified name `System::length` spans its whole
+path; a diagnostic or a definition points at a token, not a point), and the
+one exception is a position the compiler invents, with no source behind it,
+which `LineRef.synthetic` / `syntheticLine` make with length 0 and nothing else
+does. A declaration's own position stays where its unique name was taken from,
+and the port's declarations also record where their name is written
+(`fNameAt`, `lNameAt`, ...), which is what an editor points a definition at.
+
 `'@' in name` therefore signals "already resolved to a unique declaration" and
 resolution code branches on it — bare names get ambiguity handling and import
 expansion, hashed names are exact lookups.

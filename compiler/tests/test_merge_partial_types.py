@@ -18,7 +18,7 @@ import pyast.resolver as g
 import pyast.typespec as t
 from parsing.tokenizer import LineRef
 
-lr = LineRef("f", 0, 0)
+lr = LineRef.synthetic("f", 0, 0)
 i32 = t.BuiltinSpec(lr, "int32")
 i64 = t.BuiltinSpec(lr, "int64")
 boolt = t.BuiltinSpec(lr, "bool")

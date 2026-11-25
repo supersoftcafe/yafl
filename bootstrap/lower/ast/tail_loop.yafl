@@ -40,7 +40,7 @@ fun tlTransform(st) => match(st)
                             Set())
     |> (out) => TlStmt(PsClass(c.cName, c.cAttrs, c.cGens, c.cParams,
                                c.cImplements, c.cWheres, out.tlStmts,
-                               c.cIsInterface, c.pscLine, c.cAllParents,
+                               c.cIsInterface, c.pscLine, c.cNameAt, c.cAllParents,
                                c.cAllSlots, c.cImports),
                        out.tlErrs)
   (o: PStmt)   => TlStmt(st, Set())
@@ -60,7 +60,7 @@ fun tlNested(f: PsFun) => match(f.fBody)
     |> (out) => TlStmt(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
                              PeBlock(out.tlStmts, bk.blockValue,
                                      bk.blockTag, bk.pebkLine),
-                             f.fRet, f.fWheres, f.psfLine,
+                             f.fRet, f.fWheres, f.psfLine, f.fNameAt,
                              f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
                        out.tlErrs)
   ()            => TlStmt(f, Set())
@@ -83,7 +83,7 @@ fun tlLowerBody(f, body, errs0): TlStmt
   # Wrap in a block: later passes gate on the body being a block.
   let block = PeBlock(List(), loop, "", bodyLine)
   ret TlStmt(PsFun(f.fName, tlStripTail(f.fAttrs, List()),
-                   f.fGens, f.fParams, block, f.fRet, f.fWheres, f.psfLine,
+                   f.fGens, f.fParams, block, f.fRet, f.fWheres, f.psfLine, f.fNameAt,
                    f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
              errs0)
 

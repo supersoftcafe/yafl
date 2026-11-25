@@ -259,6 +259,65 @@ class TestDiagnostics(_Workspace):
         self.assertEqual(1, items[0]["severity"])
         self.assertEqual(1, items[0]["range"]["start"]["line"])
 
+    @staticmethod
+    def _covered(items: list[dict], text: str) -> list[tuple]:
+        """(message, the text each diagnostic's range covers) for single-line ranges."""
+        lines = text.split("\n")
+        out = []
+        for i in items:
+            start, end = i["range"]["start"], i["range"]["end"]
+            if start["line"] == end["line"]:
+                out.append((i["message"], lines[start["line"]][start["character"]:end["character"]]))
+        return out
+
+    def test_a_diagnostic_covers_the_token_it_points_at(self):
+        text = "namespace Main\nimport System\nfun main(): Int\n  ret nosuch\n"
+        self._write("main.yafl", text)
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        self.assertIn(("Failed to resolve nosuch", "nosuch"), self._covered(items, text))
+
+    def test_a_qualified_name_is_covered_whole(self):
+        text = "namespace Main\nimport System\nfun main(): Int\n  ret System::nosuch(1)\n"
+        self._write("main.yafl", text)
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        self.assertTrue([c for m, c in self._covered(items, text) if c == "System::nosuch"], items)
+
+    def test_a_warning_covers_the_name(self):
+        text = "namespace Main\nimport System\nfun main(): Int\n  let unused = 1\n  ret 0\n"
+        self._write("main.yafl", text)
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        self.assertEqual([("'unused' is never used", "unused")], self._covered(items, text))
+
+    def test_a_range_ends_in_utf16_units(self):
+        # The emoji is two units to the client: `nosuch` starts at unit 21 and
+        # its six characters end at 27.
+        text = "namespace Main\nimport System\nfun main(): Int\n  ret length(\"\U0001F600\") + nosuch\n"
+        self._write("main.yafl", text)
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        ranges = [(i["range"]["start"]["character"], i["range"]["end"]["character"])
+                  for i in items if i["message"] == "Failed to resolve nosuch"]
+        self.assertEqual([(21, 27)], ranges)
+
+    def test_a_parse_error_covers_the_token_it_stopped_at(self):
+        text = "namespace Main\nfun main(: Int\n"
+        self._write("main.yafl", text)
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        self.assertEqual(1, len(items))
+        start, end = items[0]["range"]["start"], items[0]["range"]["end"]
+        self.assertEqual(start["line"], end["line"])
+        self.assertGreater(end["character"], start["character"], items)
+
+    def test_a_name_the_compiler_made_up_is_a_point(self):
+        # `$"..."` calls `show`; an error in the call is at the string, which is
+        # real, but the made-up name itself has no length. An unresolved `show`
+        # reports the slot, whose range is the braces.
+        text = ("namespace Main\nimport System\nclass V(x: Int)\n"
+                "fun main(): Int\n  let v = V(1)\n  ret length($\"a{v}b\")\n")
+        self._write("main.yafl", text)
+        items = self._session(self._pull(2, "main.yafl"))[2]
+        covered = [c for m, c in self._covered(items, text)]
+        self.assertIn("{v}", covered, items)
+
     def test_an_edit_in_one_file_changes_another(self):
         self._write("main.yafl", "namespace Main\nimport System\nfun main(): Int\n  ret helper()\n")
         self._write("lib/helper.yafl", "namespace Main\nimport System\nfun helper(): Int\n  ret 0\n")
@@ -415,6 +474,125 @@ class TestNavigation(_Workspace):
                          sorted(self._where(x) for x in got[2]))
         self.assertEqual(sorted([(main, 5, "helper"), (main, 7, "helper")]),
                          sorted(self._where(x) for x in got[3]))
+
+    def test_a_qualified_name_is_the_end_of_its_path(self):
+        text = "namespace Main\nimport System\nfun main(): Int\n  ret System::length(\"ab\")\n"
+        self._write("main.yafl", text)
+        got = self._session(
+            self._at(2, "textDocument/definition", "main.yafl", 3, 15),   # on `length`
+            self._at(3, "textDocument/definition", "main.yafl", 3, 8),    # on `System`
+            self._at(4, "textDocument/references", "main.yafl", 3, 15,
+                     context={"includeDeclaration": False}))
+        self.assertEqual("length", self._text(got[2]))
+        self.assertIsNone(got[3])
+        self.assertEqual([(3, 14, 3, 20)], [(x["range"]["start"]["line"], x["range"]["start"]["character"],
+                                             x["range"]["end"]["line"], x["range"]["end"]["character"])
+                                            for x in got[4]])
+
+    def test_a_slot_of_an_interpolated_string_is_a_use_but_the_call_it_makes_is_not(self):
+        text = ("namespace Main\nimport System\nfun main(): Int\n  let n = 5\n"
+                "  ret length($\"a{n}b\")\n")
+        self._write("main.yafl", text)
+        got = self._session(
+            self._at(2, "textDocument/definition", "main.yafl", 4, 17),   # `n` in the slot
+            self._at(3, "textDocument/definition", "main.yafl", 4, 16),   # the `{`
+            self._at(4, "textDocument/definition", "main.yafl", 4, 13),   # the `$`
+            self._at(5, "textDocument/references", "main.yafl", 3, 6,
+                     context={"includeDeclaration": True}))
+        self.assertEqual((self._uri("main.yafl"), 3, "n"), self._where(got[2]))
+        self.assertIsNone(got[3])
+        self.assertIsNone(got[4])
+        self.assertEqual([(3, 6), (4, 17)], sorted((x["range"]["start"]["line"], x["range"]["start"]["character"])
+                                                   for x in got[5]))
+
+    def test_names_are_found_by_characters_not_bytes(self):
+        line = '  ret length("\U0001F600") + \u00e9'
+        text = f'namespace Main\nimport System\nfun main(): Int\n  let \u00e9 = 1\n{line}\n'
+        self._write("main.yafl", text)
+        unit = len(line[:line.rindex("\u00e9")].encode("utf-16-le")) // 2
+        got = self._session(
+            self._at(2, "textDocument/definition", "main.yafl", 4, unit),
+            self._at(3, "textDocument/references", "main.yafl", 3, 6,
+                     context={"includeDeclaration": True}))
+        self.assertEqual((self._uri("main.yafl"), 3, "\u00e9"), self._where(got[2]))
+        self.assertEqual([(3, 6, 7), (4, unit, unit + 1)],
+                         sorted((x["range"]["start"]["line"], x["range"]["start"]["character"],
+                                 x["range"]["end"]["character"]) for x in got[3]))
+
+    _RICH = (
+        "namespace Main\n"
+        "import System\n"
+        "import System::Containers\n"
+        "\n"
+        "class Point(x: Int, y: Int)\n"
+        "  fun norm(): Int\n"
+        "    ret x * x + y * y\n"
+        "\n"
+        "enum Shape\n"
+        "  enum Circle(radius: Int)\n"
+        "  enum Square(side: Int)\n"
+        "\n"
+        "interface Named<T>\n"
+        "  fun nameOf(value: T): String\n"
+        "\n"
+        "fun `+`(a: Point, b: Point): Point\n"
+        "  ret Point(a.x + b.x, a.y + b.y)\n"
+        "\n"
+        "fun area(s: Shape): Int => match(s)\n"
+        "  (c: Circle) => c.radius * c.radius * 3\n"
+        "  (q: Square) => q.side * q.side\n"
+        "\n"
+        "fun twice<T>(f: (:T): T, v: T): T => f(f(v))\n"
+        "\n"
+        "fun total(ps: List<Point>): Int\n"
+        "  let sum = fold(ps, 0, (acc, p) => acc + p.norm())\n"
+        "  ret sum\n"
+        "\n"
+        "fun main(): Int\n"
+        "  let p = Point(1, 2) + Point(3, 4)\n"
+        "  let moved = with p(x = 9)\n"
+        "  let n = twice((v: Int) => v + 1, p.x) |> (r) => r * 2\n"
+        "  let label = $\"{n} and {moved.y}\"\n"
+        "  let shape: Shape = Circle(n)\n"
+        "  ret area(shape) + length(label) + System::length(\"ab\") + (n > 3 ? 1 : 0) + total(List(p))\n")
+
+    def test_every_name_leads_to_itself(self):
+        """The definition of any name in a program of every kind of use is the
+        name itself, as written where it is declared: never a neighbour, never
+        part of a word."""
+        import re
+        self._write("main.yafl", self._RICH)
+        lines = self._RICH.split("\n")
+        probes = []   # (id, line, character, word)
+        for ln, text in enumerate(lines):
+            for m in re.finditer(r"[A-Za-z_][A-Za-z_0-9]*", text):
+                probes.append((len(probes) + 2, ln, m.start(), m.group()))
+        got = self._session(*[self._at(i, "textDocument/definition", "main.yafl", ln, ch)
+                              for i, ln, ch, _ in probes])
+        found = 0
+        for i, ln, ch, word in probes:
+            loc = got.get(i)
+            if loc is None:
+                continue
+            found += 1
+            self.assertEqual(word, self._text(loc), (ln, ch, word, loc))
+        # Most words in the program are names.
+        self.assertGreater(found, len(probes) // 2, (found, len(probes)))
+
+    def test_every_reference_is_the_name(self):
+        import re
+        self._write("main.yafl", self._RICH)
+        lines = self._RICH.split("\n")
+        asks = [(10 + k, ln, m.start(), m.group())
+                for k, (ln, m) in enumerate((ln, m) for ln, t in enumerate(lines)
+                                            for m in re.finditer(r"[A-Za-z_][A-Za-z_0-9]*", t))
+                if m.group() in ("p", "n", "x", "area", "twice", "Point", "moved", "label", "acc", "sum")]
+        got = self._session(*[self._at(i, "textDocument/references", "main.yafl", ln, ch,
+                                       context={"includeDeclaration": True}) for i, ln, ch, _ in asks])
+        for i, ln, ch, word in asks:
+            locs = got[i]
+            for loc in locs:
+                self.assertEqual(word, self._text(loc), (ln, ch, word, loc))
 
     def test_the_server_says_it_navigates(self):
         got = self._session()

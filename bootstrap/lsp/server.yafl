@@ -166,7 +166,7 @@ fun captured(sv: Server, m: Message): Captured
 # analysis's one error, as it is a compile's.
 fun analysed(sv: Server, cp: Captured): Server => match(cp.cpSrcs)
   (srcs: List<LibSource>) => reanalysed(withLibraries(sv, cp), srcs)
-  (why: String)           => with sv(svReport = Report(sv.svEdits, Set(List(PErr(PLine("", 1, 1), why))),
+  (why: String)           => with sv(svReport = Report(sv.svEdits, Set(List(PErr(syntheticLine("", 1, 1), why))),
                                                        Dict(), noUses(), Dict()))
   ()                      => sv
 
@@ -180,7 +180,7 @@ fun reanalysed(sv: Server, srcs: List<LibSource>): Server
     (l: Libraries, root: String) => examinedProgram(l, root, srcs, defaultWarnings())
     (l: Libraries, n)            => examined(Set())
     (f: LibraryFailure, root)    => examined(failureDiagnostics(f))
-    (n, root)                    => examined(Set(List(PErr(PLine("", 1, 1), "the libraries were not read"))))
+    (n, root)                    => examined(Set(List(PErr(syntheticLine("", 1, 1), "the libraries were not read"))))
   ret with sv(svReport = Report(sv.svEdits, found.exErrs, texts, found.exUses, found.exPlaces))
 
 

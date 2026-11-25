@@ -56,16 +56,7 @@ fun [tail] charsIn(text: String, off: Int, units: Int, col: Int): Int
     ()                                  => col
 
 
-# ── names in the text ────────────────────────────────────────────────────────
-
-# Where `name` is written on the compiler's line `at.plLine`, at `at` or after
-# it, as a whole word; None when it is not.
-fun namedAt(text: String, at: PLine, name: String): PLine|None
-  let start = lineStart(text, at.plLine - 1, 0)
-  let from = charOffset(text, start, at.plCol - 1)
-  let nl = findByte(text, '\n', from)
-  let found = wordIn(text, name, from, nl < 0 ? System::length(text) : nl)
-  ret found < 0 ? None : PLine(at.plFile, at.plLine, at.plCol + charsBetween(text, from, found, 0))
+# ── characters in the text ───────────────────────────────────────────────────
 
 # The byte offset `chars` characters after `off`, stopping at the end of the
 # line.
@@ -75,32 +66,3 @@ fun [tail] charOffset(text: String, off: Int, chars: Int): Int
   ret match(decode(text, off))
     (d: (cp: System::Int32, next: Int)) => d.cp == '\n' ? off : charOffset(text, d.next, chars - 1)
     ()                                  => off
-
-fun [tail] charsBetween(text: String, off: Int, end: Int, acc: Int): Int
-  if off >= end
-    ret acc
-  ret match(decode(text, off))
-    (d: (cp: System::Int32, next: Int)) => charsBetween(text, d.next, end, acc + 1)
-    ()                                  => acc
-
-# The offset of the first whole `name` in [from, end), or -1. A name is whole
-# when the bytes either side cannot continue it: a word is not inside a longer
-# word, nor an operator inside a longer operator (`>` in `>=`).
-fun [tail] wordIn(text: String, name: String, from: Int, end: Int): Int
-  let i = indexOf(text, name, from)
-  if i < 0 || i + System::length(name) > end
-    ret -1
-  let operator = !isWordByte(System::byteAt(name, 0))
-  let before = i > 0 && continues(System::byteAt(text, i - 1), operator)
-  let after = i + System::length(name) < System::length(text)
-              && continues(System::byteAt(text, i + System::length(name)), operator)
-  ret before || after ? wordIn(text, name, i + 1, end) : i
-
-fun continues(b: System::Int32, operator: Bool): Bool => operator ? isOperatorByte(b) : isWordByte(b)
-
-fun isWordByte(b: System::Int32): Bool
-  ret b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
-
-fun isOperatorByte(b: System::Int32): Bool
-  ret b == '+' || b == '-' || b == '*' || b == '/' || b == '%' || b == '<' || b == '>' || b == '='
-      || b == '!' || b == '&' || b == '|' || b == '^' || b == '~' || b == '?' || b == ':'

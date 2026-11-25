@@ -28,7 +28,7 @@ def fix_global_integers(statements: list[s.Statement]) -> list[s.Statement]:
 
     # Create global 'let' declarations for each unique string literal
     def create_integer(index: int, value: int) -> s.LetStatement:
-        lr = LineRef("$integers", index + 1, 1)
+        lr = LineRef.synthetic("$integers", index + 1, 1)
         return s.LetStatement(lr, f"$integers::integer@{'n'if value<0 else'p'}{(0-value)if value<0 else value}",
                               ImportGroup(()), {}, (),
                               e.IntegerExpression(lr, value, 0),

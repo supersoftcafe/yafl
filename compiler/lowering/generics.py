@@ -907,13 +907,13 @@ def __convert_generics_iterative(statements: list[s.Statement]) -> "tuple[list[s
         by_name = {stmt.name: stmt for stmt in statements}
         if offenders:
             return statements, [Error(
-                by_name[n].line_ref if n in by_name else LineRef("$generics", 1, 1),
+                by_name[n].line_ref if n in by_name else LineRef.synthetic("$generics", 1, 1),
                 f"polymorphic recursion: `{g.simple_name(g.bare_name(n))}` is "
                 f"instantiated at ever-deeper type arguments ({counts[n]} distinct "
                 f"instantiations without stabilising) — a recursive call must use "
                 f"the function's own type parameters, not a compound of them "
                 f"(e.g. Wrap<T>)") for n in offenders]
-        return statements, [Error(LineRef("$generics", 1, 1),
+        return statements, [Error(LineRef.synthetic("$generics", 1, 1),
             f"generic instantiation did not stabilise after {_MAX_MONO_ROUNDS} "
             f"rounds — likely polymorphic recursion through mutually recursive "
             f"generics; recursive calls must use the functions' own type "

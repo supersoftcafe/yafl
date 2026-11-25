@@ -6,7 +6,7 @@ import pyast.statement as s
 from parsing.tokenizer import LineRef
 
 glb = g.ResolverRoot([])
-lr = LineRef("f", 0, 0)
+lr = LineRef.synthetic("f", 0, 0)
 int32 = t.BuiltinSpec(lr, "int32")
 
 class TestTupleSpec(TestCase):

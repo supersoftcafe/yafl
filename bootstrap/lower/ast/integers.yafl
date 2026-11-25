@@ -43,17 +43,17 @@ fun giGlobals(vs: List<Int>, index: Int, acc: List<PStmt>): List<PStmt>
 
 fun giGlobal(v: Int, index: Int): PStmt
   ret PsLet(giName(v), List(), List(),
-            SBuiltin("bigint", PLine("$integers", index + 1, 1)),
-            PeInt(v, 0, PLine("$integers", index + 1, 1)),
+            SBuiltin("bigint", syntheticLine("$integers", index + 1, 1)),
+            PeInt(v, 0, syntheticLine("$integers", index + 1, 1)),
             "", List(),
-            PLine("$integers", index + 1, 1), false,
+            syntheticLine("$integers", index + 1, 1), inventedAt(syntheticLine("$integers", index + 1, 1)), false,
             List<PStmt>())
 
 fun giReplace(x, values: List<Int>) => match(x)
   (i: PeInt) => i.precision == 0
     ? PeName(giName(i.value), List(),
-             PLine("$integers", giIndexOf(values, i.value, 0) + 1,
-                   1),
+             syntheticLine("$integers", giIndexOf(values, i.value, 0) + 1,
+                           1),
              None)
     : None
   (o: PExpr) => None

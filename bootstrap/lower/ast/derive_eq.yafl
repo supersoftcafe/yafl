@@ -343,14 +343,14 @@ fun deRef(name, lr) => PeName(name, List(), lr)
 fun deOp(rtype, name, args, lr)
   ret PeBuiltinOp(SBuiltin(rtype, lr), PeStr(name, lr), PeTuple(args, lr), lr)
 
-fun deEnt(x) => PTupEnt("", false, x)
+fun deEnt(x) => PTupEnt("", false, x, noName())
 
 fun deCall2(fn, a, b, lr) => PeCall(deRef(fn, lr), PeTuple(list2(deEnt(a), deEnt(b)), lr), lr, None)
 
 fun deCall1(fn, a, lr) => PeCall(deRef(fn, lr), PeTuple(list1(deEnt(a)), lr), lr, None)
 
 fun deParam(name, typeName, lr) => PsLet(hashName(name, lr), List(), List(),
-                                         SNamed(typeName, List(), lr), None, "", List(), lr)
+                                         SNamed(typeName, List(), lr), None, "", List(), lr, inventedAt(lr))
 
 fun deEqMember(e2: PsEnum, dl: DeLeaves)
   let lr = e2.pseLine
@@ -364,7 +364,7 @@ fun deEqMember(e2: PsEnum, dl: DeLeaves)
                      "", lr)
   ret PsFun(hashName("`==`", lr), List(), List(),
             funParamsStmt(list2(deParam("left", e2.eName, lr), deParam("right", e2.eName, lr)), lr),
-            body, SBuiltin("bool", lr), List(), lr)
+            body, SBuiltin("bool", lr), List(), lr, inventedAt(lr))
 
 fun deEqArms(ns: List<String>, sets: List<List<PStmt>>, i: Int,
              many: Bool, e2: PsEnum, acc: List<PArm>): List<PArm> =>
@@ -379,14 +379,14 @@ fun deEqArm(leafName, fields: List<PStmt>, i: Int, many,
   let cmp = deFieldsCmp(fields, xn, yn, None, lr)
   let innerArms = many
     ? list2(PArm(hashName(yn, lr), SNamed(leafName, List(), lr),
-                        cmp, List(), None, lr, List()), PArm(hashName("o" + String(i), lr),
+                        cmp, List(), None, lr, List(), inventedAt(lr)), PArm(hashName("o" + String(i), lr),
                   SNamed(e2.eName, List(), lr),
-                  PeBool(false, lr), List(), None, lr, List()))
+                  PeBool(false, lr), List(), None, lr, List(), inventedAt(lr)))
     : list1(PArm(hashName(yn, lr), SNamed(leafName, List(), lr),
-                 cmp, List(), None, lr, List()))
+                 cmp, List(), None, lr, List(), inventedAt(lr)))
   ret PArm(hashName(xn, lr), SNamed(leafName, List(), lr),
            PeMatch(deRef("right", lr), innerArms, lr, List()),
-           List(), None, lr, List())
+           List(), None, lr, List(), inventedAt(lr))
 
 fun deFieldsCmp(fs: List<PStmt>, xn, yn, acc: PExpr|None, lr) =>
   fold(fs, acc, (a2, x) => deFieldsCmpStep(a2, x, xn, yn, lr))
@@ -413,7 +413,7 @@ fun deHashMember(e2: PsEnum, dl: DeLeaves)
                        SBuiltin("int32", lr),
                        deOp("int32", "yafl_hash_peek",
                             list1(deEnt(deRef("value", lr))), lr),
-                       "", List(), lr)
+                       "", List(), lr, inventedAt(lr))
   let body = PeBlock(list1(cacheLet),
                      PeTernary(deOp("bool", "int32_test_eq",
                                     list2(deEnt(deRef("$dhc", lr)), deEnt(PeInt(0, 32, lr))), lr),
@@ -424,7 +424,7 @@ fun deHashMember(e2: PsEnum, dl: DeLeaves)
                      "", lr)
   ret PsFun(hashName("hashOf", lr), List(), List(),
             funParamsStmt(list1(deParam("value", e2.eName, lr)), lr),
-            body, SBuiltin("int32", lr), List(), lr)
+            body, SBuiltin("int32", lr), List(), lr, inventedAt(lr))
 
 fun deHashArms(ns: List<String>, sets: List<List<PStmt>>, i: Int,
                e2: PsEnum, acc: List<PArm>): List<PArm> =>
@@ -438,7 +438,7 @@ fun deHashArm(leafName, fields: List<PStmt>, i,
   let acc0 = PeInt(i, 32, lr)
   ret PArm(hashName(xn, lr), SNamed(leafName, List(), lr),
            deHashFold(fields, xn, acc0, lr),
-           List(), None, lr, List())
+           List(), None, lr, List(), inventedAt(lr))
 
 fun deHashFold(fs: List<PStmt>, xn, acc, lr) =>
   fold(fs, acc, (a, x) => deHashFoldStep(a, x, xn, lr))

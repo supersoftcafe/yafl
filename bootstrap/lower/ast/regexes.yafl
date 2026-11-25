@@ -75,9 +75,9 @@ fun rxErrorOf(acc: Set<PErr>, p: String, found: List<PeRegex>): Set<PErr> => mat
 
 fun firstLine(rs: List<PeRegex>, pattern: String): PLine => match(firstWhere(rs, (x) => x.pattern == pattern))
   (x: PeRegex) => x.perLine
-  ()           => PLine("", 0, 0)   # unreachable: every pattern came from `found`
+  ()           => syntheticLine("", 0, 0)   # unreachable: every pattern came from `found`
 
-fun regexLine(index: Int) => PLine("$regexes", index + 1, 1)
+fun regexLine(index: Int) => syntheticLine("$regexes", index + 1, 1)
 
 # The index travels in the accumulator beside the statements.
 fun rxGlobals(ps: List<String>, library: String|None, index: Int, acc: List<PStmt>): List<PStmt>
@@ -89,9 +89,9 @@ fun rxGlobal(p: String, library: String|None, index: Int): PStmt
   ret PsLet(rxName(library, index), List(), List(),
             SNamed("System::Regex", List(), regexLine(index)),
             PeCall(PeName("System::Regex", List(), regexLine(index), None),
-                   PeTuple(list1(PTupEnt("", false, PeStr(p, regexLine(index)))), regexLine(index)),
+                   PeTuple(list1(PTupEnt("", false, PeStr(p, regexLine(index)), noName())), regexLine(index)),
                    regexLine(index), None),
-            "", List(), regexLine(index), false, List<PStmt>())
+            "", List(), regexLine(index), inventedAt(regexLine(index)), false, List<PStmt>())
 
 fun rxReplace(x, patterns: List<String>, library: String|None) => match(x)
   (r: PeRegex) => PeName(rxName(library, rxIndexOf(patterns, r.pattern, 0)),

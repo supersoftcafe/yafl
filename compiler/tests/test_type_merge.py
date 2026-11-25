@@ -23,7 +23,7 @@ from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 
-lr = LineRef("m", 0, 0)
+lr = LineRef.synthetic("m", 0, 0)
 INT = t.BuiltinSpec(lr, "bigint")
 STR = t.BuiltinSpec(lr, "str")
 BOOL = t.BuiltinSpec(lr, "bool")
