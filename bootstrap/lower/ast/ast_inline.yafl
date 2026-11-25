@@ -301,7 +301,7 @@ fun coParamLetsStep(a: List<PStmt>, x: String, caps: OuterTypes, lr) => match(ge
 # The entry NAME is the closure field; the value still reads the outer binding
 # under the name it has here.
 fun coCaptureArgs(ns: List<String>, lr, acc: List<PTupEnt>): List<PTupEnt> =>
-  concat(acc, map(ns, (n) => PTupEnt(capturedFieldName(n, lr), false, PeName(n, List(), lr, None), noName())))
+  concat(acc, map(ns, (n) => madeEntry(capturedFieldName(n, lr), false, PeName(n, List(), lr, None))))
 
 # One shared instance, then one let per method exposing it under the
 # original nested-fn name.

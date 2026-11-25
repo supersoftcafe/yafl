@@ -397,7 +397,7 @@ def __build_replace_fn(
                     args = checked_cast(e.TupleExpression, thing.parameter).expressions
                     new_args = e.TupleExpression(
                         lr,
-                        [e.TupleEntryExpression(None, dot.base)] + list(args),
+                        [e.TupleEntryExpression.invented(None, dot.base)] + list(args),
                     )
                     return e.CallExpression(lr, e.NamedExpression(lr, func_name), new_args)
 

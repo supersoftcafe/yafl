@@ -88,11 +88,11 @@ fun withGuardLoopStep(st: (i: Int, acc: PExpr|None), x: PTupEnt, lr) =>
   (i = st.i + 1,
   acc = withAnd(st.acc,
       PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_same", lr),
-                  PeTuple(list2(PTupEnt("", false,
-                           PeName("$w" + String(st.i), List(), lr), noName()),
-                          PTupEnt("", false,
+                  PeTuple(list2(madeEntry("", false,
+                           PeName("$w" + String(st.i), List(), lr)),
+                          madeEntry("", false,
                            PeDot(PeName("$ws", List(), lr),
-                                 x.tupName, x.tupNameAt), noName())), lr), lr),
+                                 x.tupName, x.tupLine))), lr), lr),
       lr))
 
 fun withAnd(acc: PExpr|None, one, lr) => match(acc)
@@ -109,7 +109,7 @@ fun withCtorArgs(fs: List<PStmt>, repls: List<PTupEnt>, carrier, lr, acc: List<P
   fold(fs, acc, (a, x) => withCtorArgsStep(a, x, repls, carrier, lr))
 
 fun withCtorArgsStep(a: List<PTupEnt>, x: PStmt, repls: List<PTupEnt>, carrier, lr) => match(x)
-  (p: PsLet) => append(a, PTupEnt("", false, withCtorArg(bareName(p.lName), repls, carrier, lr), noName()))
+  (p: PsLet) => append(a, madeEntry("", false, withCtorArg(bareName(p.lName), repls, carrier, lr)))
   (o: PStmt) => a
 
 fun withCtorArg(bare, repls: List<PTupEnt>, carrier,

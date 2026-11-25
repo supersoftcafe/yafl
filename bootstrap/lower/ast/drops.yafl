@@ -577,9 +577,9 @@ fun drFixMatch(st: DrFix, mt: PeMatch, let2: PsLet): (s: DrFix, r: PExpr|None)
 # `where Drop<T>`.
 fun dropCall(let2: PsLet)
   ret PsAction(PeCall(PeName("drop", List(), let2.pslLine),
-                      PeTuple(prepend(PTupEnt("", false,
+                      PeTuple(prepend(madeEntry("", false,
                                              PeName(let2.lName, List(),
-                                                    let2.pslLine), noName()), List()),
+                                                    let2.pslLine)), List()),
                               let2.pslLine),
                       let2.pslLine, None),
                let2.pslLine)

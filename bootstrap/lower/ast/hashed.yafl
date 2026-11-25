@@ -105,14 +105,14 @@ fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
   let int32Spec = SBuiltin("int32", lr)
   let vRef = PeName(paramName, List(), lr)
   let peek = PeBuiltinOp(int32Spec, PeStr("yafl_hash_peek", lr),
-                         PeTuple(list1(PTupEnt("", false, vRef, noName())), lr), lr)
+                         PeTuple(list1(madeEntry("", false, vRef)), lr), lr)
   let rawCall = PeCall(PeName(bareOfUnique(f.fName) + "$hraw", List(), lr),
-                       PeTuple(list1(PTupEnt("", false, vRef, noName())), lr), lr, None)
+                       PeTuple(list1(madeEntry("", false, vRef)), lr), lr, None)
   let store = PeBuiltinOp(int32Spec, PeStr("yafl_hash_store", lr),
-                          PeTuple(list2(PTupEnt("", false, vRef, noName()), PTupEnt("", false, rawCall, noName())), lr), lr)
+                          PeTuple(list2(madeEntry("", false, vRef), madeEntry("", false, rawCall)), lr), lr)
   let isEmptySlot = PeBuiltinOp(SBuiltin("bool", lr), PeStr("int32_test_eq", lr),
-                                PeTuple(list2(PTupEnt("", false,
-                                                             PeName("$hcache", List(), lr), noName()), PTupEnt("", false, PeInt(0, 32, lr), noName())), lr), lr)
+                                PeTuple(list2(madeEntry("", false,
+                                                             PeName("$hcache", List(), lr)), madeEntry("", false, PeInt(0, 32, lr))), lr), lr)
   let cacheLet = PsLet(hashName("$hcache", lr), List(), List(),
                        int32Spec, peek, "", List(), lr, inventedAt(lr))
   let body = PeBlock(list1(cacheLet),
@@ -177,9 +177,9 @@ fun lhSplitRefeq(f: PsFun, lName, rName): (wrap: PStmt, raw: PStmt)
   let lRef = PeName(lName, List(), lr)
   let rRef = PeName(rName, List(), lr)
   let same = PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_ref_eq", lr),
-                         PeTuple(list2(PTupEnt("", false, lRef, noName()), PTupEnt("", false, rRef, noName())), lr), lr)
+                         PeTuple(list2(madeEntry("", false, lRef), madeEntry("", false, rRef)), lr), lr)
   let rawCall = PeCall(PeName(bareOfUnique(f.fName) + "$reraw", List(), lr),
-                       PeTuple(list2(PTupEnt("", false, lRef, noName()), PTupEnt("", false, rRef, noName())), lr), lr, None)
+                       PeTuple(list2(madeEntry("", false, lRef), madeEntry("", false, rRef)), lr), lr, None)
   let body = PeBlock(List(),
                      PeTernary(same, PeBool(true, lr), rawCall, lr), "", lr)
   ret (PsFun(f.fName, attrs2, f.fGens, f.fParams, body, f.fRet,

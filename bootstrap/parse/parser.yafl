@@ -1031,22 +1031,25 @@ fun [tail] parseArgList(ps: Ps, acc: List<PTupEnt>): (v: List<PTupEnt>|PFail, re
       ? parseArgList(bump(a.rest), append(acc, ag))
       : argsClose(append(acc, ag), a.rest)
 
+# An entry is where its first token is: the `*` of a spread, the name of
+# `x = 9`, else the start of the expression.
 fun parseArg(ps): (v: PTupEnt|PFail, rest: Ps)
+  let first = peek(ps)
+  let at = PLine(ps.srcFile, first.line, first.col, tokenLength(first))
   if atSym(ps, "*")
     let sp = parseExpr(bump(ps))
     ret match(sp.v)
       (f: PFail) => (f, sp.rest)
-      (a: PExpr) => (PTupEnt("", true, a, noName()), sp.rest)
-  let name = peek(ps)
-  if isIdentTok(name) && atSym(bump(ps), "=") && !atSym(bump(bump(ps)), "=")
+      (a: PExpr) => (PTupEnt("", true, a, at), sp.rest)
+  if isIdentTok(first) && atSym(bump(ps), "=") && !atSym(bump(bump(ps)), "=")
     let nv = parseExpr(bump(bump(ps)))
     ret match(nv.v)
       (f: PFail) => (f, nv.rest)
-      (a: PExpr) => (PTupEnt(name.text, false, a, PLine(ps.srcFile, name.line, name.col, tokenLength(name))), nv.rest)
+      (a: PExpr) => (PTupEnt(first.text, false, a, at), nv.rest)
   let e = parseExpr(ps)
   ret match(e.v)
     (f: PFail) => (f, e.rest)
-    (a: PExpr) => (PTupEnt("", false, a, noName()), e.rest)
+    (a: PExpr) => (PTupEnt("", false, a, at), e.rest)
 
 # __builtin_op__<type>("op", args…): the first tuple entry must be a string;
 # the node keeps the op and the REMAINING entries (parser.py trim_left(1)).

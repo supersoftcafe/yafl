@@ -477,8 +477,8 @@ def __to_index_op(value: e.Expression, line_ref: p.LineRef) -> object:
         return e.CallExpression(line,
             e.NamedExpression(line, "`[]`"),
             e.TupleExpression(line, [
-                e.TupleEntryExpression(None, left),
-                e.TupleEntryExpression(None, idx)]))
+                e.TupleEntryExpression.invented(None, left),
+                e.TupleEntryExpression.invented(None, idx)]))
     return wrap
 
 
@@ -569,7 +569,7 @@ def lower_pipe(last_result: e.Expression, function: e.Expression) -> e.Expressio
             [s.LetStatement(lr, tmp, None, {}, (), last_result, None)], inner)
     # Wrap last result in a tuple, just-in-case it isn't a tuple already.
     parameter = last_result if isinstance(last_result, e.TupleExpression)\
-        else e.TupleExpression(last_result.line_ref, [e.TupleEntryExpression(None, last_result)])
+        else e.TupleExpression(last_result.line_ref, [e.TupleEntryExpression.invented(None, last_result)])
     call = e.CallExpression(function.line_ref, function, parameter)
     return call
 
@@ -590,9 +590,9 @@ def lower_interpolation(x: e.InterpolatedStringExpression) -> e.Expression:
         e.StringExpression(x.line_ref, part) if isinstance(part, str) else
         e.CallExpression(part.line_ref, e.NamedExpression(part.line_ref.invented(), "show"),
             e.TupleExpression(part.line_ref,
-                [e.TupleEntryExpression(None, part.expression)]
+                [e.TupleEntryExpression.invented(None, part.expression)]
                 + ([] if part.spec is None else
-                   [e.TupleEntryExpression(None, e.StringExpression(part.line_ref, part.spec))])),
+                   [e.TupleEntryExpression.invented(None, e.StringExpression(part.line_ref, part.spec))])),
             origin=e.InterpolationOrigin(part.text))
         for part in x.parts])
 
@@ -604,7 +604,7 @@ def _concat_of(lr: p.LineRef, operands: list[e.Expression]) -> e.Expression:
         return _concat_of(lr, [_concat_of(lr, operands[:_CONCAT_CAP])] + operands[_CONCAT_CAP:])
     count = e.IntegerExpression(lr, len(operands), 32)
     return e.BuiltinOpExpression(lr, t.BuiltinSpec(lr, "str"), e.StringExpression(lr, "str_concat_n"),
-        e.TupleExpression(lr, [e.TupleEntryExpression(None, v) for v in [count] + operands]))
+        e.TupleExpression(lr, [e.TupleEntryExpression.invented(None, v) for v in [count] + operands]))
 
 
 def __invert_operand(expr: e.Expression) -> e.Expression | None:
@@ -645,8 +645,8 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, p.L
                 return e.CallExpression(line,
                     e.NamedExpression(op_line, "`&~`"),
                     e.TupleExpression(line, [
-                            e.TupleEntryExpression(None, x),
-                            e.TupleEntryExpression(None, y)
+                            e.TupleEntryExpression.invented(None, x),
+                            e.TupleEntryExpression.invented(None, y)
                         ]))
             inner_right = __invert_operand(right)
             if inner_right is not None:
@@ -657,8 +657,8 @@ def __to_call_operators(result: p.Result[tuple[e.Expression, list[tuple[str, p.L
         return e.CallExpression(line,
             e.NamedExpression(op_line, f"`{op}`"),
             e.TupleExpression(line, [
-                    e.TupleEntryExpression(None, left),
-                    e.TupleEntryExpression(None, right)
+                    e.TupleEntryExpression.invented(None, left),
+                    e.TupleEntryExpression.invented(None, right)
                 ]))
     left_expr, right_list = result.value
     expr = reduce(accumulate, right_list, left_expr)
@@ -679,8 +679,8 @@ def __to_bind_or_pipeline(result: p.Result[tuple[e.Expression, list[tuple[str, p
         return e.CallExpression(line,
             e.NamedExpression(op_line, f"`{op}`"),
             e.TupleExpression(line, [
-                    e.TupleEntryExpression(None, left),
-                    e.TupleEntryExpression(None, right)]))
+                    e.TupleEntryExpression.invented(None, left),
+                    e.TupleEntryExpression.invented(None, right)]))
 
     left_expr, right_list = result.value
     expr = reduce(accumulate, right_list, left_expr)
@@ -696,7 +696,7 @@ def __to_negate(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Resu
     negated = e.CallExpression(line,
         e.NamedExpression(line, "`-`"),
         e.TupleExpression(line, [
-            e.TupleEntryExpression(None, expr),
+            e.TupleEntryExpression.invented(None, expr),
         ]))
     return p.Result(negated, result.tokens, result.line_ref, result.errors)
 
@@ -706,7 +706,7 @@ def __to_not(value: e.Expression, line_ref: p.LineRef) -> e.Expression:
     notted = e.CallExpression(line,
         e.NamedExpression(line, "`!`"),
         e.TupleExpression(line, [
-            e.TupleEntryExpression(None, value),
+            e.TupleEntryExpression.invented(None, value),
         ]))
     return notted
 
@@ -716,7 +716,7 @@ def __to_invert(value: e.Expression, line_ref: p.LineRef) -> e.Expression:
     inverted = e.CallExpression(line,
         e.NamedExpression(line, "`~`"),
         e.TupleExpression(line, [
-            e.TupleEntryExpression(None, value),
+            e.TupleEntryExpression.invented(None, value),
         ]))
     return inverted
 
@@ -788,14 +788,14 @@ def __to_is(result: p.Result, tokens: list[p.Token]) -> p.Result[e.Expression]:
 
 def __to_expr_tuple_entry(value: tuple[list[str], e.Expression], line_ref: p.LineRef,
                           tokens: list[p.Token]) -> e.TupleEntryExpression:
-    # A written name is the entry's first token: that is where it is.
+    # The entry is where its first token is: the name when it has one.
     name, value = value
-    return e.TupleEntryExpression(p.first_or_none(name), value, name_at=tokens[0].line_ref if name else None)
+    return e.TupleEntryExpression(line_ref, p.first_or_none(name), value)
 
 
-def __to_spread_entry(value: e.Expression) -> e.TupleEntryExpression:
+def __to_spread_entry(value: e.Expression, line_ref: p.LineRef) -> e.TupleEntryExpression:
     # `*expr` — splice the tuple value's fields into this tuple, positionally.
-    return e.TupleEntryExpression(None, value, spread=True)
+    return e.TupleEntryExpression(line_ref, None, value, spread=True)
 
 
 def __to_expr_tuple(value: list[e.TupleEntryExpression], line_ref: p.LineRef) -> e.Expression:
@@ -1216,7 +1216,7 @@ __parse_maybe_type_params = p.maybe(p.requires(
     p.sym("<"), p.delimited_list(__parse_type, ",") & p.close_angle(),
     "missing generics")).map(__to_flat_list)
 
-__parse_expr_tuple_entry = (((p.discard_sym("*") & __parse_expression).map(__to_spread_entry))
+__parse_expr_tuple_entry = (((p.discard_sym("*") & __parse_expression).build(__to_spread_entry))
                             | ((p.maybe(p.ident() & p.discard_sym("=")) & __parse_expression).build_from(__to_expr_tuple_entry)))
 __parse_expr_tuple = p.requires(p.sym("("), p.delimited_list(__parse_expr_tuple_entry, ",") & p.discard_sym(")"), "invalid tuple").build(__to_expr_tuple)
 __parse_lambda = (__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_expr_lambda

@@ -184,7 +184,7 @@ def __create_new_expression(cls: s.ClassStatement|None, fnc: s.FunctionStatement
     if cpt:
         # Entry name = the closure's field; entry value = a read of the outer
         # binding, which still goes by its own name out here.
-        captures = [e.TupleEntryExpression(u.capture_field_name(name, lr), _capture_read(name, xtype))
+        captures = [e.TupleEntryExpression.invented(u.capture_field_name(name, lr), _capture_read(name, xtype))
                     for name, xtype in cpt]
         parameters = e.TupleExpression(lr, captures)                 # Capture parameters for class constructor
         clstype = t.ClassSpec(lr, cls.name)                          # Reference to class type

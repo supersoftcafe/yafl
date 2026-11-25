@@ -97,7 +97,7 @@ def dump(statements) -> str:
         elif isinstance(x, e.TupleExpression):
             line(depth, "Tuple", x, "")
             for en in x.expressions:
-                line(depth + 1, "Entry", x, f"{en.name or ''}|{'*' if en.spread else ''}")
+                line(depth + 1, "Entry", en, f"{en.name or ''}|{'*' if en.spread else ''}")
                 walk_expr(en.value, depth + 2)
         elif isinstance(x, e.WithExpression):
             line(depth, "With", x, "")

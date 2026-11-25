@@ -17,10 +17,10 @@ import Bootstrap::Types
 
 fun hashName(name, lr: PLine) => name + "@" + hash6(lr.plFile, lr.plLine, lr.plCol)
 
-fun oneEntryTuple(x, lr) => PeTuple(prepend(PTupEnt("", false, x, noName()), List()), lr)
+fun oneEntryTuple(x, lr) => PeTuple(prepend(madeEntry("", false, x), List()), lr)
 
 fun twoEntryTuple(a, b, lr)
-  ret PeTuple(append(append(List(), PTupEnt("", false, a, noName())), PTupEnt("", false, b, noName())), lr)
+  ret PeTuple(append(append(List(), madeEntry("", false, a)), madeEntry("", false, b)), lr)
 
 fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr, None)
 
@@ -120,7 +120,7 @@ fun [tail] splitOps(ops: List<PExpr>, k: Int, first: List<PExpr>): (first: List<
 # One str_concat_n over `n` operands.
 fun joinOps(ops: List<PExpr>, n: Int, lr: PLine): PExpr =>
   PeBuiltinOp(SBuiltin("str", lr), PeStr("str_concat_n", lr, ""),
-              PeTuple(map(prepend(PeInt(n, 32, lr, ""), ops), (o) => PTupEnt("", false, o, noName())), lr), lr)
+              PeTuple(map(prepend(PeInt(n, 32, lr, ""), ops), (o) => madeEntry("", false, o)), lr), lr)
 
 # `l |> stage`: a lambda stage beta-reduces to a Block binding its params
 # from l; a call stage with one `_` placeholder binds l to $pipe@hash and
@@ -173,7 +173,7 @@ fun pipePlaceholder(last, stage): PExpr
 fun fillHole(param, tmp, lr): PExpr => match(param)
   (t2: PeTuple) => PeTuple(map(t2.exprs, (en) =>
       isHole(en.tupValue)
-        ? PTupEnt(en.tupName, en.tupSpread, PeName(tmp, List(), lr), en.tupNameAt)
+        ? PTupEnt(en.tupName, en.tupSpread, PeName(tmp, List(), lr), en.tupLine)
         : en), t2.petLine)
   (other)       => param
 
@@ -247,8 +247,8 @@ fun ctorParam(f) => match(f)
   (o: PStmt) => o
 
 fun ctorEntry(f) => match(f)
-  (l: PsLet) => PTupEnt(l.lName, false, PeName(l.lName, List(), l.pslLine), l.lNameAt)
-  (o: PStmt) => PTupEnt("", false, PeNothing(stmtLine(o)), noName())
+  (l: PsLet) => madeEntry(l.lName, false, PeName(l.lName, List(), l.pslLine))
+  (o: PStmt) => madeEntry("", false, PeNothing(stmtLine(o)))
 
 fun stmtLine(st) => match(st)
   (f: PsFun) => f.psfLine
@@ -403,6 +403,10 @@ fun startLine(x: PExpr): PLine => match(x)
 
 fun earlier(a: PLine, b: PLine): PLine
   ret b.plLine < a.plLine || (b.plLine == a.plLine && b.plCol < a.plCol) ? b : a
+
+# An entry the compiler makes up around `value`: it begins where the value
+# does and marks no source text of its own (Python TupleEntryExpression.invented).
+fun madeEntry(name: String, spread: Bool, value: PExpr): PTupEnt => PTupEnt(name, spread, value, inventedAt(exprLine(value)))
 
 fun exprLine(x) => match(x)
   (i: PeInt) => i.peiLine

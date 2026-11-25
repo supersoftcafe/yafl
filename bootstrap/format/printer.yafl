@@ -669,8 +669,8 @@ fun builtinTypeText(sp: Spec): String => match(sp)
   ()            => render(specDoc(sp), lineWidth())
 
 fun prependArg(name: PExpr, args: PExpr): PExpr => match(args)
-  (t2: PeTuple) => PeTuple(prepend(PTupEnt("", false, name, noName()), t2.exprs), t2.petLine)
-  ()            => PeTuple(List(PTupEnt("", false, name, noName()), PTupEnt("", false, args, noName())), exprLine(args))
+  (t2: PeTuple) => PeTuple(prepend(madeEntry("", false, name), t2.exprs), t2.petLine)
+  ()            => PeTuple(List(madeEntry("", false, name), madeEntry("", false, args)), exprLine(args))
 
 # `=> body`. A ternary chain starts a line of its own four in; anything else
 # stays on the arrow's line and wraps inside itself, or moves down when it

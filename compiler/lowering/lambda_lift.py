@@ -48,7 +48,7 @@ def __call_args(call: e.CallExpression) -> list[e.TupleEntryExpression]:
         return list(p.expressions)
     if isinstance(p, e.NothingExpression):
         return []
-    return [e.TupleEntryExpression(None, p)]
+    return [e.TupleEntryExpression.invented(None, p)]
 
 
 def __reference_counts(body: e.Expression, names: set[str]) -> tuple[dict[str, int], dict[str, int]]:
@@ -127,7 +127,7 @@ def __lift_in_function(fn: s.FunctionStatement) -> s.FunctionStatement:
         if (isinstance(thing, e.CallExpression)
                 and isinstance(thing.function, e.NamedExpression)
                 and thing.function.name in lift_sets):
-            extra = [e.TupleEntryExpression(None, e.NamedExpression(thing.line_ref, name))
+            extra = [e.TupleEntryExpression.invented(None, e.NamedExpression(thing.line_ref, name))
                      for name in lift_sets[thing.function.name]]
             args = __call_args(thing) + extra
             return dataclasses.replace(thing, parameter=e.TupleExpression(thing.line_ref, args))

@@ -239,7 +239,7 @@ class _Inserter:
             let.line_ref,
             e.NamedExpression(let.line_ref, "drop"),
             e.TupleExpression(let.line_ref, [
-                e.TupleEntryExpression(None, e.NamedExpression(let.line_ref, let.name))])))
+                e.TupleEntryExpression.invented(None, e.NamedExpression(let.line_ref, let.name))])))
 
     def __with_drops(self, body: e.Expression,
                      drops: list[s.LetStatement]) -> e.BlockExpression:

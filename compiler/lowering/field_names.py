@@ -101,7 +101,7 @@ def __bound_by_position(expr: e.Expression, source: t.TypeSpec | None, target: t
         if in_place:
             return None
         return e.TupleExpression(lr, [
-            e.TupleEntryExpression(None, expr.expressions[b].value if b is not None else field.default)
+            e.TupleEntryExpression.invented(None, expr.expressions[b].value if b is not None else field.default)
             for field, b in zip(bound.entries, binding)])
 
     # Any other value is held once and read field by field.
@@ -110,12 +110,12 @@ def __bound_by_position(expr: e.Expression, source: t.TypeSpec | None, target: t
     fields: list[e.TupleEntryExpression] = []
     for i, (field, b) in enumerate(zip(bound.entries, binding)):
         if b is None:
-            fields.append(e.TupleEntryExpression(None, field.default))
+            fields.append(e.TupleEntryExpression.invented(None, field.default))
             continue
         read = e.DotExpression(lr, e.NamedExpression(lr, held), source.entries[b].name or "", b)
         inner = __bound_by_position(read, source.entries[b].type, field.type, resolver, f"{path}_{i}")
         changed = changed or inner is not None
-        fields.append(e.TupleEntryExpression(None, inner if inner is not None else read))
+        fields.append(e.TupleEntryExpression.invented(None, inner if inner is not None else read))
     if not changed:
         return None
     hold = s.LetStatement(lr, f"{held}@{lr.hash6()}", None, {}, (), expr, None)

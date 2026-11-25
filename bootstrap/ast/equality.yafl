@@ -154,7 +154,7 @@ fun eqExpr(a: PExpr, b: PExpr) => match(a, b)
   ()                               => false
 
 fun eqTupEnt(a: PTupEnt, b: PTupEnt) => a.tupName == b.tupName && eqBool(a.tupSpread, b.tupSpread)
-    && eqExpr(a.tupValue, b.tupValue)
+    && eqExpr(a.tupValue, b.tupValue) && eqLine(a.tupLine, b.tupLine)
 
 fun eqInterpPart(a: PInterpPart, b: PInterpPart) => match(a, b)
   (x: PipText, y: PipText) => x.ipText == y.ipText

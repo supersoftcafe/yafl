@@ -136,8 +136,8 @@ class WithExpression(Expression):
             one = BuiltinOpExpression(lr, t.BuiltinSpec(lr, "bool"),
                 StringExpression(lr, "yafl_same"),
                 TupleExpression(lr, [
-                    TupleEntryExpression(None, repl_ref[en.name]),
-                    TupleEntryExpression(None, e.DotExpression(en.name_at, ref("$ws"), en.name))]))
+                    TupleEntryExpression.invented(None, repl_ref[en.name]),
+                    TupleEntryExpression.invented(None, e.DotExpression(en.line_ref, ref("$ws"), en.name))]))
             cond = one if cond is None else e.TernaryExpression(lr, cond, one, BoolExpression(lr, False))
 
         # The copy: constructor call(s) mixing carried fields with replacements.
@@ -145,7 +145,7 @@ class WithExpression(Expression):
             args = []
             for let in ctor_fields:
                 bare = _bare(let.name)
-                args.append(TupleEntryExpression(None,
+                args.append(TupleEntryExpression.invented(None,
                     repl_ref[bare] if bare in repl_ref else carrier(bare)))
             return e.CallExpression(lr, e.NamedExpression(lr, ctor_name),
                                     TupleExpression(lr, args))

@@ -241,7 +241,7 @@ fun llExtrasFor(ctx: LiftCtx, name: String)
 fun llCallArgs(p) => match(p)
   (tp: PeTuple)   => tp.exprs
   (ng: PeNothing) => List()
-  (o: PExpr)      => prepend(PTupEnt("", false, p, noName()), List())
+  (o: PExpr)      => prepend(madeEntry("", false, p), List())
 
 # rewrite: one callback per kind over the whole function. A call to a lifted
 # member gains the captured names as extra args; the member gains the copies.
@@ -291,4 +291,4 @@ fun llCallExpr(x: PExpr, ctx: LiftCtx): PExpr|None => match(x)
   (o: PExpr) => None
 
 fun llExtraEnts(ns: List<String>, lr, acc: List<PTupEnt>) =>
-  fold(ns, acc, (a, x) => append(a, PTupEnt("", false, PeName(x, List(), lr, None), noName())))
+  fold(ns, acc, (a, x) => append(a, madeEntry("", false, PeName(x, List(), lr, None))))

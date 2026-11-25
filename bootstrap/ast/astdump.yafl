@@ -210,7 +210,7 @@ fun dumpExprs(es: List<PExpr>, depth, out) => fold(es, out, (o, x) => dumpExpr(x
 
 fun dumpTupEnts(es: List<PTupEnt>, lr: PLine, depth, out) => fold(es, out, (o, en) =>
   dumpExpr(en.tupValue, depth + 1,
-    dLine(o, depth, "Entry", lr, en.tupName + "|" + (en.tupSpread ? "*" : ""))))
+    dLine(o, depth, "Entry", en.tupLine, en.tupName + "|" + (en.tupSpread ? "*" : ""))))
 
 fun dumpArms(arms: List<PArm>, depth, out) => fold(arms, out, (o, a) => dumpArm(a, depth, o))
 

@@ -89,6 +89,20 @@ class TestParsedLengths(TestCase):
         ref = found[0].line_ref
         self.assertEqual((1, 17, 14), (ref.line, ref.offset, ref.length))
 
+    def test_an_entry_is_where_its_first_token_is(self):
+        # `*` of a spread, the name of `k = 1`, else the start of the expression.
+        found = self._find("fun g(): Int => h(*t, u.v, k = 1)\n", e.TupleEntryExpression)
+        self.assertEqual([("", 19), ("", 23), ("k", 28)],
+                         [(en.name or "", en.line_ref.offset) for en in found][-3:])
+        self.assertEqual({1}, {en.line_ref.length for en in found[-3:]})
+
+    def test_an_entry_the_compiler_makes_up_begins_at_its_value_and_marks_nothing(self):
+        found = self._find("fun g(a: Int): Int => a[1]\n", e.TupleEntryExpression)
+        self.assertTrue(found)
+        for en in found:
+            self.assertEqual(0, en.line_ref.length)
+            self.assertTrue(en.line_ref.same_start(en.value.line_ref))
+
     def test_a_plain_name_is_its_token(self):
         found = self._find("fun g(): Int => other(1)\n", e.NamedExpression, lambda n: n.name == "other")
         self.assertEqual((17, 5), (found[0].line_ref.offset, found[0].line_ref.length))
@@ -136,7 +150,9 @@ class TestEveryNodeInTheCorpus(TestCase):
                 if ref.length == 0 and ref.filename == str(path):
                     kind = type(owner).__name__ if owner is not None else "?"
                     name = getattr(owner, "name", "")
-                    if not (kind == "NamedExpression" and name == "show"):
+                    # The `show` an interpolation calls, and the entries of tuples the
+                    # parser makes up, mark nothing written.
+                    if not ((kind == "NamedExpression" and name == "show") or kind == "TupleEntryExpression"):
                         bad.append(f"{path.name}[{ref.line}:{ref.offset}] {kind} {name}")
         self.assertEqual([], bad[:20])
 

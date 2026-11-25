@@ -66,7 +66,7 @@ fun compileElementTarget(fa: PsFieldAssign, et: ElementTarget, r)
 
 fun elementCall(et: ElementTarget, base: PExpr, index: PExpr): PExpr => match(et.etCall.parameter)
   (t2: PeTuple) => PeCall(PeDot(base, et.etDot.member, et.etDot.pedLine, et.etDot.pedIndex),
-                          PeTuple(append(List<PTupEnt>(), PTupEnt("", false, index, noName())), t2.petLine),
+                          PeTuple(map(t2.exprs, (en) => with en(tupValue = index)), t2.petLine),
                           et.etCall.pecLine, et.etCall.pecOrigin)
   (o: PExpr)    => et.etCall   # unreachable: elementTarget matched a tuple
 

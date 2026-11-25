@@ -377,8 +377,8 @@ fun clStubRead(name, ls: SLazyStub, lr) => match(ls.slsTarget)
 # The entry NAME is the closure field; the value still reads the outer
 # binding under the name it has here.
 fun captureArgs(ns: List<String>, cpt: ClCaps, lr, acc: List<PTupEnt>) =>
-  concat(acc, map(ns, (n) => PTupEnt(capturedFieldName(n, lr), false,
-                                     captureRead(n, ccTypeOf(cpt, n), lr), noName())))
+  concat(acc, map(ns, (n) => madeEntry(capturedFieldName(n, lr), false,
+                                     captureRead(n, ccTypeOf(cpt, n), lr))))
 
 fun replacementExprFor(nme, cpt: ClCaps, lr)
   ret PeDot(PeNew(SClass(nme, List(), lr),

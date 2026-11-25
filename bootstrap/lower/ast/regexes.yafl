@@ -89,7 +89,7 @@ fun rxGlobal(p: String, library: String|None, index: Int): PStmt
   ret PsLet(rxName(library, index), List(), List(),
             SNamed("System::Regex", List(), regexLine(index)),
             PeCall(PeName("System::Regex", List(), regexLine(index), None),
-                   PeTuple(list1(PTupEnt("", false, PeStr(p, regexLine(index)), noName())), regexLine(index)),
+                   PeTuple(list1(PTupEnt("", false, PeStr(p, regexLine(index)), inventedAt(regexLine(index)))), regexLine(index)),
                    regexLine(index), None),
             "", List(), regexLine(index), inventedAt(regexLine(index)), false, List<PStmt>())
 

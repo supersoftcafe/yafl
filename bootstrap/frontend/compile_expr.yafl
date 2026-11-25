@@ -175,7 +175,7 @@ fun spreadOne(v: PExpr, names: List<String>): (binder: PStmt, refs: List<PTupEnt
   ret (PsDestructure("_", List(), None,
                      map(names, (nm) => PsLet(nm, List(), List(), None, None, "", List(), lr, inventedAt(lr))),
                      v, lr),
-       map(names, (nm) => PTupEnt("", false, PeName(nm, List(), lr, None), noName())))
+       map(names, (nm) => madeEntry("", false, PeName(nm, List(), lr, None))))
 
 class [final] TupEntsOut(teEntries: List<PTupEnt>, teGlobals: List<PStmt>,
                          teHints: Dict<String, List<Hint>>)
@@ -189,7 +189,7 @@ fun compileTupEntsStep(st: (i: Int, acc: List<PTupEnt>, glb: List<PStmt>, hints:
                        x: PTupEnt, r, slots: List<SEntry>) =>
   compileExpr(x.tupValue, r, entryAt(slots, st.i))
   |> (v) => (i = st.i + 1,
-    acc = append(st.acc, PTupEnt(x.tupName, x.tupSpread, v.eoExpr, x.tupNameAt)),
+    acc = append(st.acc, PTupEnt(x.tupName, x.tupSpread, v.eoExpr, x.tupLine)),
     glb = concat(st.glb, v.eoGlobals),
     hints = mergeHints(st.hints, v.eoHints))
 

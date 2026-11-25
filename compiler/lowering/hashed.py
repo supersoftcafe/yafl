@@ -116,20 +116,20 @@ def __split(fn: s.FunctionStatement, param: s.LetStatement) -> list[s.Statement]
     def int32(): return t.BuiltinSpec(lr, "int32")
     def op(name: str, *args: e.Expression) -> e.Expression:
         return e.BuiltinOpExpression(lr, int32(), e.StringExpression(lr, name),
-            e.TupleExpression(lr, [e.TupleEntryExpression(None, a) for a in args]))
+            e.TupleExpression(lr, [e.TupleEntryExpression.invented(None, a) for a in args]))
     def ref(name: str) -> e.Expression:
         return e.NamedExpression(lr, name)
 
     cache_name = f"$hcache@{tag}"
     peek = op("yafl_hash_peek", ref(param.name))
     raw_call = e.CallExpression(lr, ref(f"{bare.rpartition('::')[2]}$hraw"),
-        e.TupleExpression(lr, [e.TupleEntryExpression(None, ref(param.name))]))
+        e.TupleExpression(lr, [e.TupleEntryExpression.invented(None, ref(param.name))]))
     store = op("yafl_hash_store", ref(param.name), raw_call)
     is_empty = e.BuiltinOpExpression(lr, t.BuiltinSpec(lr, "bool"),
         e.StringExpression(lr, "int32_test_eq"),
         e.TupleExpression(lr, [
-            e.TupleEntryExpression(None, ref("$hcache")),
-            e.TupleEntryExpression(None, e.IntegerExpression(lr, 0, 32))]))
+            e.TupleEntryExpression.invented(None, ref("$hcache")),
+            e.TupleEntryExpression.invented(None, e.IntegerExpression(lr, 0, 32))]))
 
     body = e.BlockExpression(lr,
         [s.LetStatement(lr, cache_name, None, {}, (), peek, int32())],
@@ -163,13 +163,13 @@ def __split_refeq(fn: s.FunctionStatement, lp: s.LetStatement,
 
     def ref(name: str) -> e.Expression:
         return e.NamedExpression(lr, name)
-    args = e.TupleExpression(lr, [e.TupleEntryExpression(None, ref(lp.name)),
-                                  e.TupleEntryExpression(None, ref(rp.name))])
+    args = e.TupleExpression(lr, [e.TupleEntryExpression.invented(None, ref(lp.name)),
+                                  e.TupleEntryExpression.invented(None, ref(rp.name))])
     same = e.BuiltinOpExpression(lr, t.BuiltinSpec(lr, "bool"),
                                  e.StringExpression(lr, "yafl_ref_eq"), args)
     raw_call = e.CallExpression(lr, ref(f"{bare.rpartition('::')[2]}$reraw"),
-        e.TupleExpression(lr, [e.TupleEntryExpression(None, ref(lp.name)),
-                               e.TupleEntryExpression(None, ref(rp.name))]))
+        e.TupleExpression(lr, [e.TupleEntryExpression.invented(None, ref(lp.name)),
+                               e.TupleEntryExpression.invented(None, ref(rp.name))]))
     body = e.BlockExpression(lr, [],
         e.TernaryExpression(lr, same, e.BoolExpression(lr, True), raw_call),
         tag=None)

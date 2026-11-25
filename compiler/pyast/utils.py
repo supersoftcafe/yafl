@@ -10,7 +10,7 @@ import pyast.typespec as t
 
 
 def __to_entry(let: s.LetStatement) -> e.TupleEntryExpression:
-    return e.TupleEntryExpression(let.name, e.NamedExpression(let.line_ref, let.name))
+    return e.TupleEntryExpression.invented(let.name, e.NamedExpression(let.line_ref, let.name))
 
 
 def __constructor_param(let: s.LetStatement) -> s.LetStatement:

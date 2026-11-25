@@ -165,11 +165,10 @@ enum PExpr
     enum PeLazy(stubName: String, lzTarget: Spec, lzCaptured: String|None,
                 lzStubOnly: Bool, pelzLine: PLine)
 
-# `tupNameAt` is where the entry's name is written (`x` in `p(x = 9)`); an
-# entry with no name, or a made-up one, says so with `noName()`.
-class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr, tupNameAt: PLine)
-
-fun noName(): PLine => syntheticLine("", 0, 0)
+# `tupLine` is where the entry is written: its first token, which for `x = 9`
+# is the name `x`. An entry the compiler makes up marks nothing, and is made
+# with `madeEntry`.
+class [final] PTupEnt(tupName: String, tupSpread: Bool, tupValue: PExpr, tupLine: PLine)
 
 # One piece of an interpolated string: decoded text, or a slot — its
 # expression, the decoded spec after the separating comma (None when there is

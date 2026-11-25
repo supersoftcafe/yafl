@@ -343,7 +343,7 @@ fun deRef(name, lr) => PeName(name, List(), lr)
 fun deOp(rtype, name, args, lr)
   ret PeBuiltinOp(SBuiltin(rtype, lr), PeStr(name, lr), PeTuple(args, lr), lr)
 
-fun deEnt(x) => PTupEnt("", false, x, noName())
+fun deEnt(x) => madeEntry("", false, x)
 
 fun deCall2(fn, a, b, lr) => PeCall(deRef(fn, lr), PeTuple(list2(deEnt(a), deEnt(b)), lr), lr, None)
 
