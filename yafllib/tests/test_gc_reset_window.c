@@ -31,6 +31,10 @@
 //   4. The pump must then get its entry and finish, and the cycle must end
 //      with every holder and leaf live.
 //
+// Since #148 the tail checks again, under the lock that bumps the epoch, and
+// finds the pump in flight: the re-scan waits for a later tail. The ring is
+// not reset there either.
+//
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode. Builds its own object.c
 // with YAFL_GC_RESET_PROBE.
 

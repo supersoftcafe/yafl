@@ -3032,6 +3032,11 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
                 count += batch[bi]->head.pages - 1;
             requeue_now[bi] = gc_fsa_mark_sweep$scan_claimed(batch[bi], &_t0);
         }
+#ifdef YAFL_GC_PUBLISH_PROBE
+        // Test-only hook (tests/test_gc_claim_epoch.c): the batch is scanned
+        // and stamped, and not yet published.
+        { extern void gc_test_publish_probe(void); gc_test_publish_probe(); }
+#endif
     }
 
     // Publish REAL pages scanned (spans included): this is what the
@@ -3097,7 +3102,26 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
         // head and tail are monotonic and slots are addressed modulo the
         // ring, so the ring is simply empty, and entries pushed from here on
         // are delivered as usual (page_needs_scan, during the re-scan).
+        //
+        // The check is made again, in the same pool-locked breath as the
+        // bump (issue #148). Between the first check and here, a barrier can
+        // hand a page over and an executor claim it; a claimed page is on no
+        // list, so the move below would miss it, and its claim would stamp it
+        // with the epoch the bump ends and publish it to pages_to_prune. A
+        // later mark there finds processed_by_epoch != epoch, takes the page
+        // for one on the scan list, and neither pushes nor scans it: the
+        // object is kept by prune's residue merge, its children freed under
+        // it. With nothing outstanding under this lock, every page processed
+        // so far is on pages_to_prune. Otherwise the flag goes back, and a
+        // later tail runs the re-scan (only a tail clears it, and tails run
+        // one at a time).
         gc_pool_lock();
+        gc_handoff_take_locked();
+        if (gc_mark_work_outstanding()) {
+            atomic_store(&reprocess_overflow_flag, true);
+            gc_pool_unlock();
+            return;
+        }
         // Epoch bumps BEFORE the pages become poppable: a concurrent body's
         // claim (serialised by this same lock) must never see a freshly
         // re-queued page still carrying processed_by_epoch == epoch.
