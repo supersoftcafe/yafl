@@ -60,9 +60,7 @@ fun failureText(path: String, f: PFail): String =>
 # --format succeeds unless a file could not be handled.
 fun [impure] formatReport(t: FormatTally, checkOnly: Bool): Int
   let problems = join(map(t.ftProblems, (p) => p + "\n"), "")
-  if problems != ""
-    printErr(problems)
   let listed = checkOnly ? join(map(t.ftChanged, (p) => p + "\n"), "") : ""
-  if listed != ""
-    printOut(listed)
-  ret problems != "" || (checkOnly && !isEmpty(t.ftChanged)) ? 1 : 0
+  let code = problems != "" || (checkOnly && !isEmpty(t.ftChanged)) ? 1 : 0
+  ret (problems != "" ? exitWithErr(problems, code) : code)
+    |> (c) => listed != "" ? exitWithOut(listed, c) : c

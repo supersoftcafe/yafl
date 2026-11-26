@@ -84,6 +84,12 @@ def main(argv: list[str]) -> int:
             print(f"self-compile: port exited {r.returncode} after {el:.0f}s\n"
                   f"{r.stdout[-4000:]}{r.stderr[-4000:]}", file=sys.stderr)
             raise SystemExit(1)
+        # The port compiles its own sources without a warning, and stays that
+        # way: a warning there is a defect left standing (#137).
+        if r.stderr.strip():
+            print(f"self-compile: the port warns about its own sources\n"
+                  f"{r.stderr[-4000:]}", file=sys.stderr)
+            raise SystemExit(1)
         c_text = out.read_text() if out.is_file() else ""
         if not c_text:
             print(f"self-compile: port produced no output after {el:.0f}s",

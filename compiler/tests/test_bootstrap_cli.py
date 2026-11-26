@@ -602,6 +602,51 @@ class TestBootstrapCli(TimedTestCase):
         rc, _, err = self._both("-c", "no/such/dir/out.c", "hello.yafl")
         self.assertEqual(1, rc)
 
+    # ── output that cannot be written ───────────────────────────────────────
+    #
+    # /dev/full refuses every write. A compiler whose output could not be
+    # written has failed, whatever it was about to exit with, and the exit code
+    # must say so (#137). Python's interpreter reports it as 120 when it
+    # cannot flush at exit; the port reports 1. Only the failure is compared.
+
+    def _exit_with_full(self, argv: list[str], stream: str, env: dict | None = None,
+                        stdin: str | None = None) -> int:
+        with open("/dev/full", "w") as full:
+            r = subprocess.run(argv, cwd=self.dir, env=env or self._env(), input=stdin, text=True,
+                               stdout=full if stream == "stdout" else subprocess.DEVNULL,
+                               stderr=full if stream == "stderr" else subprocess.DEVNULL,
+                               timeout=1800)
+        return r.returncode
+
+    def _both_fail_with_full(self, stream: str, *args: str):
+        lib_args = ["-L", str(self.libs)]
+        for name, argv in (("python", [sys.executable, str(_MAIN), *lib_args, *args]),
+                           ("port", [self.binary, *lib_args, *args])):
+            self.assertNotEqual(0, self._exit_with_full(argv, stream),
+                                f"{name}: {args} exited 0 with its {stream} unwritable")
+
+    def test_help_that_cannot_be_written_fails(self):
+        self._both_fail_with_full("stdout", "-h")
+
+    def test_warnings_that_cannot_be_written_fail(self):
+        self._write("unused.yafl", _UNUSED)
+        self._both_fail_with_full("stderr", "-c", "out.c", "unused.yafl")
+
+    def test_an_error_that_cannot_be_written_still_fails(self):
+        self._both_fail_with_full("stderr", "missing.yafl")
+
+    def test_stage_output_that_cannot_be_written_fails(self):
+        # The harness's front door, port only: one stage's output on stdout,
+        # and a project's warnings on stderr.
+        env = self._env()
+        env["YAFL_PATH"] = str(self.libs)
+        stream = f"#FILE# unused.yafl\n{_UNUSED}"
+        for mode, out in (("tokens", "stdout"), ("project", "stdout"), ("project", "stderr")):
+            with self.subTest(mode=mode, stream=out):
+                self.assertNotEqual(0, self._exit_with_full([self.binary, "--stage", mode], out,
+                                                            env, stream),
+                                    f"--stage {mode} exited 0 with its {out} unwritable")
+
 
 if __name__ == "__main__":
     unittest.main()

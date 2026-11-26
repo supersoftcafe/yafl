@@ -135,13 +135,19 @@ fun cliBuild(s: CliScan, enabled: Set<String>, parsed: List<PStmt>): Int
 
 # `for w in sorted(set(warnings)): print(w, file=sys.stderr)`, then a failed
 # compile exits 1 with its diagnostics on stdout, as compile_project printed them.
+# Warnings that cannot be written fail the run, though it carries on.
 fun [impure] cliEmit(s: CliScan, b: ProjectBuild): Int
-  printErr(b.pbWarns)
-  ret b.pbCode != 0
-    ? exitWithOut(join(b.pbOuts, ""), 1)
-    : match(b.pbSpec)
-      (spec: LinkSpec) => cliOutputs(s, b.pbOuts, spec)
-      ()               => 1   # unreachable: a successful build carries its spec
+  ret exitWithErr(b.pbWarns, 0)
+    |> (warned) => worse(warned, cliResult(s, b))
+
+fun [impure] cliResult(s: CliScan, b: ProjectBuild): Int => b.pbCode != 0
+  ? exitWithOut(join(b.pbOuts, ""), 1)
+  : match(b.pbSpec)
+    (spec: LinkSpec) => cliOutputs(s, b.pbOuts, spec)
+    ()               => 1   # unreachable: a successful build carries its spec
+
+# `result` if it says failure, else `earlier`: an earlier failure is not lost.
+fun worse(earlier: Int, result: Int): Int => result != 0 ? result : earlier
 
 # -c writes the C as emitted; -a then -o run clang over it, in main.py's order.
 fun cliOutputs(s: CliScan, outs: List<String>, spec: LinkSpec): Int
@@ -281,24 +287,30 @@ fun fileInput(acc: List<LibSource>|String, p: String): List<LibSource>|String =>
 # Write `text` to stdout, then finish with `code` — every exit path of the
 # command line. Through the IO handle, never `print`: print is a tracing aid
 # that steps outside the effect rules, not program output.
-fun [impure] exitWithOut(text: String, code: Int): Int
-  printOut(text)
-  ret code
+# Output that cannot be written is a failure, so the exit code says so.
+fun [impure] exitWithOut(text: String, code: Int): Int => written(writeAll(stdout(), text), code)
 
-fun [impure] exitWithErr(text: String, code: Int): Int
-  printErr(text)
-  ret code
+fun [impure] exitWithErr(text: String, code: Int): Int => written(writeAll(stderr(), text), code)
 
-fun [impure] printOut(text: String): None => closeQuietly(writeAll(stdout(), text).io)
+# `code`, once the write's handle is closed; a failing code if the write or
+# the close failed. A stream may take a write and refuse it only at the close
+# (stdout to a full disk), so the close's result counts as much as the write's.
+fun written(w: (io: IO, v: Int|IOError), code: Int): Int => match(w.v)
+  (e: IOError) => closedOr(w.io, failing(code))
+  (n: Int)     => closedOr(w.io, code)
 
-fun [impure] printErr(text: String): None => closeQuietly(writeAll(stderr(), text).io)
+# `code`, once `io` is closed; a failing code if the close failed.
+fun closedOr(io: IO, code: Int): Int => match(io.close())
+  (e: IOError) => failing(code)
+  ()           => code
 
-fun closeQuietly(io: IO): None => match(io.close())
-  (e: IOError) => None
-  ()           => None
+# A failure turns success into 1; a code that already says failure stands.
+fun failing(code: Int): Int => code == 0 ? 1 : code
 
-# A failed write still owns an open file: close it, and report `why`.
-fun closedWith(io: IO, why: String): String => match(io.close())
+# A failed read or write still owns an open file: close it, and report the
+# failure already in hand, `why`. The close's own outcome adds nothing: the
+# operation has failed either way.
+fun closedWith<T>(io: IO, why: T): T => match(io.close())
   (e: IOError) => why
   ()           => why
 

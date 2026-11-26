@@ -1268,8 +1268,8 @@ fun run(text, argv: List<System::String>, i: IO): System::Int
     (ok: WrOk)   => runMode(mode, text, ok.wrEnabled, i)
 
 fun runWarnError(err: WrErr, i: IO): System::Int
-  let w = writeAll(stderr(), err.wrMessage + "\n")
-  ret (w.io.close(), i.close(), 2) |> (c1, c2, result) => result
+  ret written(writeAll(stderr(), err.wrMessage + "\n"), 2)
+    |> (code) => closedOr(i, code)
 
 fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
   # compile_project: libraries are DISCOVERED from the search path. The --test
@@ -1304,9 +1304,8 @@ fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
         : mode == "simple" ? simpleMode(text)
         : mode == "exits" ? exitsMode(text)
         : astMode(text)
-  let w = writeAll(stdout(), r.out)
-  let code = w.v is IOError ? 1 : r.code
-  ret (w.io.close(), i.close(), code) |> (c1, c2, result) => result
+  ret written(writeAll(stdout(), r.out), r.code)
+    |> (code) => closedOr(i, code)
 
 # The project modes emit a LIST of fragments streamed to stdout in order — the
 # joined text was the compiler's one giant contiguous allocation (~83MB on a
@@ -1317,21 +1316,21 @@ fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
 fun runProject(text, optLevel, profile,
                enabledWarnings: Set<String>, i: IO): System::Int
   let r = projectMode(text, optLevel, profile, enabledWarnings)
-  let wErr = writeAll(stderr(), r.warns)
-  let w = writeParts(stdout(), r.outs, false)
-  let code = w.failed2 ? 1 : r.code
-  ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
+  ret written(writeAll(stderr(), r.warns), 0)
+    |> (warned) => worse(warned, streamParts(stdout(), r.outs, r.code))
+    |> (code) => closedOr(i, code)
 
 fun runProjectTest(text, optLevel, enabledWarnings: Set<String>, i: IO): System::Int
   let r = projectTestMode(text, optLevel, false, enabledWarnings)
-  let wErr = writeAll(stderr(), r.warns)
-  let w = writeParts(stdout(), r.outs, false)
-  let code = w.failed2 ? 1 : r.code
-  ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
+  ret written(writeAll(stderr(), r.warns), 0)
+    |> (warned) => worse(warned, streamParts(stdout(), r.outs, r.code))
+    |> (code) => closedOr(i, code)
 
-fun writeParts(io2, ps: List<String>, failed): (io3: IO, failed2: Bool) =>
-  fold(ps, (io2 = io2, failed = failed), writePartsStep)
-    |> (r) => (r.io2, r.failed)
+# The fragments to `io` in order, then `io` closed: `code`, or a failing code
+# if a write or the close failed.
+fun streamParts(io: IO, ps: List<String>, code: Int): Int =>
+  fold(ps, (io2 = io, failed = false), writePartsStep)
+    |> (r) => closedOr(r.io2, r.failed ? failing(code) : code)
 
 fun writePartsStep(st: (io2: IO, failed: Bool), x: String) =>
   writeAll(st.io2, x)
@@ -1350,4 +1349,4 @@ fun stageMain(argv: List<System::String>): System::Int
   ret readAll(stdin())
     |> (i, src) => match(src)
       (text: System::String) => run(text, argv, i)
-      (e: IOError) => (i.close(), 1) |> (c, code) => code
+      (e: IOError) => closedOr(i, 1)
