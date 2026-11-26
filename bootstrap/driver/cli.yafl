@@ -37,7 +37,7 @@ import Bootstrap::Types
 
 # ── entry ────────────────────────────────────────────────────────────────────
 
-fun cliMain(argv: List<String>): Int
+fun cliMain(argv: List<String>): Int|IOError
   let line = commandLine(progName())
   ret match(parse(line, argv, freshScan()))
     (e: ArgError) => usageError(line, e)
@@ -49,7 +49,7 @@ fun cliMain(argv: List<String>): Int
         (werr: WrErr) => usageError(line, Invalid(werr.wrMessage))
         (ok: WrOk)    => s.csFormat || s.csFormatCheck ? cliFormat(s) : cliCompile(s, ok.wrEnabled)
 
-fun [impure] usageError(line: Args<CliScan>, e: ArgError): Int
+fun [impure] usageError(line: Args<CliScan>, e: ArgError): Int|IOError
   ret exitWithErr(message(line, e, terminalWidth(), wantColour(true)), 2)
 
 fun progName() => baseName(argv0())
@@ -119,13 +119,13 @@ fun setThreshold(s: CliScan, v: String): CliScan|String => match(pyInt(v))
 
 # ── compile (main.py's body) ─────────────────────────────────────────────────
 
-fun cliCompile(s: CliScan, enabled: Set<String>): Int => match(gatherInputs(s.csFiles))
+fun cliCompile(s: CliScan, enabled: Set<String>): Int|IOError => match(gatherInputs(s.csFiles))
   (why: String)          => exitWithErr("error: " + why + "\n", 1)
   (srcs: List<LibSource>) => match(parseUnits(srcs))
     (pe: LoadErrors)     => exitWithOut(printedDiagnostics(pe.peErrs), 1)
     (user: List<PStmt>)  => cliBuild(s, enabled, user)
 
-fun cliBuild(s: CliScan, enabled: Set<String>, parsed: List<PStmt>): Int
+fun cliBuild(s: CliScan, enabled: Set<String>, parsed: List<PStmt>): Int|IOError
   let user = s.csTest ? testProgram(parsed) : parsed
   ret match(user)
     (why: String)       => exitWithOut(why, 1)
@@ -135,22 +135,19 @@ fun cliBuild(s: CliScan, enabled: Set<String>, parsed: List<PStmt>): Int
 
 # `for w in sorted(set(warnings)): print(w, file=sys.stderr)`, then a failed
 # compile exits 1 with its diagnostics on stdout, as compile_project printed them.
-# Warnings that cannot be written fail the run, though it carries on.
-fun [impure] cliEmit(s: CliScan, b: ProjectBuild): Int
-  ret exitWithErr(b.pbWarns, 0)
-    |> (warned) => worse(warned, cliResult(s, b))
+# Warnings that cannot be written end the run there, with their error.
+fun [impure] cliEmit(s: CliScan, b: ProjectBuild): Int|IOError
+  ret written(stderr(), b.pbWarns)
+    ?> (n: Int) => cliResult(s, b)
 
-fun [impure] cliResult(s: CliScan, b: ProjectBuild): Int => b.pbCode != 0
+fun [impure] cliResult(s: CliScan, b: ProjectBuild): Int|IOError => b.pbCode != 0
   ? exitWithOut(join(b.pbOuts, ""), 1)
   : match(b.pbSpec)
     (spec: LinkSpec) => cliOutputs(s, b.pbOuts, spec)
     ()               => 1   # unreachable: a successful build carries its spec
 
-# `result` if it says failure, else `earlier`: an earlier failure is not lost.
-fun worse(earlier: Int, result: Int): Int => result != 0 ? result : earlier
-
 # -c writes the C as emitted; -a then -o run clang over it, in main.py's order.
-fun cliOutputs(s: CliScan, outs: List<String>, spec: LinkSpec): Int
+fun cliOutputs(s: CliScan, outs: List<String>, spec: LinkSpec): Int|IOError
   let cWritten = match(s.csC)
     (path: String) => writeParts(path, outs)
     ()             => None
@@ -158,7 +155,7 @@ fun cliOutputs(s: CliScan, outs: List<String>, spec: LinkSpec): Int
     (why: String) => exitWithErr("error: " + why + "\n", 1)
     ()            => cliClang(s, outs, spec)
 
-fun cliClang(s: CliScan, outs: List<String>, spec: LinkSpec): Int
+fun cliClang(s: CliScan, outs: List<String>, spec: LinkSpec): Int|IOError
   if s.csAsm is None && s.csOut is None
     ret 0
   ret match(tempDir())
@@ -167,12 +164,13 @@ fun cliClang(s: CliScan, outs: List<String>, spec: LinkSpec): Int
       ()            => cliClangRuns(s, tmp, tmp + "/out.c", spec, unitCount(outs))
     ()           => exitWithErr("error: the process temp folder cannot be created\n", 1)
 
-fun cliClangRuns(s: CliScan, tmp: String, cFile: String, spec: LinkSpec, units: Int): Int
-  let asmCode = match(s.csAsm)
+fun cliClangRuns(s: CliScan, tmp: String, cFile: String, spec: LinkSpec, units: Int): Int|IOError
+  let asm: Int|IOError = match(s.csAsm)
     (a: String) => runClang(concat(clangCompileArgs(s, cFile, spec), prepend("-S", prepend("-o", list1(a)))))
     ()          => 0
-  if asmCode != 0
-    ret asmCode
+  ret asm ?> (code: Int) => code != 0 ? code : cliLink(s, tmp, cFile, spec, units)
+
+fun cliLink(s: CliScan, tmp: String, cFile: String, spec: LinkSpec, units: Int): Int|IOError
   ret match(s.csOut)
     (o: String) => units == 1
       ? runClang(concat(concat(concat(clangCompileArgs(s, cFile, spec), linkInputs(spec)),
@@ -202,7 +200,7 @@ fun unitArgs(s: CliScan, cFile: String, spec: LinkSpec, tmp: String, units: Int,
 
 # powerMap calls the clangs on workers of their own and joins the results in
 # order, so the K compiles overlap; the first failure is reported.
-fun cliClangUnits(s: CliScan, tmp: String, cFile: String, spec: LinkSpec, units: Int, o: String): Int
+fun cliClangUnits(s: CliScan, tmp: String, cFile: String, spec: LinkSpec, units: Int, o: String): Int|IOError
   let runs = powerMap(unitIndices(units, 0, List()),
                       (i) => System::IO::run("clang", unitArgs(s, cFile, spec, tmp, units, i)))
   ret match(unitFailure(runs))
@@ -250,7 +248,7 @@ fun linkInputs(spec: LinkSpec): List<String>
   ret concat(statics, prepend("-lpthread", prepend("-lm", list1("-ldl"))))
 
 # `_run_clang`: on failure, "Compilation failed:" and clang's stderr, on stdout.
-fun runClang(argv: List<String>): Int => match(System::IO::run("clang", argv))
+fun runClang(argv: List<String>): Int|IOError => match(System::IO::run("clang", argv))
   (e: IOError)        => exitWithOut("Compilation failed:\nclang could not be started\n", 1)
   (r: ProcessResult)  => r.exitCode == 0 ? 0
     : exitWithOut("Compilation failed:\n" + r.err + "\n", 1)
@@ -286,44 +284,35 @@ fun fileInput(acc: List<LibSource>|String, p: String): List<LibSource>|String =>
 
 # Write `text` to stdout, then finish with `code` — every exit path of the
 # command line. Through the IO handle, never `print`: print is a tracing aid
-# that steps outside the effect rules, not program output.
-# Output that cannot be written is a failure, so the exit code says so.
-fun [impure] exitWithOut(text: String, code: Int): Int => written(writeAll(stdout(), text), code)
+# that steps outside the effect rules, not program output. Output that cannot
+# be written is the run's error instead, carried to `exited`.
+fun [impure] exitWithOut(text: String, code: Int): Int|IOError => written(stdout(), text)
+  ?> (n: Int) => code
 
-fun [impure] exitWithErr(text: String, code: Int): Int => written(writeAll(stderr(), text), code)
+fun [impure] exitWithErr(text: String, code: Int): Int|IOError => written(stderr(), text)
+  ?> (n: Int) => code
 
-# `code`, once the write's handle is closed; a failing code if the write or
-# the close failed. A stream may take a write and refuse it only at the close
-# (stdout to a full disk), so the close's result counts as much as the write's.
-fun written(w: (io: IO, v: Int|IOError), code: Int): Int => match(w.v)
-  (e: IOError) => closedOr(w.io, failing(code))
-  (n: Int)     => closedOr(w.io, code)
+# `text` to `io`, then `io` closed. A stream may take a write and refuse it
+# only at the close (stdout to a full disk), so the close counts as much as
+# the write.
+fun written(io: IO, text: String): Int|IOError => writeAll(io, text)
+  |> (w) => closed(w)
 
-# `code`, once `io` is closed; a failing code if the close failed.
-fun closedOr(io: IO, code: Int): Int => match(io.close())
-  (e: IOError) => failing(code)
-  ()           => code
+# The fragments to `io` in order, stopping at the first that fails.
+fun writeEach(io: IO, ps: List<String>): (io: IO, v: Int|IOError)
+  let start: (io: IO, v: Int|IOError) = (io = io, v = 0)
+  ret fold(ps, start, (w, p) => w ?> (io2, n) => writeAll(io2, p))
 
-# A failure turns success into 1; a code that already says failure stands.
-fun failing(code: Int): Int => code == 0 ? 1 : code
-
-# A failed read or write still owns an open file: close it, and report the
-# failure already in hand, `why`. The close's own outcome adds nothing: the
-# operation has failed either way.
-fun closedWith<T>(io: IO, why: T): T => match(io.close())
-  (e: IOError) => why
-  ()           => why
+# The exit code a run ends with: its own, or 1 if its output failed. The one
+# place an error becomes a code: `main`.
+fun exited(r: Int|IOError): Int => match(r)
+  (e: IOError) => 1
+  (code: Int)  => code
 
 # The C, fragment by fragment, into `path` (created or truncated, like
 # `open(path, "w")`). None on success, else why it failed.
 fun writeParts(path: String, parts: List<String>): String|None => match(create(path))
   (e: IOError) => path + ": cannot be written"
-  (io: IO)     => writePartsChecked(io, parts, path)
-
-fun [tail] writePartsChecked(io: IO, ps: List<String>, path: String): String|None => match(head(ps))
-  (p: String) => writeAll(io, p) |> (w) => match(w.v)
-    (e2: IOError) => closedWith(w.io, path + ": cannot be written")
-    (n: Int)      => writePartsChecked(w.io, dropOne(ps), path)
-  ()          => match(io.close())
-    (e: IOError) => path + ": cannot be written"
-    ()           => None
+  (io: IO)     => match(writeEach(io, parts) |> (w) => closed(w))
+    (e2: IOError) => path + ": cannot be written"
+    (n: Int)      => None

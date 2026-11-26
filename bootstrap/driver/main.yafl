@@ -1258,26 +1258,22 @@ fun modeOf(argv: List<System::String>) => match(head(argv))
   (m: System::String) => m
   ()                  => "census"
 
-fun run(text, argv: List<System::String>, i: IO): System::Int
+fun runStage(text, argv: List<System::String>): System::Int|IOError
   let mode = modeOf(argv)
   # Everything after the mode word is this CLI's whole flag surface — -W
   # only, for now (see warnings.yafl). Validated up front, for every mode,
   # the same way argparse validates main.py's flags before dispatch.
   ret match(resolveEnabledWarningsFromArgv(dropOne(argv)))
-    (err: WrErr) => runWarnError(err, i)
-    (ok: WrOk)   => runMode(mode, text, ok.wrEnabled, i)
+    (err: WrErr) => exitWithErr(err.wrMessage + "\n", 2)
+    (ok: WrOk)   => runMode(mode, text, ok.wrEnabled)
 
-fun runWarnError(err: WrErr, i: IO): System::Int
-  ret written(writeAll(stderr(), err.wrMessage + "\n"), 2)
-    |> (code) => closedOr(i, code)
-
-fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
+fun runMode(mode, text, enabledWarnings: Set<String>): System::Int|IOError
   # compile_project: libraries are DISCOVERED from the search path. The --test
   # twins collect the [test] functions into a registry and synthesise a main.
   if projectLevel(mode) >= 0
-    ret runProject(text, projectLevel(mode), false, enabledWarnings, i)
+    ret runProject(text, projectLevel(mode), false, enabledWarnings)
   if projectTestLevel(mode) >= 0
-    ret runProjectTest(text, projectTestLevel(mode), enabledWarnings, i)
+    ret runProjectTest(text, projectTestLevel(mode), enabledWarnings)
   let r = mode == "libs" ? libsMode()
         : mode == "libsfor" ? libsForMode(text)
         : mode == "linkspec" ? linkSpecMode(text)
@@ -1304,8 +1300,7 @@ fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
         : mode == "simple" ? simpleMode(text)
         : mode == "exits" ? exitsMode(text)
         : astMode(text)
-  ret written(writeAll(stdout(), r.out), r.code)
-    |> (code) => closedOr(i, code)
+  ret exitWithOut(r.out, r.code)
 
 # The project modes emit a LIST of fragments streamed to stdout in order — the
 # joined text was the compiler's one giant contiguous allocation (~83MB on a
@@ -1314,39 +1309,38 @@ fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
 # other output) as main.py's own `for w in sorted(set(warnings)): print(w,
 # file=sys.stderr)` — this driver used to drop them (see GatedResult).
 fun runProject(text, optLevel, profile,
-               enabledWarnings: Set<String>, i: IO): System::Int
+               enabledWarnings: Set<String>): System::Int|IOError
   let r = projectMode(text, optLevel, profile, enabledWarnings)
-  ret written(writeAll(stderr(), r.warns), 0)
-    |> (warned) => worse(warned, streamParts(stdout(), r.outs, r.code))
-    |> (code) => closedOr(i, code)
+  ret emitted(r.warns, r.outs, r.code)
 
-fun runProjectTest(text, optLevel, enabledWarnings: Set<String>, i: IO): System::Int
+fun runProjectTest(text, optLevel, enabledWarnings: Set<String>): System::Int|IOError
   let r = projectTestMode(text, optLevel, false, enabledWarnings)
-  ret written(writeAll(stderr(), r.warns), 0)
-    |> (warned) => worse(warned, streamParts(stdout(), r.outs, r.code))
-    |> (code) => closedOr(i, code)
+  ret emitted(r.warns, r.outs, r.code)
 
-# The fragments to `io` in order, then `io` closed: `code`, or a failing code
-# if a write or the close failed.
-fun streamParts(io: IO, ps: List<String>, code: Int): Int =>
-  fold(ps, (io2 = io, failed = false), writePartsStep)
-    |> (r) => closedOr(r.io2, r.failed ? failing(code) : code)
+# The warnings to stderr, then the fragments to stdout: `code`, or the first
+# write or close that fails.
+fun emitted(warns: String, outs: List<String>, code: Int): System::Int|IOError =>
+  written(stderr(), warns)
+  ?> (n: Int) => streamed(stdout(), outs)
+  ?> (n: Int) => code
 
-fun writePartsStep(st: (io2: IO, failed: Bool), x: String) =>
-  writeAll(st.io2, x)
-  |> (w) => (io2 = w.io, failed = st.failed || w.v is IOError)
+# The fragments to `io` in order, then `io` closed.
+fun streamed(io: IO, ps: List<String>): Int|IOError => writeEach(io, ps)
+  |> (w) => closed(w)
 
 # Two front doors. `--stage MODE` is the test harness's: one `#FILE#` stream on
 # stdin, one pipeline stage's output on stdout — the port's equivalent of the
 # Python suite calling a compiler.py function directly. Everything else is the
 # compiler's COMMAND LINE, main.py's flag for flag (cli.yafl). A bare mode word
 # is not accepted: `yaflc c` must mean the file `c`, never a stage.
-fun main(): System::Int => match(head(args()))
-  (m: System::String) => m == "--stage" ? stageMain(dropOne(args())) : cliMain(args())
-  ()                  => cliMain(args())
+fun main(): System::Int => entry(args())
+  |> (r) => exited(r)
 
-fun stageMain(argv: List<System::String>): System::Int
+fun entry(argv: List<System::String>): System::Int|IOError => match(head(argv))
+  (m: System::String) => m == "--stage" ? stageMain(dropOne(argv)) : cliMain(argv)
+  ()                  => cliMain(argv)
+
+fun stageMain(argv: List<System::String>): System::Int|IOError
   ret readAll(stdin())
-    |> (i, src) => match(src)
-      (text: System::String) => run(text, argv, i)
-      (e: IOError) => closedOr(i, 1)
+    |> (r) => closed(r)
+    ?> (text: System::String) => runStage(text, argv)

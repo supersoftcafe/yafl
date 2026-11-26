@@ -191,7 +191,7 @@ fun defaultWarnings(): Set<String> => match(resolveEnabledWarnings(List()))
 
 # ── the session ──────────────────────────────────────────────────────────────
 
-fun [impure] lspMain(): Int
+fun [impure] lspMain(): Int|IOError
   let s = serve(stdin(), stdout(), freshServer(), readDecoded, captured, step, writeMessage)
   ret closeBoth(s.input, s.output, exitCode(s.state, s.failure))
 
@@ -207,5 +207,6 @@ fun exitCode(sv: Server, failure: String|None): Int => match(sv.svPhase, failure
   (x: Exited, n: None) => x.exCode
   (p, f)               => 1
 
-# Both handles are released, and a close that fails fails the session.
-fun closeBoth(input: IO, output: IO, code: Int): Int => closedOr(output, closedOr(input, code))
+# Both handles are released; a close that fails is the session's error.
+fun closeBoth(input: IO, output: IO, code: Int): Int|IOError =>
+  closed<Int>((io = output, v = closed<Int>((io = input, v = code))))
