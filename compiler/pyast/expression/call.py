@@ -177,7 +177,10 @@ class CallExpression(Expression):
         own = [err for err in errors if err.line_ref.same_start(self.line_ref)]
         if len(own) < len(errors):
             return [err for err in errors if not err.line_ref.same_start(self.line_ref)]
-        return [dataclasses.replace(err, message=self.origin.reword(err.message)) for err in own]
+        # They are reported over the code the call stands for (the slot), not
+        # the made-up callee name, which has no length of its own.
+        return [dataclasses.replace(err, line_ref=self.line_ref,
+                                    message=self.origin.reword(err.message)) for err in own]
 
     def __check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         # The argument tuple checks against the resolved parameter shape, so an
