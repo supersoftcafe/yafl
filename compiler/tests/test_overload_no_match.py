@@ -105,6 +105,29 @@ fun main(): Int
         self.assertIn("Bool", diag)
         self.assertNotIn("Ambiguous", diag)
 
+    def test_inherited_default_overload_no_match(self):
+        # An interface default overloading a name the class also declares stays
+        # visible beside the class's own method (per-signature hiding); a call
+        # matching neither is "nothing accepts this", never an ambiguity.
+        src = """namespace Main
+import System
+interface Greeter
+  fun greet(v: Int): String
+  fun greet(v: Int, s: String): String
+    ret greet(v) + s
+class Plain() : Greeter
+  fun greet(v: Int): String
+    ret "one"
+fun main(): Int
+  System::println(Plain().greet(true))
+  ret 0
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("accepts arguments", diag)
+        self.assertIn("(Int, String): String", diag)
+        self.assertNotIn("Ambiguous", diag)
+
     def test_member_overloads_resolve_by_arguments(self):
         src = """namespace Main
 import System
