@@ -90,10 +90,11 @@ fun [tail] drainFile(io: IO, out: String)
 
 # TWO-LEVEL match: an IOError VARIANT cannot be an arm of `String|IOError`
 # directly — the union is matched first, then the error's variants. On the
-# error path the text read so far is discarded.
-fun drainEnd(io: IO, out: String, e) => match(e)
-  (eof: EOFError) => (io.close(), out) |> (c, text) => text
-  (o: IOError)    => (io.close(), out, o) |> (c, t, err) => err
+# error path the text read so far is discarded. At EOF the text is whole, but
+# a close that fails is still the file's error.
+fun drainEnd(io: IO, out: String, e): String|IOError => match(e)
+  (eof: EOFError) => closed<String>((io = io, v = out))
+  (o: IOError)    => closed<String>((io = io, v = o))
 
 # A directory library: `yafl.toml` beside its `.yafl` sources. Returns None
 # when there is no manifest — that is "not a library", not an error, since a
@@ -590,12 +591,9 @@ fun writeWholeFile(path, body) => match(makeDirs(dirOf(path)))
 # writeAll reports the BYTE COUNT on success, not None — the handle is closed
 # on both paths either way, since a failed write still owns an open file.
 fun finishWrite(path,
-                w: (io: IO, v: System::Int|IOError)) => match(w.v)
-  (e: IOError) => (w.io.close(), path + ": cannot be written")
-    |> (c, why) => why
-  (n: Int)     => match(w.io.close())
-    (e2: IOError) => path + ": cannot be closed"
-    ()            => None
+                w: (io: IO, v: System::Int|IOError)) => match(closed(w))
+  (e: IOError) => path + ": cannot be written"
+  (n: Int)     => None
 
 fun dirOf(p) => lastSlash(p, length(p) - 1)
   |> (i) => i <= 0 ? (i == 0 ? "/" : ".") : slice(p, 0, i)

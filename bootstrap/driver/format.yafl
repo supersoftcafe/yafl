@@ -20,7 +20,7 @@ import Bootstrap::Parse
 
 # ── API ──────────────────────────────────────────────────────────────────────
 
-fun cliFormat(s: CliScan): Int => match(formatPaths(s.csFiles))
+fun cliFormat(s: CliScan): Int|IOError => match(formatPaths(s.csFiles))
   (why: String)      => exitWithErr("error: " + why + "\n", 1)
   (ps: List<String>) => formatReport(fold(ps, FormatTally(List(), List()), (t, p) => formatOne(t, p, s.csFormatCheck)),
                                      s.csFormatCheck)
@@ -57,12 +57,12 @@ fun failureText(path: String, f: PFail): String =>
   path + "[" + String(f.line) + ":" + String(f.col) + "] - " + f.msg
 
 # --format-check lists what is not formatted, and fails when anything is;
-# --format succeeds unless a file could not be handled.
-fun [impure] formatReport(t: FormatTally, checkOnly: Bool): Int
+# --format succeeds unless a file could not be handled. Problems go to stderr
+# before the list goes to stdout; the first that cannot be written ends it.
+fun [impure] formatReport(t: FormatTally, checkOnly: Bool): Int|IOError
   let problems = join(map(t.ftProblems, (p) => p + "\n"), "")
-  if problems != ""
-    printErr(problems)
   let listed = checkOnly ? join(map(t.ftChanged, (p) => p + "\n"), "") : ""
-  if listed != ""
-    printOut(listed)
-  ret problems != "" || (checkOnly && !isEmpty(t.ftChanged)) ? 1 : 0
+  let code = problems != "" || (checkOnly && !isEmpty(t.ftChanged)) ? 1 : 0
+  ret written(stderr(), problems)
+    ?> (n: Int) => written(stdout(), listed)
+    ?> (n: Int) => code

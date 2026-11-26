@@ -333,23 +333,27 @@ fun _readChunk(v: System::String|IOError): System::String
 # express acquire/use/release as a single expression.
 #
 # `use` threads the handle(s) back out in its result tuple (the library's
-# standard shape) so the bracket can close them. The returned `T|IOError`
-# prefers the user's own error; failing that, a close error; otherwise the
-# value.
+# standard shape) so the bracket can close them, by `closed`'s rule.
 
 # Single handle. `resource` is an open result (`open_read`/`create`/…); on a
 # failed open there is nothing to close and the open error passes through.
 fun withFile<T>(resource: IO|IOError, use: (:IO): (io: IO, v: T|IOError)): T|IOError
   ret match(resource)
     (e: IOError) => e
-    (io: IO)     => _release<T>(use(io))
+    (io: IO)     => closed<T>(use(io))
 
-fun _release<T>(r: (io: IO, v: T|IOError)): T|IOError
-  ret match(r.io.close())
-    (n: System::None) => r.v
-    (ce: IOError)     => match(r.v)
-      (e: IOError) => e        # use already failed — keep its error
-      (ok: T)      => ce       # use succeeded but close failed — surface that
+# The end of a chain of steps on one handle: `pair`'s handle closed, and the
+# chain's outcome — its value, or its error. A close that fails is the last
+# thing to go wrong, so its error stands, over one the chain already had: an
+# error is never dropped for another's sake, as a `finally` that throws.
+#
+#   writeAll(stdout(), a)
+#     ?> (io, n) => writeAll(io, b)
+#     |> (w) => closed(w)
+fun closed<T>(pair: (io: IO, v: T|IOError)): T|IOError
+  ret match(pair.io.close())
+    (n: System::None) => pair.v
+    (ce: IOError)     => ce
 
 # Two handles, e.g. a copy source and destination. Opens are validated in turn
 # (closing the first if the second fails), `use` runs with both live, then both
@@ -366,18 +370,17 @@ fun withFiles<T>(src: IO|IOError, dst: IO|IOError,
 fun _withFiles_drop_src<T>(dst: IO|IOError, es: IOError): T|IOError
   ret match(dst)
     (ed: IOError) => es
-    (d: IO)       => _release<T>((io=d, v=es))
+    (d: IO)       => closed<T>((io=d, v=es))
 
 fun _withFiles_have_src<T>(s: IO, dst: IO|IOError,
                            use: (:IO, :IO): (src: IO, dst: IO, v: T|IOError)): T|IOError
   ret match(dst)
-    (ed: IOError) => _release<T>((io=s, v=ed))   # close source, return dest open error
-    (d: IO)       => _release2<T>(use(s, d))
+    (ed: IOError) => closed<T>((io=s, v=ed))   # close source, return dest open error
+    (d: IO)       => _closedBoth<T>(use(s, d))
 
-# Close both handles, folding each close through the single-handle release so
-# the error-priority rule (use error > close error > value) holds uniformly.
-fun _release2<T>(r: (src: IO, dst: IO, v: T|IOError)): T|IOError
-  ret _release<T>((io=r.src, v=_release<T>((io=r.dst, v=r.v))))
+# Close both handles, each through `closed`, so its rule holds for both.
+fun _closedBoth<T>(r: (src: IO, dst: IO, v: T|IOError)): T|IOError
+  ret closed<T>((io=r.src, v=closed<T>((io=r.dst, v=r.v))))
 
 
 # ── Drop: scope-exit release ──────────────────────────────────────────────
