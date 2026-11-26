@@ -177,6 +177,148 @@ fun main(): Int
         self.assertIn("accepts arguments", diag)
         self.assertNotIn("Ambiguous", diag)
 
+    # ── several fit: still an ambiguity ──────────────────────────────────────
+
+    def test_member_overloads_that_both_fit_are_ambiguous(self):
+        src = """namespace Main
+import System
+class K()
+  fun f(v: Int|String): Int
+    ret 1
+  fun f(v: Int|Bool): Int
+    ret 2
+fun main(): Int
+  ret K().f(1)
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("Ambiguous reference to field named f", diag)
+
+    def test_let_overloads_that_both_fit_are_ambiguous(self):
+        src = """namespace Main
+import System
+fun a(v: Int|String): None
+  ret None
+fun b(v: Int|Bool): None
+  ret None
+let myPrint: (:Int|String): None = a
+let myPrint: (:Int|Bool): None = b
+fun main(): Int
+  myPrint(1)
+  ret 0
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("Ambiguous reference 'myPrint'", diag)
+
+    # ── an argument that failed: its error, and nothing hidden ───────────────
+
+    def test_an_unresolved_callee_and_argument_both_report(self):
+        src = """namespace Main
+import System
+fun main(): Int
+  ret nope(undefinedVar)
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("Failed to resolve nope", diag)
+        self.assertIn("Failed to resolve undefinedVar", diag)
+
+    def test_an_unresolved_argument_to_overloads_is_reported_alone(self):
+        # Without the argument's type the overloads cannot be told apart: the
+        # load is undecided, not ambiguous, and the argument is the cause.
+        src = """namespace Main
+import System
+class K()
+  fun f(v: Int): Int
+    ret 1
+  fun f(v: String): Int
+    ret 2
+fun main(): Int
+  ret K().f(undefinedVar)
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("Failed to resolve undefinedVar", diag)
+        self.assertNotIn("Ambiguous", diag)
+        self.assertNotIn("accepts arguments", diag)
+
+    # ── overloads that are not called, or not functions ──────────────────────
+
+    def test_calling_overloaded_values_that_are_not_functions(self):
+        src = """namespace Main
+import System
+let x: Int = 1
+let x: String = "a"
+fun main(): Int
+  x(1)
+  ret 0
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("`x` is not a function", diag)
+
+    def test_an_overloaded_function_value_of_no_candidate_type(self):
+        # Not a call: the load is expected to HAVE a function type, so the
+        # message names the type, not "arguments".
+        src = """namespace Main
+import System
+fun a(v: String): None
+  ret None
+fun b(v: Int): None
+  ret None
+let myPrint: (:String): None = a
+let myPrint: (:Int): None = b
+fun main(): Int
+  let h: (:Bool): None = myPrint
+  ret 0
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("no `myPrint` has type", diag)
+        self.assertNotIn("accepts arguments", diag)
+
+    # ── narrowing keeps valid calls valid ────────────────────────────────────
+
+    def test_overloads_taking_an_untyped_lambda_resolve(self):
+        src = """namespace Main
+import System
+fun ap(f: (:Int): Int, x: Int): Int
+  ret f(x)
+fun ap(f: (:String): String, x: String): String
+  ret f(x)
+fun main(): Int
+  ret ap((v) => v + 1, 1)
+"""
+        out, diag = _diagnostics(src)
+        self.assertTrue(out, f"the lambda's overload must resolve; got:\n{diag}")
+
+    def test_a_generic_and_a_concrete_overload_resolve(self):
+        src = """namespace Main
+import System
+fun g<T>(v: T, n: Int): Int
+  ret n
+fun g(v: String): Int
+  ret 2
+fun main(): Int
+  ret g(true, 3)
+"""
+        out, diag = _diagnostics(src)
+        self.assertTrue(out, f"the generic overload must resolve; got:\n{diag}")
+
+    def test_overloads_resolve_by_named_arguments_in_any_order(self):
+        src = """namespace Main
+import System
+fun f(a: Int, b: String): Int
+  ret 1
+fun f(a: String, b: Int): Int
+  ret 2
+fun main(): Int
+  ret f(b = "x", a = 1)
+"""
+        out, diag = _diagnostics(src)
+        self.assertTrue(out, f"named arguments must pick their overload; got:\n{diag}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -113,10 +113,28 @@ def candidate_signature(resolver: g.Resolver, x: g.Resolved[s.DataStatement]) ->
 
 def _no_overload_error(resolver: g.Resolver, line_ref: LineRef, name: str, shape: t.CallableSpec,
                        datas: list[g.Resolved[s.DataStatement]]) -> Error:
-    """Nothing among `datas` accepts the call shape: the load's own error."""
-    from pyast.expression.call import no_overload_accepts_error
-    return no_overload_accepts_error(
+    """Nothing among `datas` has the expected shape: the load's own error."""
+    from pyast.expression.call import no_overload_error
+    return no_overload_error(
         line_ref, name, shape, [candidate_signature(resolver, d) for d in datas])
+
+
+def _narrowed_by_call(resolver: g.Resolver, expected_type: t.TypeSpec | None,
+                      datas: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
+    """A load's candidates narrowed by the function type it is expected to
+    have (a call's shape, or a function value's type). Any other expected
+    type leaves them alone."""
+    if isinstance(expected_type, t.CallableSpec):
+        return _resolve_overloads(resolver, expected_type, datas)
+    return datas
+
+
+def _shape_known(expected_type: t.TypeSpec | None) -> bool:
+    """Can the expected type tell candidates apart? A call whose argument
+    failed has an untyped entry: every candidate might take it, so several
+    left are UNDECIDED, not ambiguous, and the argument's error is the cause."""
+    return not (isinstance(expected_type, t.CallableSpec)
+                and any(e.type is None for e in expected_type.parameters.entries))
 
 
 def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, candidates: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
@@ -303,13 +321,12 @@ class DotExpression(Expression):
                 datas = cdecl.find_data(resolver, self.name)
                 if not datas:
                     return [Error(self.line_ref, f"Could not find a field named {self.name}")]
-                if len(datas) > 1 and isinstance(expected_type, t.CallableSpec):
-                    narrowed = _resolve_overloads(resolver, expected_type, datas)
-                    if not narrowed:
-                        return [_no_overload_error(resolver, self.line_ref, self.name, expected_type, datas)]
-                    datas = narrowed
-                if len(datas) > 1:
-                    return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
+                narrowed = _narrowed_by_call(resolver, expected_type, datas)
+                if not narrowed:
+                    return [_no_overload_error(resolver, self.line_ref, self.name, expected_type, datas)]
+                if len(narrowed) > 1:
+                    return ([Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
+                            if _shape_known(expected_type) else [])
                 return _member_privacy(resolver, self.line_ref, self.name, cname)
             case t.EnumSpec() as espec:
                 found = _enum_member(resolver, espec, self.name)
@@ -574,12 +591,14 @@ class NamedExpression(Expression):
         datas = _distinct_resolutions(resolver.find_data(self.name))
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
         datas = _scope_filtered(datas, self.resolved_trait_scope, resolver)
-        match datas:
+        if not datas:
+            hidden = resolver.find_hidden_data(self.name)
+            if hidden:
+                return [_private_error(self.line_ref, self.name, hidden)] + tp_errors
+            return [Error(self.line_ref, f"Failed to resolve {self.name}")] + tp_errors
+        match _narrowed_by_call(resolver, expected_type, datas):
             case []:
-                hidden = resolver.find_hidden_data(self.name)
-                if hidden:
-                    return [_private_error(self.line_ref, self.name, hidden)] + tp_errors
-                return [Error(self.line_ref, f"Failed to resolve {self.name}")] + tp_errors
+                return [_no_overload_error(resolver, self.line_ref, self.name, expected_type, datas)] + tp_errors
             case [resolved]:
                 # A generic AMBIENT instance member that never committed a
                 # solved scope: the use site could not bind the instance's
@@ -592,21 +611,15 @@ class NamedExpression(Expression):
                         f"applies to concrete types only — generic code needs its own "
                         f"`where` clause")] + tp_errors
                 return resolved.statement.check_caller_type_params(resolver, self.type_params, self.line_ref) + tp_errors
-            case _ if isinstance(expected_type, t.CallableSpec) and not (
-                    narrowed := _resolve_overloads(resolver, expected_type, datas)):
-                return [_no_overload_error(resolver, self.line_ref, self.name, expected_type, datas)] + tp_errors
-            case _ if isinstance(expected_type, t.CallableSpec) and len(narrowed) == 1:
-                return narrowed[0].statement.check_caller_type_params(
-                    resolver, self.type_params, self.line_ref) + tp_errors
-            case _:
-                if isinstance(expected_type, t.CallableSpec):
-                    datas = narrowed
+            case _ if not _shape_known(expected_type):
+                return tp_errors
+            case narrowed:
                 # `name` resolves more than one way — commonly a top-level
                 # namespace versus an import-relative one (loading a library can
                 # introduce such a clash). There is no precedence rule: the user
                 # must qualify. List every candidate's fully-qualified spelling so
                 # they know which reading each one selects.
-                candidates = ", ".join(sorted({d.unique_name for d in datas}))
+                candidates = ", ".join(sorted({d.unique_name for d in narrowed}))
                 return [Error(self.line_ref,
                     f"Ambiguous reference '{self.name}' — qualify it. Candidates: {candidates}")] + tp_errors
 

@@ -52,7 +52,9 @@ fun classDotErrs(d: PeDot, datas: List<Found>, owner: String, r: Resolver,
   if isEmpty(narrowed)
     ret noMatchErrs(d.pedLine, d.member, expected, datas)
   if isMoreThanOne(narrowed)
-    ret oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
+    ret shapeKnown(expected)
+      ? oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
+      : noErrs()
   ret memberPrivacy(d, owner, r)
 
 # A member's namespace is its class's or enum's (#17).
