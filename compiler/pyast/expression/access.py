@@ -111,6 +111,14 @@ def candidate_signature(resolver: g.Resolver, x: g.Resolved[s.DataStatement]) ->
     return xtype
 
 
+def _no_overload_error(resolver: g.Resolver, line_ref: LineRef, name: str, shape: t.CallableSpec,
+                       datas: list[g.Resolved[s.DataStatement]]) -> Error:
+    """Nothing among `datas` accepts the call shape: the load's own error."""
+    from pyast.expression.call import no_overload_accepts_error
+    return no_overload_accepts_error(
+        line_ref, name, shape, [candidate_signature(resolver, d) for d in datas])
+
+
 def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, candidates: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
     if len(candidates) <= 1:
         return candidates
@@ -276,9 +284,9 @@ class DotExpression(Expression):
         return converted(expr, expected_type, resolver), new_statements, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
-        return self.base.check(resolver, None) + self.__field_errors(resolver)
+        return self.base.check(resolver, None) + self.__field_errors(resolver, expected_type)
 
-    def __field_errors(self, resolver: g.Resolver) -> list[Error]:
+    def __field_errors(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         btype = self.base.get_type(resolver)
         match btype:
             case t.TupleSpec(entries=entries):
@@ -295,6 +303,11 @@ class DotExpression(Expression):
                 datas = cdecl.find_data(resolver, self.name)
                 if not datas:
                     return [Error(self.line_ref, f"Could not find a field named {self.name}")]
+                if len(datas) > 1 and isinstance(expected_type, t.CallableSpec):
+                    narrowed = _resolve_overloads(resolver, expected_type, datas)
+                    if not narrowed:
+                        return [_no_overload_error(resolver, self.line_ref, self.name, expected_type, datas)]
+                    datas = narrowed
                 if len(datas) > 1:
                     return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
                 return _member_privacy(resolver, self.line_ref, self.name, cname)
@@ -579,7 +592,15 @@ class NamedExpression(Expression):
                         f"applies to concrete types only — generic code needs its own "
                         f"`where` clause")] + tp_errors
                 return resolved.statement.check_caller_type_params(resolver, self.type_params, self.line_ref) + tp_errors
+            case _ if isinstance(expected_type, t.CallableSpec) and not (
+                    narrowed := _resolve_overloads(resolver, expected_type, datas)):
+                return [_no_overload_error(resolver, self.line_ref, self.name, expected_type, datas)] + tp_errors
+            case _ if isinstance(expected_type, t.CallableSpec) and len(narrowed) == 1:
+                return narrowed[0].statement.check_caller_type_params(
+                    resolver, self.type_params, self.line_ref) + tp_errors
             case _:
+                if isinstance(expected_type, t.CallableSpec):
+                    datas = narrowed
                 # `name` resolves more than one way — commonly a top-level
                 # namespace versus an import-relative one (loading a library can
                 # introduce such a clash). There is no precedence rule: the user

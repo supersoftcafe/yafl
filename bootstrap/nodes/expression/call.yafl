@@ -70,18 +70,16 @@ fun originErrs(o: POrigin, lr: PLine, errs: Set<PErr>): Set<PErr>
 
 fun checkCallPlain(c: PeCall, r)
   let calleeParams = paramShapeOf(exprType(c.function, r))
-  let fnErrs = checkExpr(c.function, r, None)
+  # The callee is LOADED to be called, so its check gets everything this call
+  # knows about it: a function taking these arguments. The load narrows its
+  # overloads by that shape and reports none or several (Python __check).
+  let fnErrs = checkExpr(c.function, r, callShape(c, r))
   let argErrs = checkExpr(c.parameter, r, calleeParams)
-  # Only when the name HAS candidates. A name that resolves to nothing at all
-  # is a different situation with its own correct message; rerouting it here
-  # would change an established diagnostic for no gain.
-  if !isEmpty(fnErrs) && isEmpty(argErrs) && paramShapeMissing(calleeParams)
-       && !isEmpty(calleeCandidates(c, r))
-    ret match(exprType(c.parameter, r))
-      (tp: STuple) => anyCandidateAccepts(c, tp, r)
-        ? union(fnErrs, argErrs)
-        : add(noErrs(), unresolvedCallError2(c, tp, r))
-      ()           => union(fnErrs, argErrs)
+  # An argument with an error has no type to narrow by, so every candidate
+  # "might" take it and the callee would only add noise ("ambiguous"): the
+  # argument's error is the cause.
+  if !isEmpty(argErrs) && !argumentsTyped(c, r)
+    ret argErrs
   let sub = union(fnErrs, argErrs)
   if !isEmpty(sub)
     ret sub
@@ -97,28 +95,37 @@ fun callShapeErrs(c: PeCall, ptype, r) => match(exprType(c.function, r))
     (o: Spec)       => add(noErrs(), unresolvedCallError(c, ptype, ft, r))
   ()         => add(noErrs(), unresolvedCallError2(c, ptype, r))
 
-fun calleeCandidates(c: PeCall, r) => match(c.function)
-  (nm: PeName) => findData(r, nm.refName).bItems
-  (o: PExpr)   => List()
+fun entryTyped(e: SEntry): Bool => match(e.seType)
+  (sp: Spec) => true
+  ()         => false
 
-fun paramShapeMissing(sp: Spec|None) => match(sp)
-  (s2: Spec) => false
-  ()         => true
+fun argumentsTyped(c: PeCall, r): Bool => match(exprType(c.parameter, r))
+  (tp: STuple) => all(tp.stEntries, entryTyped)
+  ()           => false
 
-# Does at least one overload of the callee accept these arguments? True means
-# the call really IS ambiguous — several readings fit and the author must
-# qualify. False means none fit, a different error with a different fix.
-# Narrowing goes through the same resolveOverloads the compile path uses, so
-# both agree about what "fits" (in particular about a candidate's own generic
-# parameters, which are wildcards it may bind).
-fun anyCandidateAccepts(c: PeCall, ptype, r) => match(c.function)
-  (nm: PeName) => candidatesAccept(findData(r, nm.refName).bItems, ptype, c, r)
-  (o: PExpr)   => false
+# What this call tells its callee: a function of the argument tuple (None
+# while the arguments have no type to say).
+fun callShape(c: PeCall, r): Spec|None => match(exprType(c.parameter, r))
+  (tp: STuple) => SCallable(tp, None, c.pecLine)
+  ()           => None
 
-fun candidatesAccept(cands, ptype, c: PeCall,
-                     r) => isEmpty(cands)
-  ? false
-  : !isEmpty(resolveOverloads(r, SCallable(ptype, None, c.pecLine), cands))
+# A load's candidates narrowed by the call shape it is loaded for. Any other
+# expected type leaves them alone.
+fun narrowedByCall(cands: List<Found>, expected: Spec|None, r): Bag<Found> => match(expected)
+  (c: SCallable) => resolveOverloads(r, c, cands)
+  (o: Spec)      => Bag(cands)
+  ()             => Bag(cands)
+
+# Nothing among `cands` accepts the call: qualifying is impossible, so say
+# which arguments failed and what the candidates actually take.
+fun noMatchErrs(line: PLine, name: String, expected: Spec|None, cands: List<Found>): Set<PErr> =>
+  match(expected)
+    (c: SCallable) => oneErr(line, "no " + backTicked(bareOfUnique(name))
+                                   + " accepts arguments " + typeStr2(c.scParams2)
+                                   + " — candidates: "
+                                   + join(sort(dedupeStrs(candidateSigs(cands, List()))), "; "))
+    (o: Spec)      => noErrs()
+    ()             => noErrs()
 
 # The callee didn't resolve to a single callable. Say WHY in the author's
 # terms: the called name, the argument types, the candidate signatures.
@@ -155,7 +162,7 @@ fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
 fun candidateSigs(cs: List<Found>, acc): List<String> =>
   fold(cs, acc, candidateSigsStep)
 
-fun candidateSigsStep(a: List<String>, x: Found) => match(stmtType(x.fStmt))
+fun candidateSigsStep(a: List<String>, x: Found) => match(candidateSignature(x))
   (ty: Spec) => match(ty)
     (cl: SCallable) => append(a, typeStr(ty))
     (o: Spec) => a

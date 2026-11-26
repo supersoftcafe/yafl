@@ -168,13 +168,16 @@ fun unresolvedNameErr(nm: PeName, r: Resolver): Set<PErr> => match(head(findHidd
   (f: Found) => oneErr(nm.penLine, privateMessage(nm.refName, namespaceOf(f.fName)))
   ()         => oneErr(nm.penLine, "Failed to resolve " + nm.refName)
 
-fun checkName(nm: PeName, r)
+fun checkName(nm: PeName, r, expected: Spec|None)
   let tpErrs = checkSpecs(nm.refTypeParams, r, noErrs())
-  let datas = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
-                            nm.penTrait, r)
-  if isEmpty(datas)
+  let all = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
+                          nm.penTrait, r)
+  if isEmpty(all)
     ret union(unresolvedNameErr(nm, r), tpErrs)
-  ret match(soleOf(Bag(datas)))
+  let datas = narrowedByCall(all, expected, r)
+  if isEmpty(datas)
+    ret union(noMatchErrs(nm.penLine, nm.refName, expected, all), tpErrs)
+  ret match(soleOf(datas))
     # A generic AMBIENT instance member that never committed a solved scope:
     # the use site could not bind the instance's placeholders — ambience
     # applies to concrete types only, so a name-match alone is NOT a
@@ -191,8 +194,7 @@ fun checkName(nm: PeName, r)
     ()         => union(oneErr(nm.penLine,
                     "Ambiguous reference '" + nm.refName
                     + "' — qualify it. Candidates: "
-                    + join(sort(dedupeStrs(foundNames(datas,
-                                                      List()))),
+                    + join(sort(dedupeStrs(sort(map(datas, (x) => x.fName)))),
                            ", ")),
              tpErrs)
 

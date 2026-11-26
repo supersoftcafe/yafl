@@ -83,6 +83,77 @@ fun main(): System::Int
         out, diag = _diagnostics(src)
         self.assertTrue(out, f"a matching overload must resolve; got:\n{diag}")
 
+    # ── member calls: the load narrows by the call's shape ───────────────────
+
+    def test_member_call_no_overload_accepts(self):
+        # `K().f(true)`: the member lookup finds two `f`, neither takes a Bool.
+        # That is "nothing accepts this", never an ambiguity.
+        src = """namespace Main
+import System
+class K()
+  fun f(v: Int): String
+    ret "i"
+  fun f(v: String): String
+    ret "s"
+fun main(): Int
+  System::println(K().f(true))
+  ret 0
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("accepts arguments", diag)
+        self.assertIn("Bool", diag)
+        self.assertNotIn("Ambiguous", diag)
+
+    def test_member_overloads_resolve_by_arguments(self):
+        src = """namespace Main
+import System
+class K()
+  fun f(v: Int): Int
+    ret 1
+  fun f(v: String): Int
+    ret 2
+fun main(): Int
+  ret K().f("x")
+"""
+        out, diag = _diagnostics(src)
+        self.assertTrue(out, f"a matching member overload must resolve; got:\n{diag}")
+
+    def test_overloaded_let_bindings_resolve_by_call_shape(self):
+        # Named bindings may be overloaded; the call's shape picks one.
+        src = """namespace Main
+import System
+fun a(v: String): None
+  ret None
+fun b(v: Int): None
+  ret None
+let myPrint: (:String): None = a
+let myPrint: (:Int): None = b
+fun main(): Int
+  myPrint("fred")
+  ret 0
+"""
+        out, diag = _diagnostics(src)
+        self.assertTrue(out, f"overloaded bindings must resolve; got:\n{diag}")
+
+    def test_overloaded_let_bindings_no_match(self):
+        src = """namespace Main
+import System
+fun a(v: String): None
+  ret None
+fun b(v: Int): None
+  ret None
+let myPrint: (:String): None = a
+let myPrint: (:Int): None = b
+fun main(): Int
+  myPrint(true)
+  ret 0
+"""
+        out, diag = _diagnostics(src)
+        self.assertFalse(out)
+        self.assertIn("accepts arguments", diag)
+        self.assertNotIn("Ambiguous", diag)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,19 @@ def _spec_name(name: str, type_params: "tuple | None" = None) -> str:
     return f"{head}<{', '.join(args)}>" if args else head
 
 
+def no_overload_accepts_error(line_ref: LineRef, name: str, shape: t.CallableSpec,
+                              candidate_types: list[t.TypeSpec | None]) -> Error:
+    """No candidate of `name` accepts the call's arguments. Qualifying is
+    impossible here, so say which arguments failed and what the candidates
+    actually take."""
+    raw = g.bare_name(name)
+    shown = raw if raw.startswith("`") else f"`{raw}`"
+    sigs = "; ".join(sorted({_type_str(c) for c in candidate_types
+                             if isinstance(c, t.CallableSpec)}))
+    return Error(line_ref,
+        f"no {shown} accepts arguments {_type_str(shape.parameters)} — candidates: {sigs}")
+
+
 def _type_str(ts: t.TypeSpec | None) -> str:
     """A source-shaped rendering of a type for diagnostics (best-effort;
     never the internal class name)."""
@@ -172,27 +185,18 @@ class CallExpression(Expression):
         # itself (the binding is otherwise lenient about incidental names).
         callee_type = self.function.get_type(resolver)
         callee_params = callee_type.parameters if isinstance(callee_type, t.CallableSpec) else None
-        fn_err = self.function.check(resolver, None)
+        # The callee is LOADED to be called, so its check gets everything this
+        # call knows about it: a function taking these arguments. It is the
+        # load that narrows its overloads by that shape and reports none or
+        # several, exactly as compile selected them.
+        shape = self.__call_shape(resolver)
+        fn_err = self.function.check(resolver, shape)
         arg_err = self.parameter.check(resolver, callee_params)
-        # A callee that never narrowed to ONE callable is explained best HERE.
-        # The name on its own can only say "Ambiguous — qualify it", which
-        # tells the author to disambiguate; when NO overload accepts what they
-        # passed, qualifying is impossible and that message sends them the
-        # wrong way. This node knows the argument types, so let it say which
-        # arguments failed and what the candidates actually take. Only when
-        # nothing accepts them — two candidates that both fit really are
-        # ambiguous, and that message stands.
-        # Only when the name HAS candidates. A name that resolves to nothing at
-        # all is a different situation with its own correct message ("Failed to
-        # resolve x"); rerouting that here would say "no function named x is in
-        # scope", which is no better and changes an established diagnostic.
-        if (fn_err and not arg_err
-                and not isinstance(callee_type, t.CallableSpec)
-                and self.__callee_candidates(resolver)):
-            ptype = self.parameter.get_type(resolver)
-            if (isinstance(ptype, t.TupleSpec)
-                    and not self.__any_candidate_accepts(resolver, ptype)):
-                return [self.__unresolved_call_error(resolver, ptype, callee_type)]
+        # An argument with an error has no type to narrow by, so every
+        # candidate "might" take it and the callee would only add noise
+        # ("ambiguous"): the argument's error is the cause.
+        if arg_err and not self.__arguments_typed(resolver):
+            return arg_err
         if fn_err or arg_err:
             return fn_err + arg_err
 
@@ -209,39 +213,24 @@ class CallExpression(Expression):
 
         return []
 
-    def __callee_candidates(self, resolver: g.Resolver) -> list:
-        """The named callee's resolutions, or [] when the callee is not a
-        plain name (a computed callable has no candidate list to report)."""
-        from pyast.expression.access import NamedExpression
-        if not isinstance(self.function, NamedExpression):
-            return []
-        return resolver.find_data(self.function.name)
+    def __arguments_typed(self, resolver: g.Resolver) -> bool:
+        ptype = self.parameter.get_type(resolver)
+        return isinstance(ptype, t.TupleSpec) and all(e.type is not None for e in ptype.entries)
 
-    def __any_candidate_accepts(self, resolver: g.Resolver,
-                                ptype: t.TupleSpec) -> bool:
-        """Does at least one overload of the callee accept these arguments?
-
-        True means the call really is AMBIGUOUS — several readings fit and the
-        author must qualify. False means none fit, which is a different error
-        with a different fix. Narrowing goes through the same
-        `_resolve_overloads` the compile path uses, so the two agree about what
-        "fits" (in particular about a candidate's own generic parameters, which
-        are wildcards it may bind)."""
-        from pyast.expression.access import NamedExpression, _resolve_overloads
-        if not isinstance(self.function, NamedExpression):
-            return False
-        candidates = resolver.find_data(self.function.name)
-        if not candidates:
-            return False
-        shape = t.CallableSpec(self.line_ref, ptype, None)
-        return bool(_resolve_overloads(resolver, shape, candidates))
+    def __call_shape(self, resolver: g.Resolver) -> t.CallableSpec | None:
+        """What this call tells its callee: a function of the argument tuple
+        (None while the arguments have no type to say)."""
+        ptype = self.parameter.get_type(resolver)
+        if not isinstance(ptype, t.TupleSpec):
+            return None
+        return t.CallableSpec(self.line_ref, ptype, None)
 
     def __unresolved_call_error(self, resolver: g.Resolver,
                                 ptype: t.TupleSpec, ftype: t.TypeSpec | None) -> Error:
         """The callee didn't resolve to a single callable. Say WHY in terms
         the author wrote — the called name, the argument types, and the
         candidate signatures — never the internal spec class name."""
-        from pyast.expression.access import NamedExpression
+        from pyast.expression.access import NamedExpression, candidate_signature
         args = _type_str(ptype)
         if not isinstance(self.function, NamedExpression):
             return Error(self.line_ref,
@@ -253,7 +242,7 @@ class CallExpression(Expression):
         callable_sigs = []
         non_callable = None
         for cand in candidates:
-            ctype = cand.statement.get_type()
+            ctype = candidate_signature(resolver, cand)
             if isinstance(ctype, t.CallableSpec):
                 callable_sigs.append(_type_str(ctype))
             elif ctype is not None:
