@@ -4,6 +4,7 @@
 namespace StdlibTests::IntegerTests
 
 import System
+import System::Containers
 import System::Test
 
 
@@ -21,3 +22,20 @@ fun [test("min and max over Int32")] minMaxInt32(): None|TestFailure
      ?? assertEqInt(Int(max(3i32, 9i32)), 9, "max")
      ?? assertEqInt(Int(min(-7i32, 7i32)), -7, "min, negative")
      ?? assertEqInt(Int(max(2147483647i32, 0i32)), 2147483647, "max, Int32 max")
+
+
+# A heap Int whose result fits a machine word may come back as a tagged
+# immediate, but only inside the tagged range, |v| <= 2^61 - 1 (yafl.h shifts
+# the value two bits). Between 2^61 and 2^62 a result stays on the heap. The
+# operand comes from the command line, so the runtime does the arithmetic, not
+# the compiler.
+fun [test("Int results between 2^61 and 2^62 keep their value")] tagRangeEdge(): None|TestFailure
+    let one = sizeAtLeast(args(), 0) ? 1 : 0
+    let p61 = 2305843009213693952
+    ret assertEqStr(String((p61 + 3) ^ one), "2305843009213693954", "xor")
+     ?? assertEqStr(String(p61 | one), "2305843009213693953", "or")
+     ?? assertEqStr(String((4611686018427387903 * one) & (p61 + 5)), "2305843009213693957", "and")
+     ?? assertEqStr(String(p61 * one), "2305843009213693952", "mul")
+     ?? assertEqStr(String((4611686018427387904 * one) / 2), "2305843009213693952", "div")
+     ?? assertEqStr(String((0 - p61) & (0 - one)), "-2305843009213693952", "negative edge")
+     ?? assertEqStr(String((0 - p61 - 5) | one), "-2305843009213693957", "below the negative edge")

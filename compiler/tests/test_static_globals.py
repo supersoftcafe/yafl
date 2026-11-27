@@ -42,8 +42,12 @@ def _emit_c(src: str) -> str:
 # Same shape but with the DEFAULT integer type (bigint literals become
 # $integers globals — the plan inlines their constant), and the outer chain
 # referencing a separately-declared static by NAME.
+# `main` picks the chain by its command line: from `nodes` alone the compiler
+# would compute the sum itself (lowering/literal_discovery.py), and the chain
+# would never be read at run time.
 _CHAIN_BIGINT = """namespace Test
 import System
+import System::Containers
 
 class [final] Node(value: Int, next: Node|None)
 
@@ -56,7 +60,7 @@ fun sum(n: Node|None): Int
     (e: System::None) => 0
 
 fun main(): Int
-  ret sum(nodes) == 6 ? 0 : 1
+  ret sum(sizeAtLeast(args(), 9) ? None : nodes) == 6 ? 0 : 1
 """
 
 

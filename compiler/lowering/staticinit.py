@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import dataclasses
-import itertools
 
+import lowering.literal_discovery as ld
 import lowering.trim
 from codegen.gen import Application
+from codegen.typedecl import DataPointer
 from codegen.ir import Function, Global
 from codegen.ops import Op, NewObject, Move, JumpIf, Call
-from codegen.param import RParam, StackVar, GlobalVar, ObjectField, NewStruct, Integer, String, StructField, ZeroOf
-from codegen.typedecl import DataPointer
+from codegen.param import RParam, StackVar, GlobalVar, ObjectField, NewStruct, Integer, String
 
 
-_si_counter = itertools.count()
+_si_counter = [0]
 
 
 def reset_si_counter() -> None:
@@ -21,180 +21,48 @@ def reset_si_counter() -> None:
     leaked the counter across files, making the -O1 output compile-order
     dependent). The bootstrap port threads its counter from 0 per compile;
     this keeps the reference implementation identical."""
-    global _si_counter
-    _si_counter = itertools.count()
-
-
-def _build_value_map(ops) -> dict[str, RParam]:
-    """Build a map from StackVar name to its source for singly-assigned vars."""
-    counts: dict[str, int] = {}
-    values: dict[str, RParam] = {}
-    for op in ops:
-        if isinstance(op, Move) and isinstance(op.target, StackVar):
-            n = op.target.name
-            counts[n] = counts.get(n, 0) + 1
-            values[n] = op.source
-    return {k: v for k, v in values.items() if counts[k] == 1}
-
-
-def _trace_to_constant(val: RParam, value_map: dict[str, RParam], globals: dict) -> RParam | None:
-    """Trace val back to a compile-time constant (Integer or String), or None.
-    Also returns NewStruct as an intermediate value for StructField extraction."""
-    if isinstance(val, Integer):
-        return val
-    if isinstance(val, String):
-        return val
-    if isinstance(val, ZeroOf):
-        return val  # zero-fill — renders as a zero initialiser; unit enum
-                    # variants are built entirely from $tag + ZeroOf slots
-    if isinstance(val, NewStruct):
-        # Trace the struct's OWN values too: a struct is only a compile-time
-        # constant when every field is. Returning it unexamined emitted static
-        # data referencing INLINED LOCALS (`._0 = plFile_..._inl1062`), which
-        # do not exist at file scope. Rebuilt from the traced constants so
-        # StructField extraction still works — and so the promotion still
-        # fires for a genuinely constant graph built through an inlined helper.
-        traced: list[tuple[str, RParam]] = []
-        for fname, fval in val.values:
-            const = _trace_to_constant(fval, value_map, globals)
-            if const is None:
-                return None
-            traced.append((fname, const))
-        return NewStruct(tuple(traced))
-    if isinstance(val, StackVar):
-        src = value_map.get(val.name)
-        return None if src is None else _trace_to_constant(src, value_map, globals)
-    if isinstance(val, GlobalVar):
-        g = globals.get(val.name)
-        if g is None or g.lazy_init_function:
-            return None
-        if g.object_name is not None:
-            return None  # Object-typed fields can't be used as C static initializer values
-        if isinstance(g.init, (Integer, String)):
-            return g.init
-        return None
-    if isinstance(val, StructField):
-        struct = _trace_to_constant(val.struct, value_map, globals)
-        if not isinstance(struct, NewStruct):
-            return None
-        fval = next((v for n, v in struct.values if n == val.field), None)
-        return None if fval is None else _trace_to_constant(fval, value_map, globals)
-    return None
+    _si_counter[0] = 0
 
 
 def _promote_one_function(fn: Function, app: Application) -> tuple[Function, list[Global]]:
-    """Promote NewObject ops with all-static fields to anonymous static globals."""
-    value_map = _build_value_map(fn.ops)
+    """Stage 2 of literal discovery (lowering/literal_discovery.py): each
+    construction whose value is a literal becomes a static global, and the
+    construction a load of it.
+
+    The constructions are literal discovery's: an unpinned NewObject whose
+    stores are all fresh initialisation stores, every one of them constant —
+    other constructions included, so a whole graph goes static, children
+    first, in op order. Its emitter writes the statics: never a pinned
+    object, never a [pinnable] one a late write could still fill (an array is
+    trimmed to its length first, as compaction would)."""
+    machine = ld.Machine(app)
+    consts = ld.Constants(machine, list(fn.ops))
+    known: dict[int, str] = {}
     new_globals: list[Global] = []
-
-    # Collect NewObject ops (fixed-size only, no arrays)
-    new_obj_positions: dict[str, tuple[int, str]] = {}  # sv_name -> (op_index, class_name)
-    for i, op in enumerate(fn.ops):
-        # A pinned object is filled in after allocation: never a static. Nor
-        # is a [pinnable] one: every caller would share its write-once slots,
-        # and the late write assumes a heap object.
-        obj = app.objects.get(op.name) if isinstance(op, NewObject) else None
-        if (isinstance(op, NewObject) and op.size is None and not op.pinned
-                and not (obj is not None and obj.is_pinnable) and isinstance(op.register, StackVar)):
-            new_obj_positions[op.register.name] = (i, op.name)
-
-    if not new_obj_positions:
-        return fn, []
-
-    # Collect field assignment ops targeting each NewObject register
-    field_assigns: dict[str, dict[str, tuple[int, RParam]]] = {}  # sv_name -> {field -> (idx, src)}
-    for i, op in enumerate(fn.ops):
-        if (isinstance(op, Move)
-                and isinstance(op.target, ObjectField)
-                and isinstance(op.target.pointer, StackVar)
-                and op.target.pointer.name in new_obj_positions
-                and op.target.index is None):
-            sv = op.target.pointer.name
-            if sv not in field_assigns:
-                field_assigns[sv] = {}
-            field_assigns[sv][op.target.field] = (i, op.source)
-
-    ops_to_remove: set[int] = set()
-    replacements: dict[int, Op] = {}
-
-    for sv_name, (new_idx, class_name) in new_obj_positions.items():
-        if class_name not in app.objects:
+    promoted: dict[str, RParam] = {}
+    for name in consts.builds:
+        start = _si_counter[0]
+        emitter = ld.Emitter(machine, _si_counter, known, prefix="$si$")
+        try:
+            value = emitter.value(consts[name], DataPointer(), False)
+        except ld.Stop:
+            _si_counter[0] = start
             continue
-        obj = app.objects[class_name]
-        if obj.array_type is not None:
-            continue  # Skip objects with array fields
-
-        # `$hash` is the hidden Int32 cache every BOXED ENUM LEAF carries
-        # directly after the vtable (EnumStatement.global_codegen's prefix).
-        # Nothing ever ASSIGNS it — the allocator zero-fills it and
-        # yafl_hash_store writes it lazily — so counting it among the fields
-        # that must be assigned made this test fail for EVERY enum leaf, which
-        # silently disabled promotion across all enums: a whole-compiler
-        # self-emit produced ONE $si$ global, and `ChainEnd()` — a no-field
-        # terminator that should be a single shared static — was allocated
-        # fresh at every use (~984k live instances, 48 MiB, in a self-compile).
-        # It still needs a VALUE in the emitted initialiser, which is
-        # positional, so it is re-inserted as ZeroOf in declaration order below.
-        data_fields = [(name, typ) for name, typ in obj.fields.fields
-                       if name not in ("type", "$hash")]
-        assigns = field_assigns.get(sv_name, {})
-
-        if len(assigns) != len(data_fields):
-            continue  # Not all fields are assigned
-
-        # Trace each field's source to a compile-time constant
-        field_values: list[tuple[str, RParam]] = []
-        ok = True
-        for field_name, _ in data_fields:
-            if field_name not in assigns:
-                ok = False
-                break
-            _, src = assigns[field_name]
-            const = _trace_to_constant(src, value_map, app.globals)
-            if const is None:
-                ok = False
-                break
-            field_values.append((field_name, const))
-
-        if not ok:
-            continue
-
-        # Create a new static global for this object. The initialiser is
-        # POSITIONAL (ir.Global emits `{ vtable, v1, v2, ... }`), so every
-        # field after `type` needs a value in declaration order — including
-        # the `$hash` slot excluded from the assignment check above, which
-        # zeroes exactly as a fresh allocation would.
-        consts = dict(field_values)
-        init_values = [
-            (name, ZeroOf(typ) if name == "$hash" else consts[name])
-            for name, typ in obj.fields.fields if name != "type"
-        ]
-        gname = f"$si${next(_si_counter)}"
-        new_globals.append(Global(
-            name=gname,
-            type=DataPointer(),
-            init=NewStruct(tuple(init_values)),
-            object_name=class_name
-        ))
-
-        # Replace NewObject with a load from the static global
-        replacements[new_idx] = Move(
-            target=fn.ops[new_idx].register,
-            source=GlobalVar(DataPointer(), gname)
-        )
-        # Mark field assignment ops for removal
-        for _, (assign_idx, _) in assigns.items():
-            ops_to_remove.add(assign_idx)
-
-    if not replacements:
+        known.update(emitter.names)
+        new_globals.extend(emitter.globals.values())
+        promoted[name] = value
+    if not promoted:
         return fn, []
-
-    new_ops = [
-        replacements[i] if i in replacements else op
-        for i, op in enumerate(fn.ops)
-        if i not in ops_to_remove
-    ]
-    return dataclasses.replace(fn, ops=tuple(new_ops)), new_globals
+    ops = []
+    for op in fn.ops:
+        if isinstance(op, NewObject) and isinstance(op.register, StackVar) and op.register.name in promoted:
+            ops.append(Move(op.register, promoted[op.register.name]))
+        elif (isinstance(op, Move) and isinstance(op.target, ObjectField)
+              and isinstance(op.target.pointer, StackVar) and op.target.pointer.name in promoted):
+            continue
+        else:
+            ops.append(op)
+    return dataclasses.replace(fn, ops=tuple(ops)), new_globals
 
 
 def promote_static_objects(app: Application) -> Application:
@@ -259,6 +127,18 @@ def _count_global_refs(app: Application) -> tuple[dict[str, int], dict[str, str]
             _add(g.lazy_init_flag)
 
     return counts, first_fn
+
+
+def _build_value_map(ops) -> dict[str, RParam]:
+    """Build a map from StackVar name to its source for singly-assigned vars."""
+    counts: dict[str, int] = {}
+    values: dict[str, RParam] = {}
+    for op in ops:
+        if isinstance(op, Move) and isinstance(op.target, StackVar):
+            n = op.target.name
+            counts[n] = counts.get(n, 0) + 1
+            values[n] = op.source
+    return {k: v for k, v in values.items() if counts[k] == 1}
 
 
 def _trace_to_global(val: RParam, value_map: dict[str, RParam]) -> str | None:
@@ -355,37 +235,40 @@ def inline_single_use_globals(app: Application) -> Application:
 
 
 def convert_static_objects_pass(app: Application) -> Application:
-    """One iteration of: promote NewObjects → inline single-use globals → trim."""
+    """One iteration of: promote constructions → settle globals whose
+    initialiser is now a constant → inline single-use globals → trim."""
     app = promote_static_objects(app)
+    app = ld.settle_globals(app)
     app = inline_single_use_globals(app)
     return lowering.trim.removed_unused_stuff(app)
 
 
-def _resolve_rparam_constants(val: RParam, globals: dict) -> RParam | None:
-    """Replace GlobalVar refs in val with traced Integer/String constants, or None if any fails."""
-    if isinstance(val, (Integer, String)):
-        return val
-    if isinstance(val, GlobalVar):
-        return _trace_to_constant(val, {}, globals)
-    if isinstance(val, NewStruct):
-        resolved = []
-        for name, v in val.values:
-            r = _resolve_rparam_constants(v, globals)
-            if r is None:
-                return None
-            resolved.append((name, r))
-        return NewStruct(tuple(resolved))
-    return None
+def _resolved_constants(val: RParam, machine: "ld.Machine", emitter: "ld.Emitter") -> RParam:
+    """`val` with each global it reads replaced by that global's constant
+    (literal discovery's reading of it); Stop when one has none."""
+    match val:
+        case GlobalVar():
+            return emitter.value(machine.global_value(val.name), val.type, True)
+        case NewStruct():
+            return NewStruct(tuple((n, _resolved_constants(v, machine, emitter)) for n, v in val.values))
+        case Integer() | String():
+            return val
+    raise ld.Stop(ld.OPAQUE)
 
 
 def resolve_flat_struct_global_inits(app: Application) -> Application:
-    """Resolve GlobalVar refs in flat-struct global inits to Integer/String constants."""
+    """Resolve GlobalVar refs in flat-struct global inits to their constants."""
+    machine = ld.Machine(app)
+    emitter = ld.Emitter(machine, [0], {})
     updated: dict[str, Global] = {}
     for name, g in app.globals.items():
         if g.object_name is not None or g.lazy_init_function or not isinstance(g.init, NewStruct):
             continue
-        resolved = _resolve_rparam_constants(g.init, app.globals)
-        if resolved is not None and resolved != g.init:
+        try:
+            resolved = _resolved_constants(g.init, machine, emitter)
+        except ld.Stop:
+            continue
+        if resolved != g.init:
             updated[name] = dataclasses.replace(g, init=resolved)
     if not updated:
         return app

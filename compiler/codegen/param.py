@@ -38,6 +38,9 @@ class InitArray(RParam): # Only for static initialisation of array types
     member_type: t.Type
     values: tuple[RParam, ...]
 
+    def get_type(self) -> t.Type:
+        return t.Array(self.member_type, len(self.values))
+
     def flatten(self, is_reader:bool=True) -> list[RParam]:
         return [self] + [p for param in self.values for p in param.flatten()]
 

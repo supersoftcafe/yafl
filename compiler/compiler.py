@@ -31,6 +31,7 @@ import lowering.lambda_lift
 import lowering.lambdas
 import lowering.lazy_thunks
 import lowering.eager_globals
+import lowering.literal_discovery
 import lowering.lower_lazy_lets
 import lowering.regexes
 import lowering.generics
@@ -265,8 +266,14 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
         # lets trim cascade and eliminate entire vtables and trait implementations.
         a = lowering.trim.removed_unused_stuff(lowering.deadstores.eliminate_dead_stores(a))
 
-        # Static init optimisation: promote NewObject with all-literal fields to static globals,
-        # then inline single-use static globals into their lazy-init targets.
+        # Literal discovery (#159), stage 1: a call whose arguments are
+        # literals is run and becomes the constructions of its value — after
+        # inlining, so the constants inlining carried into a body count.
+        a = lowering.trim.removed_unused_stuff(lowering.literal_discovery.fold_literal_calls(a))
+
+        # Stage 2, static init: a construction of literals becomes a static
+        # global, then single-use static globals fold into their lazy-init
+        # targets.
         for _ in range(4):
             a = lowering.staticinit.convert_static_objects_pass(a)
 

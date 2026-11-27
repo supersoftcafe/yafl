@@ -104,3 +104,25 @@ fun program(): System::Int
 
 fun [test("narrows to the non none member")] check(): None|TestFailure
     ret assertEqInt(program(), 6, "program()")
+
+
+namespace CompilerTests::Coalesce::OptionFallbackOfGenericCalls
+
+import System
+import System::Containers
+import System::Test
+
+# Both operands are generic calls, each `String|None` only once its type
+# arguments are bound: the match `??` becomes is the join of both, so the
+# coalesce must wait for the fallback's type as well as the subject's.
+fun pick(a: Dict<String, String>, b: Dict<String, String>, k: String): Int => match(get(a, k) ?? get(b, k))
+  (n: String) => length(n)
+  ()          => 0
+
+fun program(): Int
+  ret pick(put(Dict<String, String>(), "x", "abc"), Dict(), "x")
+    + pick(Dict(), put(Dict<String, String>(), "y", "zz"), "y") * 10
+    + pick(Dict(), Dict(), "z") * 100
+
+fun [test("an option fallback of generic calls, as a match subject")] check(): None|TestFailure
+    ret assertEqInt(program(), 23, "program()")

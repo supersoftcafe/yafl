@@ -1,0 +1,209 @@
+# A call whose arguments are all constants is run by the compiler, and its
+# value emitted as static data (lowering/literal_discovery.py). The program
+# must see exactly the value the call would have produced, and a call that
+# would abort must still abort only where it is reached.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::LiteralDiscovery::ArrayInFunction
+
+import System
+import System::Containers
+import System::Test
+
+fun has(c: Int32, a: Array<Int32>): Bool
+  ret size(a) > 0 && (a[0] == c || (size(a) > 1 && a[1] == c) || (size(a) > 2 && a[2] == c))
+
+fun isVowelish(c: Int32): Bool
+  ret has(c, arrayOf('a', 'e', 'i'))
+
+fun program(): Int
+  ret (isVowelish('e') ? 1 : 0) + (isVowelish('x') ? 10 : 0) + (isVowelish('i') ? 100 : 0)
+
+fun [test("a constant array read inside a function")] check(): None|TestFailure
+    ret assertEqInt(program(), 101, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::ArrayGlobal
+
+import System
+import System::Containers
+import System::Test
+
+let table: Array<Int32> = arrayOf('x', 'y')
+
+fun program(): Int
+  ret size(table) * 1000 + Int(table[0]) + Int(table[1])
+
+fun [test("a global holding a constant array")] check(): None|TestFailure
+    ret assertEqInt(program(), 2241, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::AppendToConstant
+
+import System
+import System::Containers
+import System::Test
+
+fun base(): Array<Int32>
+  ret arrayOf(1i32, 2i32)
+
+# The constant is shared by every call: appending copies it, so each result
+# keeps its own third element and the shared one keeps two.
+fun program(): Int
+  let a = append(base(), 3i32)
+  let b = append(base(), 4i32)
+  ret size(base()) * 100 + Int(a[2]) * 10 + Int(b[2])
+
+fun [test("appending to a constant array leaves it as it was")] check(): None|TestFailure
+    ret assertEqInt(program(), 234, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::StringElements
+
+import System
+import System::Containers
+import System::Test
+
+fun name(i: Int): String
+  ret arrayOf("one", "two", "three")[i]
+
+fun program(): Int
+  ret length(name(0) + name(1) + name(2))
+
+fun [test("a constant array of strings")] check(): None|TestFailure
+    ret assertEqInt(program(), 11, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::IntDivision
+
+import System
+import System::Test
+
+fun [inline(never)] third(x: Int): Int
+  ret x / 3
+
+fun [inline(never)] scaled(n: Int): Int
+  ret n * third(36) + third(-7)
+
+fun program(): Int
+  ret scaled(2)
+
+fun [test("Int division, truncating, computed by the compiler")] check(): None|TestFailure
+    ret assertEqInt(program(), 22, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::StringKeyedDict
+
+import System
+import System::Containers
+import System::Test
+
+fun colours(): Dict<String, String>
+  ret put(put(put(put(Dict<String, String>(), "red", "#f00"), "green", "#0f0"), "blue", "#00f"), "red", "#e00")
+
+fun found(k: String): String => get(colours(), k) ?? "-"
+
+fun program(): String
+  ret found("red") + found("green") + found("blue") + found("white")
+
+fun [test("a dict keyed by strings, built by the compiler")] check(): None|TestFailure
+    ret assertEqStr(program(), "#e00#0f0#00f-", "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::StringSet
+
+import System
+import System::Containers
+import System::Test
+
+fun names(): Set<String>
+  ret add(add(add(Set<String>(), "ada"), "a long name that is not inline"), "ada")
+
+fun program(): Int
+  let s = names()
+  ret (contains(s, "ada") ? 1 : 0) + (contains(s, "a long name that is not inline") ? 10 : 0)
+    + (contains(s, "bob") ? 100 : 0) + size(s) * 1000
+
+fun [test("a set of strings, built by the compiler")] check(): None|TestFailure
+    ret assertEqInt(program(), 2011, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::BigIntValue
+
+import System
+import System::Test
+
+fun [inline(never)] big(n: Int): Int
+  ret n * 100000000000000000000 + 7
+
+fun program(): Int
+  ret big(3) - 300000000000000000000
+
+fun [test("a constant call whose Int is beyond a machine word")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::AbortNotReached
+
+import System
+import System::Containers
+import System::Test
+
+fun [inline(never)] fifth(): Int32
+  ret arrayOf(1i32)[5]
+
+fun [inline(never)] pick(n: Int32): Int32
+  ret n > 100i32 ? fifth() : n
+
+fun program(): Int
+  ret Int(pick(7i32))
+
+fun [test("a constant call that would abort, on a branch not taken")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::Appends
+
+import System
+import System::Containers
+import System::Test
+
+fun total(l: List<Int32>): Int => fold(l, 0, (acc, x) => acc + Int(x))
+
+fun arr(): Array<Int32>
+  ret append(append(arrayOf(1i32), 2i32), 3i32)
+
+fun lst(): List<Int32>
+  ret append(append(append(List<Int32>(), 4i32), 5i32), 6i32)
+
+# The literals are shared by every call, and appending to them again must
+# still give each result its own last element.
+fun program(): Int
+  let a = append(arr(), 7i32)
+  let b = append(arr(), 8i32)
+  let l = append(lst(), 9i32)
+  let m = append(lst(), 10i32)
+  ret size(a) * 100000 + Int(a[3]) * 10000 + Int(b[3]) * 1000 + total(l) + total(m) * 0 + Int(arr()[2]) * 100
+
+fun [test("appends to literals, and appends to those")] check(): None|TestFailure
+    ret assertEqInt(program(), 478324, "program()")
+
+
+namespace CompilerTests::LiteralDiscovery::ListOfAppends
+
+import System
+import System::Containers
+import System::Test
+
+fun joined(l: List<String>): String => fold(l, "", (acc, x) => acc + x)
+
+# Each append links the last node of the list before it: the literal the
+# compiler writes must follow every link, not the nodes as they were first
+# built.
+fun program(): String
+  ret joined(append(append(append(append(List<String>(), "a"), "b"), "c"), "d"))
+
+fun [test("a list of four appends keeps all four")] check(): None|TestFailure
+    ret assertEqStr(program(), "abcd", "program()")

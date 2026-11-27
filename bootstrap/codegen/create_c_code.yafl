@@ -261,6 +261,11 @@ fun [tail] ccO2Fixpoint(a0: CgApp, round2, prev: CgApp|None,
 fun ccO1Block(a0: CgApp): CgApp
   ret timed("o1", "bounds_elim", () => eliminateProvableBoundsChecks(a0))
     |> (a1) => timed("o1", "deadstores.1", () => removedUnusedStuff(eliminateDeadStores(a1)))
+    # Literal discovery (#159), stage 1: a call whose arguments are literals
+    # is run and becomes the constructions of its value — after inlining, so
+    # the constants inlining carried into a body count. Stage 2 is the static
+    # rounds.
+    |> (a1b) => timed("o1", "literal_calls", () => removedUnusedStuff(foldLiteralCalls(a1b)))
     |> (a2) => timed("o1", "static_rounds", () => ccStaticRounds(a2, 0, 0))
     |> (a3) => timed("o1", "deadstores.2", () => removedUnusedStuff(eliminateDeadStores(a3)))
 

@@ -487,26 +487,36 @@ fun cgGlobalPrototypePlain(g: CgGlobal, cache0: List<CgCacheEntry>, storage: Str
   let declared = cgDeclare(g.globalType, cache0)
   ret (storage + declared.text + " " + cgGlobalToCName(g), declared.cache)
 
-fun cgGlobalPrototypeInitArrayField(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
-  let declared = cgDeclare(rpGetType(v.value), acc.cache)
-  ret (acc.text + "    " + declared.text + " " + v.name + ";\n", declared.cache)
+# An array instance: its own data type, the object's fields with the trailing
+# storage sized to the elements it holds. Declared once, with the prototype
+# (storage "extern "), so the definition and every `&<name>_data` read it the
+# same way.
+fun cgGlobalFieldDecl(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>) => match(v.value)
+  (ia: RpInitArray) =>
+    cgDeclare(ia.memberType, acc.cache)
+    |> (d) => (acc.text + "    struct { " + d.text + " a[" + String(fold(ia.values, 0, (n, x) => n + 1)) + "]; } "
+               + mangleName(v.name) + ";\n", d.cache)
+  (o: RParam) =>
+    cgDeclare(rpGetType(v.value), acc.cache)
+    |> (d) => (acc.text + "    " + d.text + " " + mangleName(v.name) + ";\n", d.cache)
 
 fun cgGlobalPrototypeInitArrayForm(g: CgGlobal, values: List<RpNamedValue>, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
-  let result = fold(values, ("", cache0), cgGlobalPrototypeInitArrayField)
-  ret (storage + "struct {\n" + result.text + "}[1] " + cgGlobalToCName(g), result.cache)
+  let cname = cgGlobalToCName(g)
+  let decls = cgGlobalInitArrayTypedef(cname, values, cache0, storage)
+  ret (decls.text + storage + cname + "_data_t " + cname + "_data;\n" + storage + "object_t* " + cname, decls.cache)
+
+fun cgGlobalInitArrayTypedef(cname: String, values: List<RpNamedValue>, cache0: List<CgCacheEntry>,
+                             storage: String): (text: String, cache: List<CgCacheEntry>)
+  if storage == ""
+    ret ("", cache0)
+  let fields = fold(values, ("", cache0), cgGlobalFieldDecl)
+  ret ("typedef struct {\n    object_t* type;\n" + fields.text + "} ALIGNED " + cname + "_data_t;\n", fields.cache)
 
 fun cgGlobalPrototypeDataForm(g: CgGlobal, objName, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
   ret (storage + mangleName(objName) + "_t " + cgGlobalToCName(g) + "_data;\n"
        + storage + "object_t* " + cgGlobalToCName(g), cache0)
 
-# Python: `isinstance(self.init.values[-1], p.InitArray)` — but `values[-1]`
-# is a (name, value) TUPLE, so the isinstance is ALWAYS False and the
-# InitArray prototype/implement forms are dead code (nothing in the compiler
-# constructs a Global with an InitArray value either — trim.py only ever
-# consumes them). Ported faithfully: always false. The dead branches are kept
-# below (cgGlobalPrototypeInitArrayForm / cgGlobalToCImplementInitArrayForm)
-# so the port stays line-mappable to the Python; flagged in the port report.
-fun cgGlobalPrototypeNewStructLastIsInitArray(lastVal: RpNamedValue) => false
+fun cgGlobalPrototypeNewStructLastIsInitArray(lastVal: RpNamedValue) => lastVal.value is RpInitArray
 
 fun cgGlobalPrototypeNewStruct(g: CgGlobal, objName, ns: RpNewStruct, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
   ret match(head(takeLastOne(ns.values)))
@@ -543,9 +553,10 @@ fun cgGlobalImplementValueLine(acc: (text: String, cache: List<CgCacheEntry>), v
   ret (acc.text + "  , " + sub.text + "\n", sub.cache)
 
 fun cgGlobalToCImplementInitArrayForm(g: CgGlobal, objName, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let proto = cgGlobalPrototype(g, cache0, "")
-  let result = fold(values, ("", proto.cache), (acc, v) => cgGlobalImplementValueLine(acc, v.value))
-  ret (proto.text + " = {\n    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n" + result.text + "};\n", result.cache)
+  let dataName = cgGlobalToCName(g) + "_data"
+  let result = fold(values, ("    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n", cache0), (acc, v) => cgGlobalImplementValueLine(acc, v.value))
+  ret (dataName + "_t " + dataName + " = {\n" + result.text + "};\n"
+       + "object_t* " + cgGlobalToCName(g) + " = (object_t*)&" + dataName + ";\n", result.cache)
 
 fun cgGlobalToCImplementDataForm(g: CgGlobal, objName, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let dataName = cgGlobalToCName(g) + "_data"

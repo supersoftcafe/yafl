@@ -11,6 +11,11 @@ object, so the compiler never gives a [pinnable] instance any other home:
   * a construction from constants is normally hoisted into one shared static
     (lowering/staticinit.py) — a [pinnable] one is built afresh each time,
     or every caller would share its write-once slots.
+
+One exception, and it is not a late write's target: a [pinnable] array FULL
+to its capacity (lowering/literal_discovery.py, `Emitter._full`). Its only
+late writes land in room past its length, and it has none, so nothing ever
+writes it; an append copies it.
 """
 from __future__ import annotations
 
@@ -28,8 +33,11 @@ fun main(): Int
   ret cell.value == 1i32 ? 0 : 1
 """
 
+# The argument comes from the command line: from a constant, the compiler
+# would run `first` itself (lowering/literal_discovery.py) and build nothing.
 _LOCAL = """namespace Test
 import System
+import System::Containers
 
 class [pinnable] Cell(value: Int32, next: Cell|None)
 
@@ -38,7 +46,7 @@ fun first(v: Int32): Int32
   ret c.value + 1i32
 
 fun main(): Int
-  ret first(41i32) == 42i32 ? 0 : 1
+  ret first(sizeAtLeast(args(), 2) ? 1i32 : 41i32) == 42i32 ? 0 : 1
 """
 
 _CONSTANT_CTOR = """namespace Test

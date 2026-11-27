@@ -1,10 +1,9 @@
-# bootstrap/staticinit.yafl — ported from lowering/staticinit.py, the -O0
-# half: resolve_flat_struct_global_inits replaces GlobalVar references inside
-# a flat-struct global's init (no object_name, no lazy init) with their
-# traced Integer/String constants, leaving the init untouched when any part
-# fails to trace. The O1+ halves (promote_static_objects with its $si$N
-# counter, inline_single_use_globals, convert_static_objects_pass) port with
-# the optimisation blocks — NOT PORTED YET, deliberately.
+# bootstrap/staticinit.yafl — ported from lowering/staticinit.py. Objects
+# built from constants become static globals (promote_static_objects), and a
+# flat-struct global's init has the globals it reads replaced by their
+# constants (resolve_flat_struct_global_inits). Both read constants, and
+# write statics, with literal discovery's interpreter and emitter
+# (literal_discovery.yafl): one model of what a constant is.
 namespace Bootstrap::Lower::Ir
 
 import System
@@ -12,6 +11,7 @@ import System::Containers
 
 import Bootstrap::Ast
 
+import Bootstrap::Codegen
 import Bootstrap::Ir
 import Bootstrap::Parse
 import Bootstrap::StdlibCandidates
@@ -27,310 +27,83 @@ fun siResolveGlobal(g2, a: CgApp)
     ret g2
   ret match(g2.globalInit)
     (init: RParam) => match(init)
-      (ns: RpNewStruct) => siResolvedGlobal(g2, siResolveConstants(init, a))
-      (o: RParam)        => g2
+      (ns: RpNewStruct) => match(siResolvedConstants(init, a))
+        (r: RParam)  => CgGlobal(g2.globalName, g2.globalType, r, g2.globalObjectName,
+                                 g2.globalLazyInitFunction, g2.globalLazyInitFlag)
+        (e: LdFail)  => g2
+      (o: RParam)       => g2
     ()              => g2
 
-fun siResolvedGlobal(g2, resolved: RParam|None) => match(resolved)
-  (r: RParam) => CgGlobal(g2.globalName, g2.globalType, r, g2.globalObjectName,
-                          g2.globalLazyInitFunction, g2.globalLazyInitFlag)
-  ()           => g2
-
-# _resolve_rparam_constants: Integer/String pass through; a GlobalVar traces
-# to its constant; a NewStruct resolves field-wise (all or nothing).
-fun siResolveConstants(val, a: CgApp) => match(val)
-  (i: RpInteger)   => val
-  (s2: RpString)   => val
-  (gv: RpGlobalVar) => siTraceToConstant(val, FunValues(Dict()), a)
-  (ns: RpNewStruct) => siResolveStruct(ns, a)
-  (o: RParam)       => None
-
-fun siResolveStruct(ns: RpNewStruct, a: CgApp)
-  let resolved = fold(ns.values, SiVals(List(), true), (acc, nv) => siResolveField(acc, nv, a))
-  ret resolved.svOk ? RpNewStruct(resolved.svVals) : None
-
-class [final] SiVals(svVals: List<RpNamedValue>, svOk: Bool)
-
-fun siResolveField(acc, nv: RpNamedValue, a: CgApp)
-  if !acc.svOk
-    ret acc
-  ret match(siResolveConstants(nv.value, a))
-    # Struct fields, in field order.
-    (r: RParam) => SiVals(append(acc.svVals, RpNamedValue(nv.name, r)), true)
-    ()           => SiVals(acc.svVals, false)
-
-# _trace_to_constant (the subset the -O0 path exercises: no function-local
-# value map — resolve_flat_struct passes an empty one). Integer/String/ZeroOf
-# are constants; a NewStruct is constant when every field is (rebuilt from
-# the traced constants); a GlobalVar reads a non-lazy, non-object global's
-# Integer/String init; a StackVar dead-ends without a value map.
-fun [tail] siTraceToConstant(val, vmap: FunValues, a: CgApp) => match(val)
+# `val` with each global it reads replaced by that global's constant (literal
+# discovery's reading of it).
+fun siResolvedConstants(val: RParam, a: CgApp): RParam|LdFail => match(val)
+  (gv: RpGlobalVar) => ldGlobalValue(a, gv.name) ?> (v: LdVal) =>
+    ldEmit(a, ldStEmpty(), ldEmNew(Dict(), 0, ldStaticPrefix(), Dict()), v, gv.fieldType, true)
+      ?> (out: LdEmitted) => out.edRp
+  (ns: RpNewStruct) => fold<RpNamedValue, List<RpNamedValue>|LdFail>(ns.values, List<RpNamedValue>(),
+                            (acc: List<RpNamedValue>|LdFail, nv) => acc ?> (got: List<RpNamedValue>) =>
+                              siResolvedConstants(nv.value, a) ?> (r: RParam) => append(got, RpNamedValue(nv.name, r)))
+    ?> (vs: List<RpNamedValue>) => RpNewStruct(vs)
   (i: RpInteger)    => val
   (s2: RpString)    => val
-  (z: RpZeroOf)     => val
-  (ns: RpNewStruct) => siTraceStruct(ns, vmap, a)
-  (sv: RpStackVar)  => match(gfFvLookup(vmap, sv.name))
-    (src: RParam) => siTraceToConstant(src, vmap, a)
-    ()             => None
-  (gv: RpGlobalVar) => siTraceGlobal(gv, a)
-  (sf: RpStructField) => siTraceField(sf, vmap, a)
-  (o: RParam)       => None
+  (o: RParam)       => LdFail(ldOpaque())
 
-fun siTraceStruct(ns: RpNewStruct, vmap: FunValues, a: CgApp)
-  let out = fold(ns.values, SiVals(List(), true),
-                 (acc, nv) => siTraceStructField(acc, nv, vmap, a))
-  ret out.svOk ? RpNewStruct(out.svVals) : None
-
-fun siTraceStructField(acc, nv: RpNamedValue, vmap: FunValues, a: CgApp)
-  if !acc.svOk
-    ret acc
-  ret match(siTraceToConstant(nv.value, vmap, a))
-    # Struct fields, in field order.
-    (r: RParam) => SiVals(append(acc.svVals, RpNamedValue(nv.name, r)), true)
-    ()           => SiVals(acc.svVals, false)
-
-# Object-typed globals can't be C static initialiser values; lazy globals
-# have no compile-time value at all.
-fun siTraceGlobal(gv: RpGlobalVar, a: CgApp) => match(appGlobal(a, gv.name))
-  (g2: CgGlobal) => !isNoneStr(g2.globalLazyInitFunction) || !isNoneStr(g2.globalObjectName)
-    ? None
-    : siConstInit(g2.globalInit)
-  ()              => None
-
-fun siConstInit(init: RParam|None) => match(init)
-  (r: RParam) => match(r)
-    (i: RpInteger) => r
-    (s2: RpString) => r
-    (o: RParam)     => None
-  ()           => None
-
-fun siTraceField(sf: RpStructField, vmap: FunValues, a: CgApp)
-  ret match(siTraceToConstant(sf.structVal, vmap, a))
-    (ns: RpNewStruct) => match(gfNamedValue(ns.values, sf.field))
-      (fv: RParam) => siTraceToConstant(fv, vmap, a)
-      ()            => None
-    ()                => None
 # ── the -O1 half (promote_static_objects + inline_single_use_globals +
-# convert_static_objects_pass, staticinit.py:74-343) ─────────────────────────
+# convert_static_objects_pass) ────────────────────────────────────────────────
 #
-# PYTHON QUIRK MIRRORED: `_si_counter` is a module-level itertools.count, so
-# $si$N numbering is GLOBAL across all functions and all four pass rounds,
-# starting at 0 per compile. The port threads the counter explicitly.
-
-# One NewObject candidate: op index, class name, register name.
-class [final] SiNewObj(snIdx: Int, snClass: String, snReg: String)
-# One field store: register, field, op index, source. Python dict semantics:
-# a repeated store to the same (reg, field) keeps the LAST (idx, src).
-class [final] SiAssign(saReg: String, saField: String, saIdx: Int,
-                       saSrc: RParam)
-
-fun siNewObjPositions(ops: Array<Op>, a: CgApp) => siNopLoop(ops, a, 0, List())
-
-fun [tail] siNopLoop(s: Array<Op>, a: CgApp, i: Int,
-                     acc: List<SiNewObj>): List<SiNewObj>
-  ret !sizeAtMost(s, i) ? siNopLoop(s, a, i + 1, siNopOne(acc, a, s[i], i)) : acc
-
-# In op order: the promotion walk follows it, and the globals it yields are
-# emitted in that order.
-fun siNopOne(acc, a: CgApp, op, i): List<SiNewObj> => match(op)
-  # A pinned object is filled in after allocation: never a static. Nor is a
-  # [pinnable] one, whose write-once slots every caller would then share, and
-  # the late write assumes a heap object (staticinit.py).
-  (no: OpNewObject) => no.newObjSize is None && !no.newObjPinned && !siPinnable(a, no.newObjName)
-    ? match(no.newObjRegister)
-      (sv: RpStackVar) => append(acc, SiNewObj(i, no.newObjName, sv.name))
-      (o: RParam)      => acc
-    : acc
-  (o: Op)           => acc
-
-fun siPinnable(a: CgApp, name: String) => match(appObject(a, name))
-  (o: CgObject) => o.objIsPinnable
-  ()            => false
-
-fun siFieldAssigns(ops: Array<Op>, news: List<SiNewObj>)
-  let regIx = fold(news, Dict(),
-                   (ix, n) =>
-                     put(ix, n.snReg, true))
-  ret siFaLoop(ops, 0, regIx, List())
-
-fun [tail] siFaLoop(s: Array<Op>, i: Int,
-                    regIx: Dict<String, Bool>,
-                    acc: List<SiAssign>): List<SiAssign>
-  ret !sizeAtMost(s, i) ? siFaLoop(s, i + 1, regIx, siFaOne(acc, s[i], i, regIx)) : acc
-
-fun siFaOne(acc: List<SiAssign>, op: Op, i: Int,
-            regIx: Dict<String, Bool>): List<SiAssign> => match(op)
-  (m: OpMove) => match(m.moveTarget)
-    (of: RpObjectField) => of.index is None
-      ? siFaStore(acc, of, m.moveSource, i, regIx)
-      : acc
-    (o: RParam)         => acc
-  (o: Op)     => acc
-
-fun siFaStore(acc: List<SiAssign>, of: RpObjectField, src: RParam, i: Int,
-              regIx: Dict<String, Bool>): List<SiAssign> => match(of.pointer)
-  (sv: RpStackVar) => !(get(regIx, sv.name) is None)
-    ? siFaPut(acc, sv.name, of.field, i, src)
-    : acc
-  (o: RParam)      => acc
-
-# Last store wins (Python dict assignment).
-fun siFaPut(acc: List<SiAssign>, reg: String, field: String, i: Int,
-            src: RParam): List<SiAssign> =>
-  any(acc, (a2) => a2.saReg == reg && a2.saField == field)
-  ? map(acc, (a2) => a2.saReg == reg && a2.saField == field
-               ? SiAssign(reg, field, i, src)
-               : a2)
-  : append(acc, SiAssign(reg, field, i, src))
-
-fun siAssignsFor(assigns: List<SiAssign>, reg): List<SiAssign>
-  ret filter(assigns, (a2) => a2.saReg == reg)
-
-fun siAssignFor(as2: List<SiAssign>, field: String) => firstWhere(as2, (x) => x.saField == field)
-
-# `$hash` is the hidden Int32 cache every BOXED ENUM LEAF carries directly
-# after the vtable (types.py EnumStatement.global_codegen's prefix). Nothing
-# ever ASSIGNS it — the allocator zero-fills it and yafl_hash_store writes it
-# lazily — so counting it among the fields that must be assigned made the
-# sameLen test below fail for EVERY enum leaf, silently disabling this pass
-# across all enums: a whole-compiler self-emit produced ONE $si$ global, and
-# `ChainEnd()` — a no-field terminator that should be one shared static — was
-# allocated fresh at every use (~984k live instances, 48 MiB, in a
-# self-compile). It still needs a VALUE in the emitted initialiser, which is
-# positional, so siInitValues re-inserts it as RpZeroOf in declaration order.
-#
-# The class's data payload, or None when it isn't promotable (absent class,
-# or an array — Python obj.array_type: the LAST field is an Array).
-fun siPayload(a: CgApp, className: String) => match(appObject(a, className))
-  (obj: CgObject) => siHasArray(cgFieldsOfOrEmpty(obj.objFields))
-    ? None
-    : filter(cgFieldsOfOrEmpty(obj.objFields),
-             (fld) => fld.fieldName != "type"
-                            && fld.fieldName != "$hash")
-  ()              => None
-
-fun siHasArray(fields: List<CgField>) => match(head(takeLastOne(fields)))
-  (fld: CgField) => fld.fieldType is CgArray
-  ()             => false
+# PYTHON QUIRK MIRRORED: `_si_counter` is module-level, so $si$N numbering is
+# GLOBAL across all functions and all four pass rounds, starting at 0 per
+# compile. The port threads the counter explicitly.
 
 # ── one function's promotions ───────────────────────────────────────────────
+#
+# Stage 2 of literal discovery (literal_discovery.yafl): each construction
+# whose value is a literal becomes a static global, and the construction a
+# load of it. The constructions are literal discovery's — an unpinned
+# NewObject whose stores are all fresh initialisation stores, every one
+# constant, other constructions included — so a whole graph goes static,
+# children first, in op order. Its emitter writes the statics: never a pinned
+# object, never a [pinnable] one a late write could still fill (an array is
+# trimmed to its length first, as compaction would).
 
-class [final] SiPromo(spNewIdx: Int, spMove: Op, spDrop: List<Int>,
-                      spGlobal: CgGlobal)
+
+class [final] SiPromoAcc(saKnown: Dict<Int, String>, saCounter: Int, saGlobals: List<CgGlobal>,
+                    saPromoted: Dict<String, RParam>)
 
 fun siPromoteOne(f: CgFunction, a: CgApp,
                  counter: Int): (fn: CgFunction, globals: List<CgGlobal>, counter: Int)
-  let news = siNewObjPositions(f.fnOps, a)
-  if isEmpty(news)
+  let made = ldConstsOf(a, ldStEmpty(), f.fnOps)
+  let conses = ldConstructions(f.fnOps, ldOnce(f.fnOps))
+  let out = fold(conses, SiPromoAcc(Dict(), counter, List(), Dict()), (acc, cons) => match(get(made.coConsts.lcValues, cons.cnName))
+    (v: LdVal) => siPromoteValue(a, made.coSt, acc, cons.cnName, v)
+    ()         => acc)
+  if isEmpty(out.saPromoted)
     ret (f, List(), counter)
-  let assigns = siFieldAssigns(f.fnOps, news)
-  let vmap = gfFunValueMap(f)
-  let out = siPromoLoop(news, f, a, assigns, vmap, counter,
-                        List())
-  if isEmpty(out.promos)
-    ret (f, List(), counter)
-  ret (cgFunctionWith(f, siRebuildOps(f.fnOps, out.promos), f.fnStackVars),
-       map(out.promos, (p2) => p2.spGlobal),
-       out.counter)
+  let ops = fold(f.fnOps, Array<Op>(), (arr, op) => siPromotedOp(arr, op, out.saPromoted))
+  ret (cgFunctionWith(f, ops, f.fnStackVars), out.saGlobals, out.saCounter)
 
-# The global-name counter travels in the accumulator beside the promotions.
-fun siPromoLoop(ns: List<SiNewObj>, f: CgFunction, a: CgApp,
-                assigns: List<SiAssign>, vmap: FunValues,
-                counter,
-                acc: List<SiPromo>): (promos: List<SiPromo>, counter: Int) =>
-  fold(ns, (promos = acc, counter = counter),
-       (st, n) => siPromoTry(n, f, a, assigns, vmap, st.counter)
-         |> (t2) => (promos = appendSome(st.promos, t2.promo), counter = t2.counter))
+fun siPromoteValue(a: CgApp, st: LdSt, acc: SiPromoAcc, name: String, v: LdVal): SiPromoAcc
+  ret match(ldEmit(a, st, ldEmNew(acc.saKnown, acc.saCounter, "$si$", Dict()), v, CgDataPointer(false), false))
+    (out: LdEmitted) => SiPromoAcc(fold(keys(out.edEm.emNames), acc.saKnown,
+                                   (d, k) => put(d, k, get(out.edEm.emNames, k) ?? "")),
+                              out.edEm.emCounter,
+                              concat(acc.saGlobals, out.edEm.emGlobals),
+                              put(acc.saPromoted, name, out.edRp))
+    (e: LdFail)      => acc
 
-fun siPromoTry(cand: SiNewObj, f: CgFunction, a: CgApp,
-               assigns: List<SiAssign>, vmap: FunValues,
-               counter): (promo: SiPromo|None, counter: Int) => match(siPayload(a, cand.snClass))
-  (dataFields: List<CgField>) =>
-    siAssignsFor(assigns, cand.snReg)
-    |> (own) => !sameLen(own, dataFields)
-      ? (None, counter)
-      : siPromoCommit(cand, dataFields, own, vmap, a, counter)
-  ()                          => (None, counter)
+fun siPromotedOp(arr: Array<Op>, op: Op, promoted: Dict<String, RParam>): Array<Op> => match(op)
+  (no: OpNewObject) => match(no.newObjRegister)
+    (sv: RpStackVar) => match(get(promoted, sv.name))
+      (rp: RParam) => push(arr, OpMove(no.newObjRegister, rp, false, Dict()))
+      ()           => push(arr, op)
+    (o: RParam)      => push(arr, op)
+  (m: OpMove)       => match(m.moveTarget)
+    (of: RpObjectField) => match(of.pointer)
+      (sv: RpStackVar) => contains(promoted, sv.name) ? arr : push(arr, op)
+      (o: RParam)      => push(arr, op)
+    (o: RParam)         => push(arr, op)
+  (o: Op)           => push(arr, op)
 
-fun siPromoCommit(cand: SiNewObj, dataFields: List<CgField>,
-                  own: List<SiAssign>, vmap: FunValues, a: CgApp,
-                  counter): (promo: SiPromo|None, counter: Int)
-  ret match(siTracedFields(dataFields, own, vmap, a,
-                           List()))
-    (values: List<RpNamedValue>) =>
-      ("$si$" + String(counter))
-      |> (gname) => (SiPromo(cand.snIdx,
-                             OpMove(RpStackVar(CgDataPointer(false), cand.snReg),
-                                    RpGlobalVar(CgDataPointer(false), gname),
-                                    false, Dict()),
-                             map(own, (a2) => a2.saIdx),
-                             CgGlobal(gname, CgDataPointer(false),
-                                      RpNewStruct(siInitValues(a, cand.snClass,
-                                                               values)),
-                                      cand.snClass, None, None)),
-                     counter + 1)
-    ()                           => (None, counter)
-
-# Traced values, back in DECLARATION order with `$hash` re-inserted as zero:
-# ir.Global emits `{ vtable, v1, v2, ... }` positionally, so a field skipped
-# by siPayload would otherwise shift every field after it.
-fun siInitValues(a: CgApp, className: String,
-                 traced) => match(appObject(a, className))
-  (obj: CgObject) =>
-    fold(filter(cgFieldsOfOrEmpty(obj.objFields),
-                (fld) => fld.fieldName != "type"),
-         List(),
-         # In the object's own FIELD order — this is the static initialiser.
-         (acc, fld) =>
-           append(acc, fld.fieldName == "$hash"
-                 ? RpNamedValue(fld.fieldName, RpZeroOf(fld.fieldType))
-                 : RpNamedValue(fld.fieldName,
-                                siTracedValue(traced, fld.fieldName))))
-  ()              => traced
-
-fun siTracedValue(vs: List<RpNamedValue>, field: String) => match(firstWhere(vs, (v) => v.name == field))
-  (v: RpNamedValue) => v.value
-  ()                => RpZeroOf(CgInt(32))   # unreachable: siPayload order
-
-# Trace each field IN dataFields ORDER to a compile-time constant.
-# A field with no constant store ends the walk with None.
-fun siTracedFields(fs: List<CgField>, own: List<SiAssign>,
-                   vmap: FunValues, a: CgApp,
-                   acc: List<RpNamedValue>) =>
-  foldWhile<CgField, List<RpNamedValue>|None>(fs, acc,
-    (got, fld) => siTracedField(got, fld, own, vmap, a),
-    (got) => got !is None)
-
-fun siTracedField(got: List<RpNamedValue>|None, fld: CgField, own: List<SiAssign>,
-                  vmap: FunValues, a: CgApp): List<RpNamedValue>|None => match(got)
-  (acc: List<RpNamedValue>) => siTracedFieldInto(acc, fld, own, vmap, a)
-  ()                        => None
-
-fun siTracedFieldInto(acc: List<RpNamedValue>, fld: CgField, own: List<SiAssign>,
-                      vmap: FunValues, a: CgApp): List<RpNamedValue>|None => match(siAssignFor(own, fld.fieldName))
-  (as2: SiAssign) => match(siTraceToConstant(as2.saSrc, vmap, a))
-    (const: RParam) => append(acc, RpNamedValue(fld.fieldName, const))
-    ()              => None
-  ()              => None
-
-fun siRebuildOps(ops: Array<Op>, promos: List<SiPromo>)
-  let drops = fold(promos, List(),
-                   (acc, p2) => concat(acc, p2.spDrop))
-  ret siRebuildLoopB(ops, 0, promos, drops, Array<Op>())
-
-fun [tail] siRebuildLoopB(s: Array<Op>, i: Int, promos: List<SiPromo>,
-                         drops: List<Int>, acc: Array<Op>): Array<Op>
-  ret !sizeAtMost(s, i)
-    ? siRebuildLoopB(s, i + 1, promos, drops,
-        contains3(drops, i) ? acc : push(acc, siMaybeReplace(s[i], i, promos)))
-    : acc
-
-fun siMaybeReplace(op, i: Int, promos: List<SiPromo>)
-  ret match(head(filter(promos, (p2) => p2.spNewIdx == i)))
-    (p2: SiPromo) => p2.spMove
-    ()            => op
-
-fun contains3(l: List<Int>, x: Int) => any(l, (v) => v == x)
 
 # Python merge order: globals = {**all_new_globals, **app.globals} — the NEW
 # globals come FIRST in iteration order, then the old (order matters for
@@ -533,6 +306,8 @@ fun siLazyTargetAdd(acc: Dict<String, CgGlobal>,
   ()           => acc
 
 # One iteration of: promote NewObjects → inline single-use globals → trim.
+# One iteration of: promote constructions → settle globals whose initialiser
+# is now a constant → inline single-use globals → trim.
 fun convertStaticObjectsPass(a: CgApp, counter): (app: CgApp, counter: Int)
   let p2 = siPromoteStaticObjects(a, counter)
-  ret (removedUnusedStuff(siInlineSingleUseGlobals(p2.app)), p2.counter)
+  ret (removedUnusedStuff(siInlineSingleUseGlobals(settleGlobals(p2.app))), p2.counter)

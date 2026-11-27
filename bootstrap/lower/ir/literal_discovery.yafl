@@ -1,0 +1,1516 @@
+# bootstrap/lower/ir/literal_discovery.yafl — literal discovery (#159), ported
+# from lowering/literal_discovery.py (see its docstring for the whole argument).
+#
+# Given a LITERAL — an object the function builds from constants — and one
+# operation on it (an append, a put), the result is again a literal:
+#
+#   * stage 1 (foldLiteralCalls, after inlining): a call whose arguments are
+#     literals is run by a small interpreter over the IR, and its value written
+#     back as plain constructions — a literal for the next call to consume;
+#   * stage 2 (staticinit.yafl, settleGlobals here): a construction of
+#     literals becomes a static global; a lazy global whose initialiser is now
+#     a constant is that constant.
+#
+# A call that aborts, has an effect, runs out of budget, reaches an operation
+# the interpreter does not model, or makes too much data stays where it is:
+# nothing is run ahead of where the program runs it.
+#
+# The interpreter is pure: the objects a run builds live in a heap threaded
+# through it (LdSt), and a stop carries that state out, so what a failed run
+# did on the way stays done — as the Python machine's does.
+namespace Bootstrap::Lower::Ir
+
+import System
+import System::Containers
+
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::StdlibCandidates
+
+
+
+fun ldStepLimit() => 10000
+fun ldDepthLimit() => 200
+fun ldDataLimit() => 65536
+
+fun ldStaticPrefix() => "$literal$"
+
+# ── why a run stopped ────────────────────────────────────────────────────────
+
+fun ldAbort() => "abort"
+fun ldEffect() => "effect"
+fun ldBudget() => "budget"
+fun ldShared() => "shared"
+fun ldOpaque() => "opaque"
+fun ldLarge() => "large"
+
+
+# ── values ───────────────────────────────────────────────────────────────────
+
+enum LdVal
+  enum LdInt(liV: Int)
+  enum LdNull()
+  enum LdNone()                                     # a ReturnVoid's "value"
+  enum LdRef(lrName: String)                        # an existing static object
+  enum LdObj(loId: Int)                             # an object the run built
+  enum LdFun(lfName: String|None, lfEnv: LdVal)     # a closure
+  enum LdCode(lcName: String|None)                  # a closure's code word
+  # A constant it cannot look inside, and the global that holds it, if one
+  # does: a bigint or string literal is static data in an initialiser but a
+  # compound literal — stack storage — in code, so code reads it from a global.
+  enum LdAtom(laRp: RParam, laHome: String|None)
+  enum LdStruct(lsNames: List<String>, lsVals: Dict<String, LdVal>)
+
+# An object the run built. Frozen once part of a finished value.
+class [final] LdHeapObj(hoCls: String, hoFields: Dict<String, LdVal>, hoArray: Bool,
+                        hoItems: Dict<Int, LdVal>, hoLen: Int, hoPinned: Bool, hoFrozen: Bool)
+
+class [final] LdSt(stHeap: Dict<Int, LdHeapObj>, stNext: Int, stSteps: Int,
+                   stSettled: Dict<String, LdVal>, stSettling: StrSet, stUnsettled: StrSet,
+                   stWritten: Set<Int>)      # the objects this run has written
+
+class [final] LdFail(lfWhy: String)
+class [final] LdOk(okSt: LdSt, okV: LdVal)
+class [final] LdStop(lsWhy: String, lsSt: LdSt)
+class [final] LdNext(nxFrame: LdFrame, nxSt: LdSt)
+class [final] LdTarget(tgName: String, tgThis: LdVal)
+
+fun ldStEmpty() => LdSt(Dict(), 0, 0, Dict(), setEmpty(), setEmpty(), Set())
+
+fun ldStructGet(s2: LdStruct, n: String): LdVal|LdFail => match(get(s2.lsVals, n))
+  (v: LdVal) => v
+  ()         => LdFail(ldOpaque())
+
+fun ldStructValues(s2: LdStruct): List<LdVal> =>
+  map(s2.lsNames, (n) => get(s2.lsVals, n) ?? LdNone())
+
+fun ldPow2(bits: Int): Int => 1 << bits
+
+# The value mod 2^bits, as a non-negative number.
+fun ldUnsigned(v: Int, bits: Int): Int
+  let m = ldPow2(bits)
+  let r = v % m
+  ret r < 0 ? r + m : r
+
+fun ldWrap(v: Int, bits: Int): Int
+  let u = ldUnsigned(v, bits)
+  ret u >= ldPow2(bits - 1) ? u - ldPow2(bits) : u
+
+fun ldZero(ty: CgType): LdVal => match(ty)
+  (i: CgInt)             => LdInt(0)
+  (p: CgIntPtr)          => LdInt(0)
+  (d: CgDataPointer)     => LdNull()
+  (f: CgFuncPointer)     => LdFun(None, LdNull())
+  (s2: CgStruct)         => ldZeroStruct(s2.fields)
+  (s2: CgImmediateStruct) => ldZeroStruct(s2.fields)
+  (o: CgType)            => LdAtom(RpZeroOf(ty), None)
+
+fun ldZeroStruct(fs: List<CgField>): LdVal =>
+  LdStruct(map(fs, (f) => f.fieldName),
+           fold(fs, Dict(), (d, f) => put(d, f.fieldName, ldZero(f.fieldType))))
+
+# ── runtime operations the interpreter models ────────────────────────────────
+
+fun ldIntBits(name: String): Int|None
+  ret startsWith(name, "int8_") ? 8
+    : startsWith(name, "int16_") ? 16
+    : startsWith(name, "int32_") ? 32
+    : startsWith(name, "int64_") ? 64
+    : None
+
+fun ldIsIntOp(op: String): Bool => op == "add" || op == "sub" || op == "mul" || op == "neg" || op == "inv"
+  || op == "and" || op == "or" || op == "xor" || op == "andnot" || op == "shl" || op == "shr"
+  || op == "div" || op == "rem" || op == "test_lt" || op == "test_eq" || op == "test_gt" || op == "max"
+
+fun ldConvSource(rest: String): Int|None
+  ret rest == "from_int8" ? 8
+    : rest == "from_int16" ? 16
+    : rest == "from_int32" ? 32
+    : rest == "from_int64" ? 64
+    : None
+
+fun ldInts(args: List<LdVal>): List<Int>|None => mapAll(args, (a) => match(a)
+  (i: LdInt)  => i.liV
+  (o: LdVal)  => None)
+
+# C's truncating division of `a` by `b`, `b` neither 0 nor -1.
+fun ldTruncDiv(a: Int, b: Int): Int
+  let q = (a < 0 ? -a : a) / (b < 0 ? -b : b)
+  ret (a < 0) == (b < 0) ? q : -q
+
+fun ldIntOp(bits: Int, op: String, args: List<LdVal>): LdVal|LdFail => match(ldInts(args))
+  (xs: List<Int>) => ldIntOpOn(bits, op, head(xs) ?? 0, head(dropOne(xs)) ?? 0)
+  ()              => LdFail(ldOpaque())
+
+fun ldBitwise(bits: Int, a: Int, b: Int, op: String): Int
+  let ua = ldUnsigned(a, bits)
+  let ub = ldUnsigned(b, bits)
+  let all = ldPow2(bits) - 1
+  ret op == "and" ? ua & ub
+    : op == "or" ? ua | ub
+    : op == "xor" ? ua ^ ub
+    : op == "andnot" ? ua & (all - ub)
+    : all - ua                                     # inv
+
+# Arithmetic shift right: the floor of a / 2^n.
+fun ldShr(a: Int, n: Int): Int => a >= 0 ? a >> n : -((-a - 1) >> n) - 1
+
+fun ldIntOpOn(bits: Int, op: String, a: Int, b: Int): LdVal|LdFail
+  let sh = ldUnsigned(b, bits) & (bits - 1)
+  if op == "div" || op == "rem"
+    ret b == 0 ? LdFail(ldAbort())                 # a trap in C
+      : b == -1 ? LdInt(op == "div" ? ldWrap(-a, bits) : 0)
+      : LdInt(op == "div" ? ldWrap(ldTruncDiv(a, b), bits)
+                          : ldWrap(a - ldTruncDiv(a, b) * b, bits))
+  ret op == "add" ? LdInt(ldWrap(a + b, bits))
+    : op == "sub" ? LdInt(ldWrap(a - b, bits))
+    : op == "mul" ? LdInt(ldWrap(a * b, bits))
+    : op == "neg" ? LdInt(ldWrap(-a, bits))
+    : op == "inv" || op == "and" || op == "or" || op == "xor" || op == "andnot"
+      ? LdInt(ldWrap(ldBitwise(bits, a, b, op), bits))
+    : op == "shl" ? LdInt(ldWrap(ldUnsigned(a, bits) << sh, bits))
+    : op == "shr" ? LdInt(ldShr(a, sh))
+    : op == "test_lt" ? LdInt(a < b ? 1 : 0)
+    : op == "test_eq" ? LdInt(a == b ? 1 : 0)
+    : op == "test_gt" ? LdInt(a > b ? 1 : 0)
+    : op == "max" ? LdInt(a > b ? a : b)
+    : LdFail(ldOpaque())
+
+# ── Int (bigint): exact add, sub, mul and compare; the rest is not modelled ──
+
+fun ldBig(v: LdVal): Int|None => match(v)
+  (x: LdAtom) => match(x.laRp)
+    (i: RpInteger) => i.precision == 0 ? i.value : None
+    (o: RParam)    => None
+  (o: LdVal)  => None
+
+fun ldBigAtom(v: Int): LdVal => LdAtom(RpInteger(v, 0), None)
+
+fun ldBigOp(op: String, args: List<LdVal>): LdVal|LdFail
+  let xs = mapAll(args, ldBig)
+  ret match(xs)
+    (ns: List<Int>) => sizeAtLeast(ns, 2) && sizeAtMost(ns, 2)
+      ? ldBigOn(op, head(ns) ?? 0, head(dropOne(ns)) ?? 0)
+      : LdFail(ldOpaque())
+    ()              => LdFail(ldOpaque())
+
+# As yafllib's integer.c: division truncates, and by zero aborts.
+fun ldBigOn(op: String, a: Int, b: Int): LdVal|LdFail
+  if op == "div" || op == "rem"
+    ret b == 0 ? LdFail(ldAbort())
+      : op == "div" ? ldBigAtom(ldTruncDiv(a, b))
+      : ldBigAtom(a - ldTruncDiv(a, b) * b)
+  ret op == "add" ? ldBigAtom(a + b)
+    : op == "sub" ? ldBigAtom(a - b)
+    : op == "mul" ? ldBigAtom(a * b)
+    : op == "test_lt" ? LdInt(a < b ? 1 : 0)
+    : op == "test_le" ? LdInt(a <= b ? 1 : 0)
+    : op == "test_eq" ? LdInt(a == b ? 1 : 0)
+    : op == "test_ge" ? LdInt(a >= b ? 1 : 0)
+    : op == "test_gt" ? LdInt(a > b ? 1 : 0)
+    : LdFail(ldOpaque())
+
+fun ldIsBigOp(op: String): Bool => op == "add" || op == "sub" || op == "mul" || op == "div" || op == "rem" || op == "test_lt"
+  || op == "test_le" || op == "test_eq" || op == "test_ge" || op == "test_gt"
+
+# ── String: yafllib's str_hash and str_eq ────────────────────────────────────
+# The UTF-8 bytes, 8 per multiply, the length mixed in, 31 bits, never 0. A
+# string of up to 15 bytes is an INLINE value, hashed as its two zero-padded
+# words; a longer one in 8-byte words, the last one partial. 64-bit unsigned
+# arithmetic, as masked Ints.
+
+fun ldM64() => (1 << 64) - 1
+
+fun ldStrMix(h: Int, w: Int): Int
+  let m = ((h ^ w) * 11400714819323198485) & ldM64()
+  ret m ^ (m >> 32)
+
+# The little-endian word of `s`'s bytes [at, at + 8), zero past its end.
+fun [tail] ldStrWord(s: String, n: Int, at: Int, k: Int, acc: Int): Int => k >= 8
+  ? acc
+  : ldStrWord(s, n, at, k + 1, at + k < n ? (acc | ((Int(byteAt(s, at + k)) & 255) << (8 * k))) : acc)
+
+fun [tail] ldStrWords(s: String, n: Int, at: Int, h: Int): Int => at >= n
+  ? h
+  : ldStrWords(s, n, at + 8, ldStrMix(h, ldStrWord(s, n, at, 0, 0)))
+
+fun ldStrHash(s: String): Int
+  let n = length(s)
+  let h0 = 2611923443488327891 ^ n
+  let h1 = n <= 15
+    ? ldStrMix(ldStrMix(h0, ldStrWord(s, n, 0, 0, 0)), ldStrWord(s, n, 8, 0, 0))
+    : ldStrWords(s, n, 0, h0)
+  let h2 = h1 ^ (h1 >> 29)
+  let h3 = (h2 * 13787848793156543929) & ldM64()
+  let h4 = h3 ^ (h3 >> 32)
+  let m = h4 & 2147483647
+  ret m == 0 ? 1 : m
+
+fun ldText(v: LdVal): String|None => match(v)
+  (x: LdAtom) => match(x.laRp)
+    (s2: RpString) => s2.value
+    (o: RParam)    => None
+  (o: LdVal)  => None
+
+fun ldRuntimeStr(name: String, args: List<LdVal>): LdVal|LdFail
+  if name == "str_hash"
+    ret match(head(args))
+      (v: LdVal) => match(ldText(v))
+        (t: String) => LdInt(ldStrHash(t))
+        ()          => LdFail(ldOpaque())
+      ()         => LdFail(ldOpaque())
+  ret match(mapAll(args, ldText))
+    (ts: List<String>) => sizeAtLeast(ts, 2) && sizeAtMost(ts, 2)
+      ? LdInt((head(ts) ?? "") == (head(dropOne(ts)) ?? "") ? 1 : 0)
+      : LdFail(ldOpaque())
+    ()                 => LdFail(ldOpaque())
+
+fun ldRuntime(name: String, params: LdVal): LdVal|LdFail
+  let args = match(params)
+    (s2: LdStruct) => ldStructValues(s2)
+    (o: LdVal)     => List<LdVal>()
+  ret match(ldIntBits(name))
+    (bits: Int) => ldRuntimeInt(name, bits, args)
+    ()          => startsWith(name, "integer_") ? ldRuntimeBig(slice(name, length("integer_"), length(name)), args)
+      : name == "str_hash" || name == "str_eq" ? ldRuntimeStr(name, args)
+      : name == "array_index_check" ? ldIndexCheck(args)
+      : name == "object_same" ? ldObjectSame(args)
+      : name == "object_resolve" ? (head(args) ?? LdFail(ldOpaque())) : LdFail(ldOpaque())
+
+# Answers the index when 0 <= index < bound, and aborts otherwise.
+fun ldIndexCheck(args: List<LdVal>): LdVal|LdFail
+  if !(sizeAtLeast(args, 2) && sizeAtMost(args, 2))
+    ret LdFail(ldOpaque())
+  ret match(ldInts(args))
+    (xs: List<Int>) => (head(xs) ?? 0) >= 0 && (head(xs) ?? 0) < (head(dropOne(xs)) ?? 0)
+      ? LdInt(head(xs) ?? 0)
+      : LdFail(ldAbort())
+    ()              => LdFail(ldOpaque())
+
+# One object, by identity.
+fun ldObjectSame(args: List<LdVal>): LdVal|LdFail
+  if !(sizeAtLeast(args, 2) && sizeAtMost(args, 2))
+    ret LdFail(ldOpaque())
+  ret match(ldSame(head(args) ?? LdNone(), head(dropOne(args)) ?? LdNone()))
+    (b: Bool)    => LdInt(b ? 1 : 0)
+    (e: LdFail)  => e
+
+fun ldSame(x: LdVal, y: LdVal): Bool|LdFail => match(x)
+  (o: LdObj) => match(y)
+    (p: LdObj) => o.loId == p.loId
+    (q: LdVal) => false
+  (r: LdRef) => match(y)
+    (p: LdObj) => false
+    (q: LdRef) => r.lrName == q.lrName
+    (n: LdNull) => false
+    (q: LdVal) => LdFail(ldOpaque())
+  (n: LdNull) => match(y)
+    (p: LdObj) => false
+    (q: LdRef) => false
+    (m: LdNull) => true
+    (q: LdVal) => LdFail(ldOpaque())
+  (o: LdVal) => match(y)
+    (p: LdObj) => false
+    (q: LdVal) => LdFail(ldOpaque())
+
+fun ldRuntimeBig(rest: String, args: List<LdVal>): LdVal|LdFail
+  if ldIsBigOp(rest)
+    ret ldBigOp(rest, args)
+  ret match(ldConvSource(rest))
+    (src: Int) => match(head(args))
+      (i: LdInt) => ldBigAtom(i.liV)
+      ()         => LdFail(ldOpaque())
+    ()         => LdFail(ldOpaque())
+
+fun ldRuntimeInt(name: String, bits: Int, args: List<LdVal>): LdVal|LdFail
+  let rest = slice(name, length("int") + length(String(bits)) + 1, length(name))
+  if ldIsIntOp(rest)
+    ret ldIntOp(bits, rest, args)
+  if rest == "from_integer_truncate"
+    ret match(head(args))
+      (v: LdVal) => match(ldBig(v))
+        (b: Int) => LdInt(ldWrap(b, bits))
+        ()       => LdFail(ldOpaque())
+      ()         => LdFail(ldOpaque())
+  ret match(ldConvSource(rest))
+    (src: Int) => match(head(args))
+      (i: LdInt) => LdInt(ldWrap(i.liV, bits))
+      ()         => LdFail(ldOpaque())
+    ()         => LdFail(ldOpaque())
+
+# ── reading the program ──────────────────────────────────────────────────────
+
+fun ldIsStubName(obj: String|None) => match(obj)
+  (n: String) => startsWith(n, egStubPrefix())
+  ()          => false
+
+fun ldObjFields(o: CgObject): List<CgField> => cgFieldsOfOrEmpty(o.objFields)
+
+# The value of an RParam that holds no variable (a static's data).
+fun ldConstant(a: CgApp, p: RParam): LdVal|LdFail => match(p)
+  (i: RpInteger)        => i.precision == 0 ? LdAtom(p, None) : LdInt(ldWrap(i.value, i.precision))
+  (s2: RpString)        => LdAtom(p, None)
+  (f: RpFloat)          => LdAtom(p, None)
+  (n: RpNullPointer)    => LdNull()
+  (z: RpZeroOf)         => ldZero(z.valueType)
+  (r: RpStaticObjectRef) => LdRef(r.name)
+  (gv: RpGlobalVar)     => ldGlobalValue(a, gv.name)
+  (ns: RpNewStruct)     => ldConstStruct(a, ns.values)
+  (nt: RpNewStructTyped) => ldConstStruct(a, nt.values)
+  (gf: RpGlobalFunction) => !gf.external && gf.cSymbol is None
+    ? ldConstFun(a, gf)
+    : LdFail(ldOpaque())
+  (o: RParam)           => LdFail(ldOpaque())
+
+fun ldConstFun(a: CgApp, gf: RpGlobalFunction): LdVal|LdFail => match(gf.object)
+  (o: RParam) => ldConstant(a, o) ?> (env: LdVal) => LdFun(gf.name, env)
+  ()          => LdFun(gf.name, LdNull())
+
+fun ldConstStruct(a: CgApp, vs: List<RpNamedValue>): LdVal|LdFail =>
+  fold<RpNamedValue, LdVal|LdFail>(vs, LdStruct(List(), Dict()), (acc: LdVal|LdFail, nv) =>
+    ldStructStep(acc, nv.name, (n) => ldConstant(a, nv.value)))
+
+# One more field of a struct being built, unless building it already failed.
+fun ldStructStep(acc: LdVal|LdFail, name: String, value: (:String): LdVal|LdFail): LdVal|LdFail => match(acc)
+  (s2: LdStruct) => value(name) ?> (v: LdVal) => ldStructWith(s2, name, v)
+  (e: LdFail)    => e
+  (o: LdVal)     => LdFail(ldOpaque())
+
+fun ldStructWith(s2: LdStruct, n: String, v: LdVal): LdVal =>
+  LdStruct(contains(s2.lsVals, n) ? s2.lsNames : append(s2.lsNames, n), put(s2.lsVals, n, v))
+
+fun ldHomed(init: RParam): Bool => match(init)
+  (s2: RpString) => true
+  (f: RpFloat)   => true
+  (i: RpInteger) => i.precision == 0
+  (o: RParam)    => false
+
+fun ldGlobalValue(a: CgApp, name: String): LdVal|LdFail => match(appGlobal(a, name))
+  (g2: CgGlobal) => match(g2.globalObjectName)
+    (on: String) => ldIsStubName(on) || !isNoneStr(g2.globalLazyInitFunction) || g2.globalInit is None
+      ? LdFail(ldOpaque())
+      : LdRef(name)
+    ()           => !isNoneStr(g2.globalLazyInitFunction) ? LdFail(ldOpaque()) : match(g2.globalInit)
+      (init: RParam) => ldHomed(init) ? LdAtom(init, name) : ldConstant(a, init)
+      ()             => LdFail(ldOpaque())
+  ()             => LdFail(ldOpaque())
+
+# An existing static's fields and array items, all decoded (any one that is
+# not a constant makes the static unreadable, as the Python decode does).
+class [final] LdStatic(lsObj: CgObject, lsFields: Dict<String, LdVal>, lsItems: List<LdVal>|None)
+
+fun ldStaticFields(a: CgApp, name: String): LdStatic|LdFail => match(appGlobal(a, name))
+  (g2: CgGlobal) => match(appObject(a, g2.globalObjectName ?? ""))
+    (obj: CgObject) => obj.objIsMutable || obj.objIsForeign ? LdFail(ldOpaque()) : match(g2.globalInit)
+      (ns: RpNewStruct) => ldDecodeStatic(a, obj, dropOne(ldObjFields(obj)), ns.values,
+                                          LdStatic(obj, Dict(), None))
+      (o: RParam)       => LdFail(ldOpaque())
+      ()                => LdFail(ldOpaque())
+    ()              => LdFail(ldOpaque())
+  ()             => LdFail(ldOpaque())
+
+fun [tail] ldDecodeStatic(a: CgApp, obj: CgObject, fs: List<CgField>, vs: List<RpNamedValue>,
+                          acc: LdStatic): LdStatic|LdFail => match(head(fs))
+  (f: CgField) => match(head(vs))
+    (nv: RpNamedValue) => match(ldDecodeField(a, f, nv.value))
+      (got: LdDecoded) => ldDecodeStatic(a, obj, dropOne(fs), dropOne(vs), got.isItems
+        ? LdStatic(acc.lsObj, acc.lsFields, got.items)
+        : LdStatic(acc.lsObj, put(acc.lsFields, f.fieldName, got.value), acc.lsItems))
+      (e: LdFail)      => e
+    ()                 => acc
+  ()           => acc
+
+class [final] LdDecoded(isItems: Bool, value: LdVal, items: List<LdVal>)
+
+fun ldDecodeField(a: CgApp, f: CgField, v: RParam): LdDecoded|LdFail => match(f.fieldType)
+  (arr: CgArray) => match(v)
+    (ia: RpInitArray) => match(mapAll(ia.values, (x) => match(ldConstant(a, x))
+        (got: LdVal) => got
+        (e: LdFail)  => None))
+      (items: List<LdVal>) => LdDecoded(true, LdNone(), items)
+      ()                   => LdFail(ldOpaque())
+    (o: RParam)       => LdDecoded(true, LdNone(), List())
+  (o: CgType)    => ldConstant(a, v) ?> (x: LdVal) => LdDecoded(false, x, List())
+
+fun ldClassOf(a: CgApp, st: LdSt, v: LdVal): String|LdFail => match(v)
+  (o: LdObj) => match(get(st.stHeap, o.loId))
+    (h: LdHeapObj) => h.hoCls
+    ()             => LdFail(ldOpaque())
+  (r: LdRef) => match(appGlobal(a, r.lrName))
+    (g2: CgGlobal) => g2.globalObjectName ?? LdFail(ldOpaque())
+    ()             => LdFail(ldOpaque())
+  (o: LdVal) => LdFail(ldOpaque())
+
+fun ldFieldType(obj: CgObject, field: String): CgType|None =>
+  fold<CgField, CgType|None>(ldObjFields(obj), None, (acc: CgType|None, f) => f.fieldName == field ? f.fieldType : acc)
+
+fun ldRead(a: CgApp, st: LdSt, ptr: LdVal, field: String, index: LdVal|None): LdVal|LdFail => match(ptr)
+  (o: LdObj) => match(get(st.stHeap, o.loId))
+    (h: LdHeapObj) => match(appObject(a, h.hoCls))
+      (obj: CgObject) => ldReadIn(obj, h.hoFields, h.hoArray ? ldItemsList(h) : None, field, index)
+      ()              => LdFail(ldOpaque())
+    ()             => LdFail(ldOpaque())
+  (r: LdRef) => ldStaticFields(a, r.lrName) ?> (s2: LdStatic) =>
+    ldReadIn(s2.lsObj, s2.lsFields, s2.lsItems, field, index)
+  (o: LdVal) => LdFail(ldOpaque())
+
+fun ldItemsList(h: LdHeapObj): List<LdVal> =>
+  ldItemsLoop(h, h.hoLen - 1, List())
+
+fun [tail] ldItemsLoop(h: LdHeapObj, i: Int, acc: List<LdVal>): List<LdVal> => i < 0
+  ? acc
+  : ldItemsLoop(h, i - 1, prepend(get(h.hoItems, i) ?? LdNone(), acc))
+
+fun ldReadIn(obj: CgObject, fields: Dict<String, LdVal>, items: List<LdVal>|None, field: String,
+             index: LdVal|None): LdVal|LdFail => match(index)
+  (iv: LdVal) => match(iv)
+    (i: LdInt) => match(items)
+      (xs: List<LdVal>) => i.liV < 0 || !sizeAtLeast(xs, i.liV + 1)
+        ? LdFail(ldAbort())
+        : (head(drop(xs, i.liV)) ?? LdFail(ldAbort()))
+      ()                => LdFail(ldOpaque())
+    (o: LdVal) => LdFail(ldOpaque())
+  ()          => match(get(fields, field))
+    (v: LdVal) => v
+    ()         => match(ldFieldType(obj, field))
+      (t2: CgType) => ldZero(t2)
+      ()           => LdFail(ldOpaque())
+
+fun ldIsA(a: CgApp, st: LdSt, v: LdVal, cls: String): LdVal|LdFail => match(v)
+  (n: LdNull) => LdInt(0)
+  (o: LdVal)  => ldClassOf(a, st, v) ?> (c: String) => match(appObject(a, c))
+    (obj: CgObject) => LdInt(c == cls || contains(obj.objExtends, cls) ? 1 : 0)
+    ()              => LdFail(ldOpaque())
+
+# ── evaluation (pure: no op changes anything) ────────────────────────────────
+
+# A function's constant variables. The IR is SSA: a variable assigned once
+# holds its value wherever it is read. One assigned by a Move whose source is
+# constant is a constant; one a construction makes, whose stores are all
+# constant, is a LITERAL object — the same object every time it is asked for.
+# A Move's value is evaluated on demand, in any order; the constructions are
+# built once, up front, in op order (lcValues, lcRegs).
+class [final] LdConsts(lcOnce: StrSet, lcSources: Dict<String, RParam>,
+                       lcValues: Dict<String, LdVal>, lcRegs: Dict<Int, String>)
+
+enum LdEnv
+  enum LdLocals(llVars: Dict<String, LdVal>)
+  enum LdConstEnv(ceConsts: LdConsts, ceActive: StrSet)
+
+# A construction: an object a NewObject makes, born unpinned, into a register
+# assigned once, whose every store is a FRESH initialisation store —
+# straight-line after the NewObject, before anything can see it. Such an
+# object is its stores: nothing else writes it.
+class [final] LdCons(cnName: String, cnNew: OpNewObject, cnStores: List<OpMove>, cnOk: Bool)
+
+class [final] LdConstsOut(coConsts: LdConsts, coSt: LdSt)
+
+fun ldOnce(ops: Array<Op>): StrSet
+  let counts = fold(ops, Dict<String, Int>(), (d, op) => fold(opTargets(op), d, (d2, t) => match(t)
+    (sv: RpStackVar) => put(d2, sv.name, (get(d2, sv.name) ?? 0) + 1)
+    (o: RParam)      => d2))
+  ret fold(keys(counts), setEmpty(), (s2, n) => (get(counts, n) ?? 0) == 1 ? setAdd(s2, n) : s2)
+
+fun ldConstructions(ops: Array<Op>, once: StrSet): List<LdCons>
+  let news = fold(ops, List<LdCons>(), (acc, op) => match(op)
+    (no: OpNewObject) => match(no.newObjRegister)
+      (sv: RpStackVar) => setHas(once, sv.name) && !no.newObjPinned
+        ? append(acc, LdCons(sv.name, no, List(), true))
+        : acc
+      (o: RParam)      => acc
+    (o: Op)           => acc)
+  let index = fold(news, Dict<String, Bool>(), (d, c) => put(d, c.cnName, true))
+  let stores = fold(ops, Dict<String, LdCons>(), (d, op) => match(op)
+    (m: OpMove) => match(m.moveTarget)
+      (of: RpObjectField) => match(of.pointer)
+        (sv: RpStackVar) => contains(index, sv.name)
+          ? put(d, sv.name, ldAddStore(get(d, sv.name), sv.name, of, m))
+          : d
+        (o: RParam)      => d
+      (o: RParam)         => d
+    (o: Op)     => d)
+  ret flatMap(news, (c) => match(get(stores, c.cnName))
+    (got: LdCons) => got.cnOk ? list1(LdCons(c.cnName, c.cnNew, got.cnStores, true)) : List()
+    ()            => list1(c))
+
+# One more store of a construction; a store that is not a fresh
+# initialisation store means something writes it later: not a literal.
+fun ldAddStore(cur: LdCons|None, name: String, of: RpObjectField, m: OpMove): LdCons
+  let c = cur ?? LdCons(name, OpNewObject("", RpNullPointer(), None, false, Dict()), List(), true)
+  ret of.fresh && !of.fill ? with c(cnStores = append(c.cnStores, m)) : with c(cnOk = false)
+
+fun ldConstsOf(a: CgApp, st: LdSt, ops: Array<Op>): LdConstsOut
+  let once = ldOnce(ops)
+  let c0 = fold(ops, LdConsts(once, Dict(), Dict(), Dict()), (c, op) => match(op)
+    (m: OpMove) => ldDefine(c, m.moveTarget, m.moveSource)
+    (o: Op)     => c)
+  ret fold(ldConstructions(ops, once), LdConstsOut(c0, st), (acc, cons) => match(ldBuildCons(a, acc.coSt, acc.coConsts, cons))
+    (b: LdOk)   => match(b.okV)
+      (o: LdObj) => LdConstsOut(ldAdopt(acc.coConsts, cons.cnName, o.loId), b.okSt)
+      (x: LdVal) => acc
+    (e: LdFail) => acc)
+
+# `name` now holds literal object `id` (a construction built or written).
+fun ldAdopt(c: LdConsts, name: String, id: Int): LdConsts =>
+  with c(lcValues = put(c.lcValues, name, LdObj(id)), lcRegs = put(c.lcRegs, id, name))
+
+fun ldBuildCons(a: CgApp, st: LdSt, c: LdConsts, cons: LdCons): LdOk|LdFail
+  let env = LdConstEnv(c, setEmpty())
+  ret match(appObject(a, cons.cnNew.newObjName))
+    (obj: CgObject) => obj.objIsMutable || obj.objIsForeign ? LdFail(ldOpaque()) : match(cons.cnNew.newObjSize)
+      (sz: RParam) => match(ldEval(a, st, env, sz))
+        (n: LdInt)  => n.liV < 0 ? LdFail(ldOpaque())
+          : ldBuildFill(a, st, env, cons, LdHeapObj(cons.cnNew.newObjName, Dict(), true,
+                                                   ldFill(Dict(), 0, n.liV, ldZero(ldElemType(obj))), n.liV, false, false))
+        (e: LdFail) => e
+        (o: LdVal)  => LdFail(ldOpaque())
+      ()           => ldBuildFill(a, st, env, cons, LdHeapObj(cons.cnNew.newObjName, Dict(), false, Dict(), 0, false, false))
+    ()              => LdFail(ldOpaque())
+
+fun ldBuildFill(a: CgApp, st: LdSt, env: LdEnv, cons: LdCons, h0: LdHeapObj): LdOk|LdFail
+  let filled = fold<OpMove, LdHeapObj|LdFail>(cons.cnStores, h0, (acc: LdHeapObj|LdFail, m) => match(acc)
+    (h: LdHeapObj) => ldBuildStore(a, st, env, h, m)
+    (e: LdFail)    => e)
+  ret match(filled)
+    (h: LdHeapObj) => LdOk(ldPutObj(with st(stNext = st.stNext + 1), st.stNext, h), LdObj(st.stNext))
+    (e: LdFail)    => e
+
+fun ldBuildStore(a: CgApp, st: LdSt, env: LdEnv, h: LdHeapObj, m: OpMove): LdHeapObj|LdFail => match(m.moveTarget)
+  (of: RpObjectField) => ldEval(a, st, env, m.moveSource) ?> (v: LdVal) => match(of.index)
+    (ix: RParam) => match(ldEval(a, st, env, ix))
+      (i: LdInt)  => h.hoArray && i.liV >= 0 && i.liV < h.hoLen
+        ? with h(hoItems = put(h.hoItems, i.liV, v))
+        : LdFail(ldOpaque())
+      (e: LdFail) => e
+      (x: LdVal)  => LdFail(ldOpaque())
+    ()           => with h(hoFields = put(h.hoFields, of.field, v))
+  (o: RParam)         => LdFail(ldOpaque())
+
+fun ldDefine(c: LdConsts, target: RParam, source: RParam): LdConsts => match(target)
+  (sv: RpStackVar) => setHas(c.lcOnce, sv.name) ? with c(lcSources = put(c.lcSources, sv.name, source)) : c
+  (o: RParam)      => c
+
+fun ldLookup(a: CgApp, st: LdSt, env: LdEnv, n: String): LdVal|LdFail => match(env)
+  (l: LdLocals)   => get(l.llVars, n) ?? LdFail(ldOpaque())
+  (c: LdConstEnv) => match(get(c.ceConsts.lcValues, n))
+    (v: LdVal) => v
+    ()         => setHas(c.ceActive, n) ? LdFail(ldOpaque()) : match(get(c.ceConsts.lcSources, n))
+      (src: RParam) => ldEval(a, st, LdConstEnv(c.ceConsts, setAdd(c.ceActive, n)), src)
+      ()            => LdFail(ldOpaque())
+
+fun ldEval(a: CgApp, st: LdSt, env: LdEnv, p: RParam): LdVal|LdFail => match(p)
+  (sv: RpStackVar)      => ldLookup(a, st, env, sv.name)
+  (of: RpObjectField)   => ldEval(a, st, env, of.pointer) ?> (ptr: LdVal) => match(of.index)
+    (ix: RParam) => ldEval(a, st, env, ix) ?> (i: LdVal) => ldRead(a, st, ptr, of.field, i)
+    ()           => ldRead(a, st, ptr, of.field, None)
+  (ae: RpArrayElement)  => ldEval(a, st, env, ae.pointer) ?> (ptr: LdVal) =>
+    ldEval(a, st, env, ae.index) ?> (i: LdVal) => ldRead(a, st, ptr, ae.field, i)
+  (sf: RpStructField)   => ldEval(a, st, env, sf.structVal) ?> (v: LdVal) => match(v)
+    (s2: LdStruct) => ldStructGet(s2, sf.field)
+    (o: LdVal)     => LdFail(ldOpaque())
+  (ns: RpNewStruct)     => ldEvalStruct(a, st, env, ns.values)
+  (nt: RpNewStructTyped) => ldEvalStruct(a, st, env, nt.values)
+  (gf: RpGlobalFunction) => !gf.external && gf.cSymbol is None ? match(gf.object)
+      (o: RParam) => ldEval(a, st, env, o) ?> (e: LdVal) => LdFun(gf.name, e)
+      ()          => LdFun(gf.name, LdNull())
+    : LdFail(ldOpaque())
+  (ri: RpRuntimeInvoke) => ldEval(a, st, env, ri.parameters) ?> (ps: LdVal) => ldRuntime(ri.function, ps)
+  (ie: RpIntEqConst)    => ldEval(a, st, env, ie.value) ?> (x: LdVal) => match(x)
+    (i: LdInt) => LdInt(i.liV == ie.constVal ? 1 : 0)
+    # A pointer against NULL.
+    (n: LdNull) => ie.constVal == 0 ? LdInt(1) : LdFail(ldOpaque())
+    (o: LdObj)  => ie.constVal == 0 ? LdInt(0) : LdFail(ldOpaque())
+    (r: LdRef)  => ie.constVal == 0 ? LdInt(0) : LdFail(ldOpaque())
+    (o: LdVal)  => LdFail(ldOpaque())
+  (ni: RpNarrowInt)     => ldEval(a, st, env, ni.niValue) ?> (x: LdVal) => match(x)
+    (i: LdInt) => match(ni.niType)
+      (t2: CgInt) => LdInt(ldWrap(i.liV, t2.precision))
+      (o: CgType) => LdFail(ldOpaque())
+    (o: LdVal) => LdFail(ldOpaque())
+  (vd: RpVtableDiscriminator) => ldEval(a, st, env, vd.value) ?> (x: LdVal) =>
+    ldClassOf(a, st, x) ?> (c: String) => match(appObject(a, c))
+      (obj: CgObject) => LdInt(obj.objDiscriminator)
+      ()              => LdFail(ldOpaque())
+  (ve: RpObjVtableEq)   => match(ve.className)
+    (cls: String) => ldEval(a, st, env, ve.value) ?> (x: LdVal) => ldIsA(a, st, x, cls)
+    ()            => LdFail(ldOpaque())
+  (np: RpNullPattern)   => ldNullPattern(a, st, env, np.tests)
+  (ff: RpFunField)      => ldEval(a, st, env, ff.ffFun) ?> (f: LdVal) => match(f)
+    (fv: LdFun) => ff.ffPart == "f" ? LdCode(fv.lfName) : fv.lfEnv
+    (o: LdVal)  => LdFail(ldOpaque())
+  (mf: RpMakeFun)       => ldEval(a, st, env, mf.mfCode) ?> (c: LdVal) => match(c)
+    (cv: LdCode) => ldEval(a, st, env, mf.mfEnv) ?> (e: LdVal) => LdFun(cv.lcName, e)
+    (o: LdVal)   => LdFail(ldOpaque())
+  (o: RParam)           => ldConstant(a, p)
+
+fun ldEvalStruct(a: CgApp, st: LdSt, env: LdEnv, vs: List<RpNamedValue>): LdVal|LdFail =>
+  fold<RpNamedValue, LdVal|LdFail>(vs, LdStruct(List(), Dict()), (acc: LdVal|LdFail, nv) =>
+    ldStructStep(acc, nv.name, (n) => ldEval(a, st, env, nv.value)))
+
+fun ldIsNullWord(w: LdVal): Bool => match(w)
+  (n: LdNull) => true
+  (i: LdInt)  => i.liV == 0
+  (f: LdFun)  => f.lfName is None
+  (o: LdVal)  => false
+
+fun [tail] ldNullPattern(a: CgApp, st: LdSt, env: LdEnv, tests: List<RpNullTest>): LdVal|LdFail => match(head(tests))
+  (t: RpNullTest) => match(ldEval(a, st, env, t.word))
+    (w: LdAtom) => LdFail(ldOpaque())
+    (w: LdVal)  => ldIsNullWord(w) != t.isNull ? LdInt(0) : ldNullPattern(a, st, env, dropOne(tests))
+    (e: LdFail) => e
+  ()              => LdInt(1)
+
+# ── running functions ────────────────────────────────────────────────────────
+
+fun ldStop(r: LdFail, st: LdSt): LdStop => LdStop(r.lfWhy, st)
+
+fun ldTick(st: LdSt): LdSt => with st(stSteps = st.stSteps + 1)
+
+fun ldPutObj(st: LdSt, id: Int, h: LdHeapObj): LdSt => with st(stHeap = put(st.stHeap, id, h))
+
+# The value of lazy global `stub`, settling it first.
+fun ldFetch(a: CgApp, st: LdSt, depth: Int, stub: String): LdOk|LdStop
+  if contains(st.stSettled, stub)
+    ret LdOk(st, get(st.stSettled, stub) ?? LdNone())
+  if setHas(st.stSettling, stub) || setHas(st.stUnsettled, stub)
+    ret LdStop(ldOpaque(), st)
+  ret match(ldClosureOf(a, stub))
+    (fname: String) => ldFetchRun(a, with st(stSettling = setAdd(st.stSettling, stub)), depth, stub, fname)
+    ()              => LdStop(ldOpaque(), st)
+
+fun ldClosureOf(a: CgApp, stub: String): String|None => match(appGlobal(a, stub))
+  (g2: CgGlobal) => match(g2.globalInit)
+    (ns: RpNewStruct) => match(gfNamedValue(ns.values, "closure"))
+      (c: RParam) => match(c)
+        (gf: RpGlobalFunction) => gf.object is None ? gf.name : None
+        (o: RParam)            => None
+      ()          => None
+    (o: RParam)       => None
+    ()                => None
+  ()             => None
+
+fun ldFetchRun(a: CgApp, st: LdSt, depth: Int, stub: String, fname: String): LdOk|LdStop
+  ret match(ldCall(a, st, depth, fname, LdNull(), List()))
+    (ok: LdOk)   => ldSettle(ok, stub)
+    (s2: LdStop) => LdStop(s2.lsWhy, with s2.lsSt(stSettling = setRemove(s2.lsSt.stSettling, stub),
+                                                  stUnsettled = setAdd(s2.lsSt.stUnsettled, stub)))
+
+fun setRemove(s2: StrSet, name: String): StrSet => StrSet(remove(s2.setIx, name))
+
+fun ldSettle(ok: LdOk, stub: String): LdOk
+  let st = ldFreeze(ok.okSt, ok.okV)
+  ret LdOk(with st(stSettling = setRemove(st.stSettling, stub),
+                   stSettled = put(st.stSettled, stub, ok.okV)), ok.okV)
+
+# Every object of a finished value, frozen: no later run may write it.
+fun ldFreeze(st: LdSt, v: LdVal): LdSt => match(v)
+  (o: LdObj)    => match(get(st.stHeap, o.loId))
+    (h: LdHeapObj) => h.hoFrozen ? st : ldFreezeObj(ldPutObj(st, o.loId, with h(hoFrozen = true)), h)
+    ()             => st
+  (s2: LdStruct) => fold(ldStructValues(s2), st, ldFreeze)
+  (f: LdFun)    => ldFreeze(st, f.lfEnv)
+  (x: LdVal)    => st
+
+fun ldFreezeObj(st: LdSt, h: LdHeapObj): LdSt
+  let st2 = fold(sort(keys(h.hoFields)), st, (s, k) => ldFreeze(s, get(h.hoFields, k) ?? LdNone()))
+  ret h.hoArray ? fold(ldItemsList(h), st2, ldFreeze) : st2
+
+fun ldTarget(a: CgApp, st: LdSt, env: LdEnv, f: RParam): LdTarget|LdFail => match(f)
+  (vf: RpVirtualFunction) => ldEval(a, st, env, vf.object) ?> (this: LdVal) =>
+    ldClassOf(a, st, this) ?> (c: String) => match(ldSlot(a, c, vf.name))
+      (impl: String) => LdTarget(impl, this)
+      ()             => LdFail(ldOpaque())
+  (gf: RpGlobalFunction) => gf.external || !(gf.cSymbol is None)
+    ? LdFail(gf.impure ? ldEffect() : ldOpaque())
+    : ldTargetOf(a, st, env, f)
+  (o: RParam) => ldTargetOf(a, st, env, f)
+
+fun ldTargetOf(a: CgApp, st: LdSt, env: LdEnv, f: RParam): LdTarget|LdFail =>
+  ldEval(a, st, env, f) ?> (v: LdVal) => match(v)
+    (fv: LdFun) => match(fv.lfName)
+      (n: String) => LdTarget(n, fv.lfEnv)
+      ()          => LdFail(ldOpaque())
+    (o: LdVal)  => LdFail(ldOpaque())
+
+# Python `dict(obj.functions).get(slot)`: the LAST pairing wins.
+fun ldSlot(a: CgApp, cls: String, slot: String): String|None => match(appObject(a, cls))
+  (obj: CgObject) => fold<CgFuncSlot, String|None>(obj.objFunctions, None,
+                          (acc: String|None, s2) => s2.slotVirtualName == slot ? s2.slotGlobalName : acc)
+  ()              => None
+
+fun ldCall(a: CgApp, st: LdSt, depth: Int, name: String, this: LdVal, args: List<LdVal>): LdOk|LdStop
+  ret match(appFunction(a, name))
+    (fn: CgFunction) => fn.fnFuture || fn.fnBypassAsync || !(fn.fnForeignSymbol is None)
+      ? LdStop(ldOpaque(), st)
+      : depth >= ldDepthLimit() ? LdStop(ldBudget(), st)
+      : ldRun(a, st, depth + 1, fn, this, args)
+    ()               => LdStop(ldOpaque(), st)
+
+fun ldLabels(ops: Array<Op>): Dict<String, Int> => ldLabelLoop(ops, 0, Dict())
+
+fun [tail] ldLabelLoop(ops: Array<Op>, i: Int, acc: Dict<String, Int>): Dict<String, Int> => i >= size(ops)
+  ? acc
+  : ldLabelLoop(ops, i + 1, match(ops[i])
+      (l: OpLabel) => put(acc, l.labelName, i)
+      (o: Op)      => acc)
+
+fun ldRun(a: CgApp, st: LdSt, depth: Int, fn: CgFunction, this: LdVal, args: List<LdVal>): LdOk|LdStop
+  let params = cgFieldsOfOrEmpty(fn.fnParams)
+  if !sizeAtLeast(params, 1) || !(sizeAtLeast(params, 1 + ldCount(args)) && sizeAtMost(params, 1 + ldCount(args)))
+    ret LdStop(ldOpaque(), st)
+  let first = head(params) ?? CgField("this", CgDataPointer(false))
+  let vars = zipFold(dropOne(params), args, put(Dict<String, LdVal>(), first.fieldName, this),
+                     (d, p, v) => put(d, p.fieldName, v))
+  ret ldStep(a, LdFrame(fn.fnOps, ldLabels(fn.fnOps), vars, 0, "", ""), st, depth)
+
+fun ldCount<T>(xs: List<T>): Int => fold(xs, 0, (n, x) => n + 1)
+
+class [final] LdFrame(frOps: Array<Op>, frLabels: Dict<String, Int>, frVars: Dict<String, LdVal>,
+                      frPc: Int, frCur: String, frPrev: String)
+
+fun ldAt(fr: LdFrame, pc: Int): LdFrame => with fr(frPc = pc)
+
+fun ldJump(fr: LdFrame, label: String): LdFrame => with fr(frPc = get(fr.frLabels, label) ?? size(fr.frOps))
+
+fun ldSet(fr: LdFrame, n: String, v: LdVal): LdFrame => with fr(frVars = put(fr.frVars, n, v))
+
+fun [tail] ldStep(a: CgApp, fr: LdFrame, st0: LdSt, depth: Int): LdOk|LdStop
+  let st = ldTick(st0)
+  if st.stSteps > ldStepLimit()
+    ret LdStop(ldBudget(), st)
+  if fr.frPc >= size(fr.frOps)
+    ret LdStop(ldOpaque(), st)
+  let env = LdLocals(fr.frVars)
+  let op = fr.frOps[fr.frPc]
+  let next = ldAt(fr, fr.frPc + 1)
+  ret match(ldExec(a, fr, st, depth, env, op, next))
+    (n: LdNext) => ldStep(a, n.nxFrame, n.nxSt, depth)
+    (ok: LdOk)  => ok
+    (s2: LdStop) => s2
+
+# One op: where execution goes next (LdNext), or the run's end. Never calls
+# ldStep itself, so a run of any length is a loop, not a recursion.
+fun ldExec(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, op: Op, next: LdFrame): LdNext|LdOk|LdStop
+  ret match(op)
+    (l: OpLabel)    => LdNext(with next(frPrev = fr.frCur, frCur = l.labelName), st)
+    (p: OpPhi)      => ldPhis(a, next, st, depth, list1(p))
+    (m: OpMove)     => ldMoveOp(a, next, st, depth, env, m)
+    (j: OpJump)     => LdNext(ldJump(next, j.jumpName), st)
+    (j: OpJumpIf)   => match(ldEval(a, st, env, j.jumpIfCondition))
+      (i: LdInt)  => LdNext((i.liV != 0) != j.jumpIfInvert ? ldJump(next, j.jumpIfLabel) : next, st)
+      (e: LdFail) => ldStop(e, st)
+      (o: LdVal)  => LdStop(ldOpaque(), st)
+    (s2: OpSwitchJump) => match(ldEval(a, st, env, s2.switchCondition))
+      (i: LdInt)  => match(firstWhere(s2.switchCases, (c) => c.caseValue == i.liV))
+        (c: OpCase) => LdNext(ldJump(next, c.caseLabel), st)
+        ()          => LdStop(ldAbort(), st)
+      (e: LdFail) => ldStop(e, st)
+      (o: LdVal)  => LdStop(ldOpaque(), st)
+    (no: OpNewObject) => ldNewObject(a, next, st, depth, env, no)
+    (c: OpCall)     => ldCallOp(a, next, st, depth, env, c)
+    (r: OpReturn)   => match(ldEval(a, st, env, r.returnValue))
+      (v: LdVal)  => LdOk(st, v)
+      (e: LdFail) => ldStop(e, st)
+    (r: OpReturnVoid) => LdOk(st, LdNone())
+    (x: OpAbort)    => LdStop(ldAbort(), st)
+    (x: OpAssertNotTask) => LdNext(next, st)
+    (o: Op)         => LdStop(ldOpaque(), st)
+
+# The joined values all read the edge just taken, together.
+fun [tail] ldPhis(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, phis: List<OpPhi>): LdNext|LdOk|LdStop
+  if fr.frPc < size(fr.frOps)
+    let more = match(fr.frOps[fr.frPc])
+      (p: OpPhi) => p
+      (o: Op)    => None
+    if !(more is None)
+      ret ldPhis(a, ldAt(fr, fr.frPc + 1), st, depth, append(phis, more ?? OpPhi(RpNullPointer(), List(), Dict())))
+  let env = LdLocals(fr.frVars)
+  let values = mapAll(phis, (p) => match(firstWhere(p.phiSources, (s2) => s2.sourceLabel == fr.frPrev))
+    (src: OpPhiSource) => match(ldEval(a, st, env, src.sourceValue))
+      (v: LdVal)  => v
+      (e: LdFail) => None
+    ()                 => None)
+  ret match(values)
+    (vs: List<LdVal>) => ldPhiAssign(a, fr, st, depth, phis, vs)
+    ()                => ldPhiStop(a, fr, st, phis)
+
+# Which reason the first failing source gives, as Python raises it.
+fun ldPhiStop(a: CgApp, fr: LdFrame, st: LdSt, phis: List<OpPhi>): LdStop
+  let env = LdLocals(fr.frVars)
+  ret fold<OpPhi, LdStop|None>(phis, None, (acc: LdStop|None, p) => match(acc)
+    (s2: LdStop) => s2
+    ()           => match(firstWhere(p.phiSources, (s3) => s3.sourceLabel == fr.frPrev))
+      (src: OpPhiSource) => match(ldEval(a, st, env, src.sourceValue))
+        (e: LdFail) => ldStop(e, st)
+        (v: LdVal)  => None
+      ()                 => LdStop(ldOpaque(), st)) ?? LdStop(ldOpaque(), st)
+
+fun ldPhiAssign(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, phis: List<OpPhi>, vs: List<LdVal>): LdNext|LdOk|LdStop
+  let targets = mapAll(phis, (p) => match(p.phiTarget)
+    (sv: RpStackVar) => sv.name
+    (o: RParam)      => None)
+  ret match(targets)
+    (ns: List<String>) => LdNext(zipFold(ns, vs, fr, (f2, n, v) => ldSet(f2, n, v)), st)
+    ()                 => LdStop(ldOpaque(), st)
+
+fun ldMoveOp(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove): LdNext|LdOk|LdStop => match(m.moveSource)
+  (ri: RpRuntimeInvoke) => ri.function == "object_unpin"
+    ? ldUnpin(a, fr, st, depth, env, m, ri)
+    : ri.function == "object_pin_set" ? ldPinSetOp(a, fr, st, depth, env, m, ri)
+    : ldMoveValue(a, fr, st, depth, env, m)
+  (o: RParam)           => ldMoveValue(a, fr, st, depth, env, m)
+
+# A late write under the pin: the field is filled only if still empty, and the
+# answer is what it held.
+fun ldPinSetOp(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove, ri: RpRuntimeInvoke): LdNext|LdOk|LdStop =>
+  match(ri.parameters)
+    (ns: RpNewStruct) => match(ldPinSetParts(ns.values))
+      (parts: LdPinSet) => ldPinSet(a, fr, st, depth, env, m, parts)
+      ()                => ldMoveValue(a, fr, st, depth, env, m)
+    (o: RParam)       => ldMoveValue(a, fr, st, depth, env, m)
+
+class [final] LdPinSet(psObj: RParam, psField: String, psValue: RParam)
+
+fun ldPinSetParts(vs: List<RpNamedValue>): LdPinSet|None
+  if !(sizeAtLeast(vs, 3) && sizeAtMost(vs, 3))
+    ret None
+  let o = head(vs) ?? RpNamedValue("", RpNullPointer())
+  let off = head(dropOne(vs)) ?? o
+  let v = head(dropOne(dropOne(vs))) ?? o
+  ret match(off.value)
+    (fo: RpFieldOffset) => LdPinSet(o.value, fo.field, v.value)
+    (x: RParam)         => None
+
+fun ldPinSet(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove, parts: LdPinSet): LdNext|LdOk|LdStop
+  let filled = ldEval(a, st, env, parts.psObj) ?> (o: LdVal) =>
+    ldEval(a, st, env, parts.psValue) ?> (v: LdVal) =>
+      ldRead(a, st, o, parts.psField, None) ?> (held: LdVal) => match(held)
+        (n: LdNull) => ldWrite(st, o, parts.psField, None, v) ?> (st2: LdSt) => LdStored(fr, st2, held)
+        (x: LdVal)  => LdStored(fr, st, held)
+  ret match(filled)
+    (out: LdStored) => ldStoreThen(a, fr, out.sdSt, depth, env, m.moveTarget, out.sdHeld)
+    (e: LdFail)     => ldStop(e, st)
+
+fun ldMoveValue(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove): LdNext|LdOk|LdStop =>
+  match(ldEval(a, st, env, m.moveSource))
+    (v: LdVal)  => ldStoreThen(a, fr, st, depth, env, m.moveTarget, v)
+    (e: LdFail) => ldStop(e, st)
+
+# The one runtime operation with an effect on the run's objects: the end of a
+# construction's early pin.
+fun ldUnpin(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove, ri: RpRuntimeInvoke): LdNext|LdOk|LdStop =>
+  match(ldEval(a, st, env, ri.parameters))
+    (s2: LdStruct) => match(head(ldStructValues(s2)))
+      (o: LdObj) => match(get(st.stHeap, o.loId))
+        (h: LdHeapObj) => h.hoFrozen ? LdStop(ldOpaque(), st)
+          : ldStoreThen(a, fr, ldPutObj(st, o.loId, with h(hoPinned = false)), depth, env, m.moveTarget, o)
+        ()             => LdStop(ldOpaque(), st)
+      ()         => LdStop(ldOpaque(), st)
+    (e: LdFail)    => ldStop(e, st)
+    (o: LdVal)     => LdStop(ldOpaque(), st)
+
+fun ldStoreThen(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, target: RParam, v: LdVal): LdNext|LdOk|LdStop =>
+  match(ldStore(a, fr, st, env, target, v))
+    (out: LdStored) => LdNext(out.sdFrame, out.sdSt)
+    (e: LdFail)     => ldStop(e, st)
+
+class [final] LdStored(sdFrame: LdFrame, sdSt: LdSt, sdHeld: LdVal)
+
+fun ldStore(a: CgApp, fr: LdFrame, st: LdSt, env: LdEnv, target: RParam, v: LdVal): LdStored|LdFail => match(target)
+  (sv: RpStackVar)    => LdStored(ldSet(fr, sv.name, v), st, v)
+  (of: RpObjectField) => ldEval(a, st, env, of.pointer) ?> (ptr: LdVal) => match(of.index)
+    (ix: RParam) => ldEval(a, st, env, ix) ?> (i: LdVal) => ldWrite(st, ptr, of.field, i, v)
+      ?> (st2: LdSt) => LdStored(fr, st2, v)
+    ()           => ldWrite(st, ptr, of.field, None, v) ?> (st2: LdSt) => LdStored(fr, st2, v)
+  (gv: RpGlobalVar)   => LdFail(ldEffect())
+  (o: RParam)         => LdFail(ldOpaque())
+
+fun ldWrite(st: LdSt, ptr: LdVal, field: String, index: LdVal|None, v: LdVal): LdSt|LdFail => match(ptr)
+  (o: LdObj) => match(get(st.stHeap, o.loId))
+    (h: LdHeapObj) => h.hoFrozen ? LdFail(ldOpaque()) : match(index)
+      (iv: LdVal) => match(iv)
+        (i: LdInt) => h.hoArray && i.liV >= 0 && i.liV < h.hoLen
+          ? ldPutObj(ldMarkWritten(st, o.loId), o.loId, with h(hoItems = put(h.hoItems, i.liV, v)))
+          : LdFail(ldAbort())
+        (x: LdVal) => LdFail(ldAbort())
+      ()          => ldPutObj(ldMarkWritten(st, o.loId), o.loId, with h(hoFields = put(h.hoFields, field, v)))
+    ()             => LdFail(ldOpaque())
+  (r: LdRef) => LdFail(ldEffect())
+  (x: LdVal) => LdFail(ldOpaque())
+
+fun ldMarkWritten(st: LdSt, id: Int): LdSt => with st(stWritten = add(st.stWritten, id))
+
+fun ldNewObject(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, no: OpNewObject): LdNext|LdOk|LdStop
+  ret match(appObject(a, no.newObjName))
+    (obj: CgObject) => obj.objIsMutable || obj.objIsForeign ? LdStop(ldOpaque(), st) : match(no.newObjSize)
+      (sz: RParam) => match(ldEval(a, st, env, sz))
+        (n: LdInt)  => n.liV < 0 ? LdStop(ldOpaque(), st)
+          : n.liV * 8 > ldDataLimit() ? LdStop(ldLarge(), st)
+          : ldAllocate(a, fr, st, depth, env, no, true, n.liV, ldZero(ldElemType(obj)))
+        (e: LdFail) => ldStop(e, st)
+        (o: LdVal)  => LdStop(ldOpaque(), st)
+      ()           => ldAllocate(a, fr, st, depth, env, no, false, 0, LdNone())
+    ()              => LdStop(ldOpaque(), st)
+
+fun ldElemType(obj: CgObject): CgType => match(head(takeLastOne(ldObjFields(obj))))
+  (f: CgField) => match(f.fieldType)
+    (arr: CgArray) => arr.elemType
+    (o: CgType)    => f.fieldType
+  ()           => CgVoid()
+
+fun ldAllocate(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, no: OpNewObject,
+               isArray: Bool, n: Int, zero: LdVal): LdNext|LdOk|LdStop
+  let items = ldFill(Dict(), 0, n, zero)
+  let id = st.stNext
+  let h = LdHeapObj(no.newObjName, Dict(), isArray, items, n, no.newObjPinned, false)
+  ret ldStoreThen(a, fr, ldPutObj(with st(stNext = id + 1), id, h), depth, env, no.newObjRegister, LdObj(id))
+
+fun [tail] ldFill(acc: Dict<Int, LdVal>, i: Int, n: Int, zero: LdVal): Dict<Int, LdVal> => i >= n
+  ? acc
+  : ldFill(put(acc, i, zero), i + 1, n, zero)
+
+# The stdlib's pin and unpin (System::Internal): a lock the run, alone, needs
+# no part of. Its writes are its own.
+fun ldCallOp(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, c: OpCall): LdNext|LdOk|LdStop => match(ldPinCall(c.callFunction))
+  (sym: String) => ldPinOp(a, fr, st, depth, env, c, sym)
+  ()            => ldCallOpPlain(a, fr, st, depth, env, c)
+
+fun ldCallOpPlain(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, c: OpCall): LdNext|LdOk|LdStop
+  if c.callImpure || ldImpureTarget(c.callFunction)
+    ret LdStop(ldEffect(), st)
+  let result = match(ldFetchStub(c.callFunction))
+    (stub: String) => ldFetch(a, st, depth, stub)
+    ()             => ldCallTarget(a, st, depth, env, c)
+  ret match(result)
+    (ok: LdOk)   => match(c.callRegister)
+      (reg: RParam) => ldStoreThen(a, fr, ok.okSt, depth, env, reg, ok.okV)
+      ()            => LdNext(fr, ok.okSt)
+    (s2: LdStop) => s2
+
+fun ldPinCall(f: RParam): String|None => match(f)
+  (gf: RpGlobalFunction) => match(gf.cSymbol)
+    (sym: String) => sym == "yafl_pin" || sym == "yafl_unpin" ? sym : None
+    ()            => None
+  (o: RParam)            => None
+
+fun ldPinOp(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, c: OpCall, sym: String): LdNext|LdOk|LdStop
+  let target = match(ldEval(a, st, env, c.callParameters))
+    (s2: LdStruct) => match(head(ldStructValues(s2)))
+      (o: LdObj) => o
+      (r: LdRef) => r
+      (x: LdVal) => LdFail(ldOpaque())
+      ()         => LdFail(ldOpaque())
+    (e: LdFail)    => e
+    (x: LdVal)     => LdFail(ldOpaque())
+  ret match(target)
+    (v: LdVal)  => match(c.callRegister)
+      (reg: RParam) => ldStoreThen(a, fr, st, depth, env, reg, sym == "yafl_pin" ? v : LdStruct(List(), Dict()))
+      ()            => LdNext(fr, st)
+    (e: LdFail) => ldStop(e, st)
+
+fun ldImpureTarget(f: RParam): Bool => match(f)
+  (gf: RpGlobalFunction) => gf.impure
+  (o: RParam)            => false
+
+fun ldFetchStub(f: RParam): String|None => match(f)
+  (gf: RpGlobalFunction) => startsWith(gf.name, egFetchPrefix()) ? match(gf.object)
+      (o: RParam) => match(o)
+        (gv: RpGlobalVar) => gv.name
+        (x: RParam)       => None
+      ()          => None
+    : None
+  (o: RParam)            => None
+
+fun ldCallTarget(a: CgApp, st: LdSt, depth: Int, env: LdEnv, c: OpCall): LdOk|LdStop =>
+  match(ldTarget(a, st, env, c.callFunction))
+    (t: LdTarget) => match(ldEval(a, st, env, c.callParameters))
+      (s2: LdStruct) => ldCall(a, st, depth, t.tgName, t.tgThis, ldStructValues(s2))
+      (e: LdFail)    => ldStop(e, st)
+      (o: LdVal)     => ldCall(a, st, depth, t.tgName, t.tgThis, List())
+    (e: LdFail)                      => ldStop(e, st)
+
+# ── emitting a finished value as constants ───────────────────────────────────
+
+# Names each object it makes static (pre-order), and holds their globals in
+# the order Python's dict receives them: each after the objects it points at.
+class [final] LdEm(emLitKnown: Dict<String, String>, emLits: Dict<String, String>,
+                   emKnown: Dict<Int, String>, emNames: Dict<Int, String>, emCounter: Int,
+                   emGlobals: List<CgGlobal>, emPrefix: String, emBuild: LdBuild|None)
+
+# Writing a value back into code (Python's Builder): each object a
+# construction — a NewObject and its fresh stores, children first — unless it
+# is a literal the function already builds and the run did not write, whose
+# register it reuses. The shapes the objects take are applied to the heap
+# only once the whole value is written.
+class [final] LdBuild(bdRegs: Dict<Int, String>, bdAvail: StrSet, bdWritten: Set<Int>, bdPrefix: String, bdFirst: Int,
+                      bdOps: List<Op>, bdVars: List<CgField>, bdBuilt: Dict<Int, RParam>,
+                      bdObjects: List<LdBuiltObj>, bdShaped: List<LdBuiltObj>, bdShapes: Dict<Int, LdHeapObj>,
+                      bdStores: Int)
+
+class [final] LdBuiltObj(boName: String, boId: Int)
+
+class [final] LdEmitted(edEm: LdEm, edRp: RParam)
+class [final] LdNamed(em: LdEm, name: String)
+class [final] LdEmVals(em: LdEm, values: List<RpNamedValue>)
+class [final] LdEmItems(em: LdEm, values: List<RParam>)
+
+fun ldEmNew(known: Dict<Int, String>, counter: Int, prefix: String, lits: Dict<String, String>) =>
+  LdEm(lits, Dict(), known, Dict(), counter, List(), prefix, None)
+
+fun ldIsStructType(ty: CgType): List<CgField>|None => match(ty)
+  (s2: CgStruct)          => s2.fields
+  (s2: CgImmediateStruct) => s2.fields
+  (o: CgType)             => None
+
+fun ldEmit(a: CgApp, st: LdSt, em: LdEm, v: LdVal, ty: CgType, inStatic: Bool): LdEmitted|LdFail => match(v)
+  (i: LdInt)    => match(ty)
+    (t2: CgInt)    => LdEmitted(em, RpInteger(i.liV, t2.precision))
+    (t2: CgIntPtr) => LdEmitted(em, i.liV != 0 ? RpInteger(i.liV, 64) : RpZeroOf(ty))
+    (o: CgType)    => LdFail(ldOpaque())
+  (x: LdAtom)   => inStatic ? LdEmitted(em, x.laRp) : match(x.laHome)
+    (h: String) => LdEmitted(em, RpGlobalVar((appGlobal(a, h) ?? CgGlobal("", CgVoid(), None, None, None, None)).globalType, h))
+    ()          => ldNeedsHome(x.laRp) ? ldLiteral(em, x.laRp) : LdEmitted(em, x.laRp)
+  (n: LdNull)   => LdEmitted(em, ty is CgDataPointer ? RpNullPointer() : RpZeroOf(ty))
+  (r: LdRef)    => LdEmitted(em, ldRefOf(r.lrName, inStatic))
+  (o: LdObj)    => match(em.emBuild)
+    (b: LdBuild) => ldBuildObj(a, st, em, b, o.loId)
+    ()           => ldStatic(a, st, em, o.loId) ?> (out: LdNamed) =>
+      LdEmitted(out.em, ldRefOf(out.name, inStatic))
+  (f: LdFun)    => match(f.lfName)
+    (n: String) => !(ty is CgFuncPointer) ? LdFail(ldOpaque()) : match(f.lfEnv)
+      (e: LdNull) => LdEmitted(em, RpGlobalFunction(n, None, false, None, false, false))
+      (e: LdVal)  => ldEmit(a, st, em, e, CgDataPointer(false), inStatic) ?> (out: LdEmitted) =>
+        LdEmitted(out.edEm, RpGlobalFunction(n, out.edRp, false, None, false, false))
+    ()          => LdEmitted(em, RpZeroOf(ty))
+  (s2: LdStruct) => match(ldIsStructType(ty))
+    (fs: List<CgField>) => ldSameNames(fs, s2) ? ldEmitStruct(a, st, em, s2, ty, fs, inStatic) : LdFail(ldOpaque())
+    ()                  => LdFail(ldOpaque())
+  (o: LdVal)    => LdFail(ldOpaque())
+
+fun ldNeedsHome(rp: RParam): Bool => match(rp)
+  (s2: RpString) => true
+  (i: RpInteger) => i.precision == 0
+  (o: RParam)    => false
+
+fun ldLiteralKey(rp: RParam): String => match(rp)
+  (i: RpInteger) => "i:" + String(i.value)
+  (s2: RpString) => "s:" + s2.value
+  (o: RParam)    => ""
+
+# A global holding bigint or string literal `rp`, for code to read.
+fun ldLiteral(em: LdEm, rp: RParam): LdEmitted
+  let key = ldLiteralKey(rp)
+  ret match(get(em.emLitKnown, key) ?? get(em.emLits, key))
+    (name: String) => LdEmitted(em, RpGlobalVar(rpGetType(rp), name))
+    ()             => ldNewLiteral(em, rp, key)
+
+fun ldNewLiteral(em: LdEm, rp: RParam, key: String): LdEmitted
+  let name = em.emPrefix + String(em.emCounter)
+  let g2 = CgGlobal(name, rpGetType(rp), rp, None, None, None)
+  ret LdEmitted(with em(emCounter = em.emCounter + 1, emLits = put(em.emLits, key, name),
+                        emGlobals = append(em.emGlobals, g2)),
+                RpGlobalVar(rpGetType(rp), name))
+
+fun ldRefOf(name: String, inStatic: Bool): RParam =>
+  inStatic ? RpStaticObjectRef(name) : RpGlobalVar(CgDataPointer(false), name)
+
+fun ldSameNames(fs: List<CgField>, s2: LdStruct): Bool
+  let names = setOfList(map(fs, (f) => f.fieldName))
+  ret size(names.setIx) == size(s2.lsVals) && all(s2.lsNames, (n) => setHas(names, n))
+
+fun ldEmitStruct(a: CgApp, st: LdSt, em: LdEm, s2: LdStruct, ty: CgType, fs: List<CgField>,
+                 inStatic: Bool): LdEmitted|LdFail =>
+  fold<CgField, LdEmVals|LdFail>(fs, LdEmVals(em, List<RpNamedValue>()),
+       (acc: LdEmVals|LdFail, f) => acc ?> (got: LdEmVals) =>
+         ldEmit(a, st, got.em, get(s2.lsVals, f.fieldName) ?? LdNone(), f.fieldType, inStatic) ?> (out: LdEmitted) =>
+           LdEmVals(out.edEm, append(got.values, RpNamedValue(f.fieldName, out.edRp))))
+  ?> (got: LdEmVals) =>
+    LdEmitted(got.em, inStatic ? RpNewStruct(got.values) : RpNewStructTyped(ty, got.values))
+
+fun ldStatic(a: CgApp, st: LdSt, em: LdEm, id: Int): LdNamed|LdFail
+  if contains(em.emKnown, id)
+    ret LdNamed(em, get(em.emKnown, id) ?? "")
+  if contains(em.emNames, id)
+    ret LdNamed(em, get(em.emNames, id) ?? "")
+  ret match(get(st.stHeap, id))
+    (h: LdHeapObj) => match(appObject(a, h.hoCls))
+      (obj: CgObject) => ldShape(obj, h, true) ?> (sh: LdHeapObj) => ldStaticOf(a, st, em, id, sh, obj)
+      ()              => LdFail(ldOpaque())
+    ()             => LdFail(ldOpaque())
+
+fun ldStaticOf(a: CgApp, st: LdSt, em0: LdEm, id: Int, h: LdHeapObj, obj: CgObject): LdNamed|LdFail
+  let name = em0.emPrefix + String(em0.emCounter)
+  let em = with em0(emCounter = em0.emCounter + 1, emNames = put(em0.emNames, id, name))
+  ret fold<CgField, LdEmVals|LdFail>(dropOne(ldObjFields(obj)), LdEmVals(em, List<RpNamedValue>()),
+           (acc: LdEmVals|LdFail, f) => acc ?> (got: LdEmVals) =>
+             ldStaticField(a, st, got.em, h, f) ?> (out: LdEmitted) =>
+               LdEmVals(out.edEm, append(got.values, RpNamedValue(f.fieldName, out.edRp))))
+    ?> (got: LdEmVals) => ldNamedGlobal(got, name, h.hoCls)
+
+fun ldNamedGlobal(got: LdEmVals, name: String, cls: String): LdNamed
+  let g2 = CgGlobal(name, CgDataPointer(false), RpNewStruct(got.values), cls, None, None)
+  ret LdNamed(with got.em(emGlobals = append(got.em.emGlobals, g2)), name)
+
+fun ldStaticField(a: CgApp, st: LdSt, em: LdEm, h: LdHeapObj, f: CgField): LdEmitted|LdFail => match(f.fieldType)
+  (arr: CgArray) => fold<LdVal, LdEmItems|LdFail>(ldItemsList(h), LdEmItems(em, List<RParam>()),
+                         (acc: LdEmItems|LdFail, x) => acc ?> (got: LdEmItems) =>
+                           ldEmit(a, st, got.em, x, arr.elemType, true) ?> (out: LdEmitted) =>
+                             LdEmItems(out.edEm, append(got.values, out.edRp)))
+    ?> (got: LdEmItems) => LdEmitted(got.em, RpInitArray(arr.elemType, got.values))
+  (o: CgType)    => f.fieldName == "$hash"
+    ? LdEmitted(em, RpZeroOf(f.fieldType))
+    : ldEmit(a, st, em, get(h.hoFields, f.fieldName) ?? ldZero(f.fieldType), f.fieldType, true)
+
+# An object's fields and items as a literal holds them. A [pinnable] object
+# with a capacity is late-written only into the room past its length, and the
+# runtime's compaction already trims that room away (capacity reset to the
+# length): so a literal has none, and nothing can ever write it. Any other
+# [pinnable] object has slots a late write may still fill: a fresh one per
+# run is fine, but one SHARED by every run is not.
+fun ldShape(obj: CgObject, h: LdHeapObj, shared: Bool): LdHeapObj|LdFail
+  if h.hoPinned
+    ret LdFail(ldShared())                       # a construction still under way
+  if !obj.objIsPinnable
+    ret h
+  ret match(obj.objCapacityField)
+    (cap: String) => match(obj.objLengthField)
+      (len: String) => h.hoArray ? ldTrim(h, cap, len) : ldUnshareable(h, shared)
+      ()            => ldUnshareable(h, shared)
+    ()            => ldUnshareable(h, shared)
+
+fun ldUnshareable(h: LdHeapObj, shared: Bool): LdHeapObj|LdFail => shared ? LdFail(ldShared()) : h
+
+fun ldTrim(h: LdHeapObj, cap: String, len: String): LdHeapObj|LdFail => match(get(h.hoFields, len) ?? LdInt(0))
+  (n: LdInt) => n.liV >= 0 && n.liV <= h.hoLen
+    ? with h(hoFields = put(h.hoFields, cap, LdInt(n.liV)), hoLen = n.liV)
+    : LdFail(ldOpaque())
+  (x: LdVal) => LdFail(ldOpaque())
+
+fun ldBuildObj(a: CgApp, st: LdSt, em: LdEm, b: LdBuild, id: Int): LdEmitted|LdFail
+  if contains(b.bdBuilt, id)
+    ret LdEmitted(em, get(b.bdBuilt, id) ?? RpNullPointer())
+  if contains(b.bdRegs, id) && setHas(b.bdAvail, get(b.bdRegs, id) ?? "") && ldUnchanged(st, b.bdWritten, id, Set())
+    ret LdEmitted(em, RpStackVar(CgDataPointer(true), get(b.bdRegs, id) ?? ""))
+  ret match(get(st.stHeap, id))
+    (h: LdHeapObj) => match(appObject(a, h.hoCls))
+      (obj: CgObject) => ldShape(obj, h, false) ?> (sh: LdHeapObj) =>
+        ldBuildShaped(a, st, ldWithBuild(em, with b(bdShaped = append(b.bdShaped, LdBuiltObj("", id)),
+                                                    bdShapes = put(b.bdShapes, id, sh))), id, sh, obj)
+      ()              => LdFail(ldOpaque())
+    ()             => LdFail(ldOpaque())
+
+# The run wrote neither the object nor anything it reaches: the construction
+# that built it still builds this value. (A list node the run did not write
+# still reaches the one it did — its tail, newly linked.)
+fun ldUnchanged(st: LdSt, written: Set<Int>, id: Int, seen: Set<Int>): Bool
+  if contains(seen, id)
+    ret true                                     # a cycle reaches nothing new
+  if contains(written, id)
+    ret false
+  ret match(get(st.stHeap, id))
+    (h: LdHeapObj) => all(concat(ldStructValuesOf(h), h.hoArray ? ldItemsList(h) : List()),
+                          (v) => all(ldObjectsIn(v), (o) => ldUnchanged(st, written, o, add(seen, id))))
+    ()             => true
+
+fun ldStructValuesOf(h: LdHeapObj): List<LdVal> => map(sort(keys(h.hoFields)), (k) => get(h.hoFields, k) ?? LdNone())
+
+# The objects a value holds directly: itself, or inside a struct or a
+# closure's environment.
+fun ldObjectsIn(v: LdVal): List<Int> => match(v)
+  (o: LdObj)     => list1(o.loId)
+  (s2: LdStruct) => flatMap(ldStructValues(s2), ldObjectsIn)
+  (f: LdFun)     => ldObjectsIn(f.lfEnv)
+  (x: LdVal)     => List()
+
+fun ldWithBuild(em: LdEm, b: LdBuild): LdEm => with em(emBuild = b)
+
+fun ldBuildOf(em: LdEm): LdBuild => em.emBuild ?? LdBuild(Dict(), setEmpty(), Set(), "", 0, List(), List(), Dict(), List(), List(), Dict(), 0)
+
+class [final] LdFieldValue(fvName: String, fvType: CgType, fvRp: RParam)
+class [final] LdEmFields(em: LdEm, values: List<LdFieldValue>)
+
+fun ldBuildShaped(a: CgApp, st: LdSt, em0: LdEm, id: Int, sh: LdHeapObj, obj: CgObject): LdEmitted|LdFail
+  let fields = filter(dropOne(ldObjFields(obj)), (f) => !(f.fieldType is CgArray) && f.fieldName != "$hash")
+  let last = head(takeLastOne(ldObjFields(obj))) ?? CgField("", CgVoid())
+  ret fold<CgField, LdEmFields|LdFail>(fields, LdEmFields(em0, List()), (acc: LdEmFields|LdFail, f) => acc ?> (got: LdEmFields) =>
+      ldEmit(a, st, got.em, get(sh.hoFields, f.fieldName) ?? ldZero(f.fieldType), f.fieldType, false) ?> (out: LdEmitted) =>
+        LdEmFields(out.edEm, append(got.values, LdFieldValue(f.fieldName, f.fieldType, out.edRp))))
+    ?> (got: LdEmFields) => ldBuildItems(a, st, got, id, sh, last)
+
+fun ldBuildItems(a: CgApp, st: LdSt, got: LdEmFields, id: Int, sh: LdHeapObj, last: CgField): LdEmitted|LdFail => match(last.fieldType)
+  (arr: CgArray) => sh.hoArray
+    ? fold<LdVal, LdEmItems|LdFail>(ldItemsList(sh), LdEmItems(got.em, List<RParam>()),
+                                    (acc: LdEmItems|LdFail, x) => acc ?> (gi: LdEmItems) =>
+                                      ldEmit(a, st, gi.em, x, arr.elemType, false) ?> (out: LdEmitted) =>
+                                        LdEmItems(out.edEm, append(gi.values, out.edRp)))
+      ?> (gi: LdEmItems) => ldBuildOps(gi.em, id, sh, got.values, last, arr.elemType, gi.values, true)
+    : ldBuildOps(got.em, id, sh, got.values, last, arr.elemType, List(), false)
+  (o: CgType)    => ldBuildOps(got.em, id, sh, got.values, last, o, List(), false)
+
+fun ldBuildOps(em: LdEm, id: Int, sh: LdHeapObj, values: List<LdFieldValue>, last: CgField, elem: CgType,
+               items: List<RParam>, isArray: Bool): LdEmitted|LdFail
+  let b = ldBuildOf(em)
+  let reg = RpStackVar(CgDataPointer(true), b.bdPrefix + String(b.bdFirst + ldCount(b.bdVars)))
+  let n = ldCount(items)
+  let newOp = OpNewObject(sh.hoCls, reg, isArray ? RpInteger(n, 32) : None, false, Dict())
+  let fieldOps = fold(values, append<Op>(b.bdOps, newOp), (acc: List<Op>, v) =>
+    append<Op>(acc, OpMove(RpObjectField(v.fvType, reg, sh.hoCls, v.fvName, None, true, false),
+                           v.fvRp, false, Dict())))
+  let allOps = ldItemOps(items, reg, sh.hoCls, last.fieldName, elem, 0, fieldOps)
+  let stores = b.bdStores + ldCount(values) + n
+  if stores * 8 > ldDataLimit()
+    ret LdFail(ldLarge())
+  let b2 = with b(bdOps = allOps,
+                  bdVars = append(b.bdVars, CgField(reg.name, CgDataPointer(true))),
+                  bdBuilt = put(b.bdBuilt, id, reg),
+                  bdObjects = append(b.bdObjects, LdBuiltObj(reg.name, id)),
+                  bdStores = stores)
+  ret LdEmitted(ldWithBuild(em, b2), reg)
+
+fun [tail] ldItemOps(items: List<RParam>, reg: RParam, cls: String, field: String, elem: CgType, i: Int,
+                     acc: List<Op>): List<Op> => match(head(items))
+  (rp: RParam) => ldItemOps(dropOne(items), reg, cls, field, elem, i + 1,
+                            append<Op>(acc, OpMove(RpObjectField(elem, reg, cls, field, RpInteger(i, 32), true, false),
+                                                   rp, false, Dict())))
+  ()           => acc
+
+fun ldEmSize(em: LdEm): Int => fold(em.emGlobals, 0, (total, g2) => total + 8 + match(g2.globalInit)
+  (ns: RpNewStruct) => fold(ns.values, 0, (t, nv) => t + 8 * match(nv.value)
+    (ia: RpInitArray) => ldCount(ia.values)
+    (o: RParam)       => 1)
+  (o: RParam)       => 0
+  ()                => 0)
+
+# ── stage 1: a literal and a call make a new literal ────────────────────────
+
+class [final] LdPass(lpApp: CgApp, lpSt: LdSt, lpCounter: Int, lpLiterals: Dict<String, String>)
+
+class [final] LdCand(callee: CgFunction, args: List<LdVal>)
+
+# Machinery whose calls are never candidates.
+fun ldSkipped(name: String) => startsWith(name, egFetchPrefix()) || startsWith(name, "future_run$")
+  || name == "__entrypoint__" || name == egStartName()
+
+# Stage 1: each call whose arguments are literals is run, and its value written
+# back as constructions — a literal for the next call to consume.
+fun foldLiteralCalls(a: CgApp): CgApp
+  let names = map(appFunctions(a), (f) => f.fnName)
+  let out = fold(names, (ps = LdPass(a, ldStEmpty(), 0, Dict()), i = 0),
+                 (acc, n) => (ps = ldSkipped(n) ? acc.ps : ldFoldFunction(acc.ps, n, acc.i), i = acc.i + 1))
+  ret out.ps.lpApp
+
+# faAvail: the constructions built earlier in the current block — there, and
+# only there, their registers are certain to hold them.
+class [final] LdFoldAcc(faPass: LdPass, faOut: Array<Op>, faConsts: LdConsts, faVars: List<CgField>,
+                        faChanged: Bool, faAvail: StrSet)
+
+fun ldFoldFunction(ps: LdPass, name: String, index: Int): LdPass
+  let fn = forceFn(appFunction(ps.lpApp, name))
+  let made = ldConstsOf(ps.lpApp, ps.lpSt, fn.fnOps)
+  let out = fold(fn.fnOps, LdFoldAcc(with ps(lpSt = made.coSt), Array<Op>(), made.coConsts, List(), false, setEmpty()),
+                 (acc, op) => match(op)
+                   (c: OpCall)       => ldFoldCall(acc, c, index)
+                   (l: OpLabel)      => with acc(faOut = push(acc.faOut, op), faAvail = setEmpty())
+                   (no: OpNewObject) => with acc(faOut = push(acc.faOut, op), faAvail = match(no.newObjRegister)
+                     (sv: RpStackVar) => setAdd(acc.faAvail, sv.name)
+                     (x: RParam)      => acc.faAvail)
+                   (o: Op)           => with acc(faOut = push(acc.faOut, op)))
+  if !out.faChanged
+    ret out.faPass
+  let stackVars = CgStruct(concat(cgFieldsOfOrEmpty(fn.fnStackVars), out.faVars))
+  ret with out.faPass(lpApp = appPutFunction(out.faPass.lpApp,
+                                             cgFunctionWith(fn, ldDropDead(out.faOut), stackVars)))
+
+# The constant arguments of a candidate call, or None when it is not one.
+fun ldCandidateArgs(ps: LdPass, c: OpCall, consts: LdConsts): LdCand|None
+  ret match(c.callFunction)
+    (gf: RpGlobalFunction) => gf.object is None && !gf.external && gf.cSymbol is None
+        && !(c.callRegister is None) && !c.callMusttail && !c.callImpure && !ldSkipped(gf.name)
+      ? match(appFunction(ps.lpApp, gf.name))
+          (callee: CgFunction) => match(ldEval(ps.lpApp, ps.lpSt, LdConstEnv(consts, setEmpty()), c.callParameters))
+            (s2: LdStruct) => LdCand(callee, ldStructValues(s2))
+            (o: LdVal)     => None
+            (e: LdFail)    => None
+          ()                   => None
+      : None
+    (o: RParam)            => None
+
+fun ldFoldCall(acc: LdFoldAcc, c: OpCall, index: Int): LdFoldAcc
+  ret match(ldCandidateArgs(acc.faPass, c, acc.faConsts))
+    (cand: LdCand) => ldRunCall(acc, c, cand, index)
+    ()             => with acc(faOut = push(acc.faOut, c))
+
+# Run the call; on success write its value back as constructions, ending in
+# the Move into the call's register.
+fun ldRunCall(acc: LdFoldAcc, c: OpCall, cand: LdCand, index: Int): LdFoldAcc
+  let ps = acc.faPass
+  let st0 = with ps.lpSt(stSteps = 0, stWritten = Set())
+  ret match(ldCall(ps.lpApp, st0, 0, cand.callee.fnName, LdNull(), cand.args))
+    (ok: LdOk)   => ldWriteBack(with acc(faPass = with ps(lpSt = ok.okSt)), c, cand, index, ok)
+    (s2: LdStop) => with acc(faPass = with ps(lpSt = s2.lsSt), faOut = push(acc.faOut, c))
+
+fun ldWriteBack(acc: LdFoldAcc, c: OpCall, cand: LdCand, index: Int, ok: LdOk): LdFoldAcc
+  let ps = acc.faPass
+  let b0 = LdBuild(acc.faConsts.lcRegs, acc.faAvail, ok.okSt.stWritten, "$lit" + String(index) + "$", ldCount(acc.faVars),
+                   List(), List(), Dict(), List(), List(), Dict(), 0)
+  let em0 = with ldEmNew(Dict(), ps.lpCounter, ldStaticPrefix(), ps.lpLiterals)(emBuild = b0)
+  ret match(ldEmit(ps.lpApp, ok.okSt, em0, ok.okV, cand.callee.fnResult, false))
+    (out: LdEmitted) => ldCommitBuild(acc, c, out)
+    (e: LdFail)      => with acc(faOut = push(acc.faOut, c))
+
+fun ldCommitBuild(acc: LdFoldAcc, c: OpCall, out: LdEmitted): LdFoldAcc
+  let ps = acc.faPass
+  let em = out.edEm
+  let b = ldBuildOf(em)
+  let reg = c.callRegister ?? RpNullPointer()
+  # The literals ARE their shapes from here on: what the code builds is what a
+  # later run reads.
+  let st = fold(keys(b.bdShapes), ps.lpSt, (s2, id) => match(get(b.bdShapes, id))
+    (h: LdHeapObj) => ldPutObj(s2, id, h)
+    ()             => s2)
+  let consts = ldDefine(fold(b.bdObjects, acc.faConsts, (c2, o) => ldAdopt(c2, o.boName, o.boId)), reg, out.edRp)
+  let ops = push(fold(b.bdOps, acc.faOut, (arr, op) => push(arr, op)), OpMove(reg, out.edRp, false, Dict()))
+  let lits = fold(keys(em.emLits), ps.lpLiterals, (d, k) => put(d, k, get(em.emLits, k) ?? ""))
+  ret LdFoldAcc(LdPass(fold(em.emGlobals, ps.lpApp, appPutGlobal), st, em.emCounter, lits),
+                ops, consts, concat(acc.faVars, b.bdVars), true,
+                fold(b.bdObjects, acc.faAvail, (s2, o) => setAdd(s2, o.boName)))
+
+# Remove what folding left unread: each construction (a NewObject and its
+# initialisation stores) whose object nothing else reads, and each plain Move
+# into a variable nothing reads. To a fixpoint — a dead parent was the one
+# reader of its children, a dead copy the one reader of its source.
+fun [tail] ldDropDead(ops: Array<Op>): Array<Op>
+  let news = fold(ops, setEmpty(), (s2, op) => match(op)
+    (no: OpNewObject) => match(no.newObjRegister)
+      (sv: RpStackVar) => setAdd(s2, sv.name)
+      (o: RParam)      => s2
+    (o: Op)           => s2)
+  let read = fold(ops, setEmpty(), (s2, op) => ldReadsOf(s2, op, news))
+  let kept = fold(ops, Array<Op>(), (arr, op) => ldDeadOp(op, news, read) ? arr : push(arr, op))
+  ret size(kept) == size(ops) ? ops : ldDropDead(kept)
+
+fun ldOwnStore(op: Op): String|None => match(op)
+  (m: OpMove) => match(m.moveTarget)
+    (of: RpObjectField) => of.fresh ? match(of.pointer)
+        (sv: RpStackVar) => sv.name
+        (o: RParam)      => None
+      : None
+    (o: RParam)         => None
+  (o: Op)     => None
+
+fun ldAddNames(s2: StrSet, ps: List<RParam>): StrSet => fold(ps, s2, (s3, p) => match(p)
+  (sv: RpStackVar) => setAdd(s3, sv.name)
+  (o: RParam)      => s3)
+
+fun ldReadsOf(s2: StrSet, op: Op, news: StrSet): StrSet => match(op)
+  (no: OpNewObject) => ldAddNames(s2, rpGetLiveVarsOpt(no.newObjSize))
+  (o: Op)           => ldReadsOfOther(s2, op, news)
+
+fun ldReadsOfOther(s2: StrSet, op: Op, news: StrSet): StrSet
+  ret match(ldOwnStore(op))
+    (mine: String) => setHas(news, mine) ? ldOwnStoreReads(s2, op) : ldOpReads(s2, op)
+    ()             => ldOpReads(s2, op)
+
+fun ldOwnStoreReads(s2: StrSet, op: Op): StrSet => match(op)
+  (m: OpMove) => match(m.moveTarget)
+    (of: RpObjectField) => ldAddNames(ldAddNames(s2, rpGetLiveVars(m.moveSource)), rpGetLiveVarsOpt(of.index))
+    (o: RParam)         => s2
+  (o: Op)     => s2
+
+fun ldOpReads(s2: StrSet, op: Op): StrSet =>
+  fold(values(opSavedVars(op)), ldAddNames(s2, opGetLiveVars(op).reads), (s3, p) => match(p)
+    (sv: RpStackVar) => setAdd(s3, sv.name)
+    (o: RParam)      => s3)
+
+fun ldDeadOp(op: Op, news: StrSet, read: StrSet): Bool
+  let mine = ldOwnStore(op) ?? ""
+  if mine != "" && setHas(news, mine) && !setHas(read, mine)
+    ret true
+  ret match(op)
+    (no: OpNewObject) => match(no.newObjRegister)
+      (sv: RpStackVar) => setHas(news, sv.name) && !setHas(read, sv.name)
+      (o: RParam)      => false
+    (m: OpMove)       => match(m.moveTarget)
+      (sv: RpStackVar) => !m.moveKeep && !setHas(read, sv.name)
+      (o: RParam)      => false
+    (o: Op)           => false
+
+# ── stage 2 helper: a global whose initialiser is a literal ─────────────────
+
+# Each lazy global whose initialiser just returns a constant is that constant:
+# every read of it becomes the constant, and its forcing at startup goes, so
+# the global and its initialiser fall away.
+fun settleGlobals(a: CgApp): CgApp
+  let names = sort(map(filter(appGlobals(a), (g2) => ldIsStubName(g2.globalObjectName)), (g2) => g2.globalName))
+  let settled = fold(names, Dict<String, RParam>(), (d, n) => match(ldSettleOne(a, n))
+    (rp: RParam) => put(d, n, rp)
+    ()           => d)
+  ret isEmpty(settled) ? a : fold(appFunctions(a), a, (acc, f) => ldSettleIn(acc, f, settled))
+
+fun ldSettleOne(a: CgApp, stub: String): RParam|None
+  let closure = match(appGlobal(a, stub))
+    (g2: CgGlobal) => ldClosureOf(a, stub)
+    ()             => None
+  ret match(closure)
+    (n: String) => match(appFunction(a, n))
+      (fn: CgFunction) => ldSettleFn(a, fn)
+      ()               => None
+    ()          => None
+
+fun ldSettleFn(a: CgApp, fn: CgFunction): RParam|None
+  if !fold(fn.fnOps, true, (ok, op) => ok && (op is OpMove || op is OpReturn)) || size(fn.fnOps) == 0
+    ret None
+  ret match(fn.fnOps[size(fn.fnOps) - 1])
+    (r: OpReturn) => ldSettleValue(a, fn, r)
+    (o: Op)       => None
+
+fun ldSettleValue(a: CgApp, fn: CgFunction, r: OpReturn): RParam|None
+  let made = ldConstsOf(a, ldStEmpty(), fn.fnOps)
+  ret match(ldEval(a, made.coSt, LdConstEnv(made.coConsts, setEmpty()), r.returnValue))
+    (v: LdVal)  => v is LdObj ? None
+      : match(ldEmit(a, made.coSt, ldEmNew(Dict(), 0, ldStaticPrefix(), Dict()), v, fn.fnResult, false))
+          (out: LdEmitted) => isEmpty(out.edEm.emGlobals) && ldSettles(out.edRp) ? out.edRp : None
+          (e: LdFail)      => None
+    (e: LdFail) => None
+
+# A constant that is the same value read anywhere: a literal, or a static
+# object or literal global named in place.
+fun ldSettles(rp: RParam): Bool => all(rpFlatten(rp, true), (p) => match(p)
+  (x: RpInteger)         => true
+  (x: RpString)          => true
+  (x: RpFloat)           => true
+  (x: RpNullPointer)     => true
+  (x: RpZeroOf)          => true
+  (x: RpGlobalVar)       => true
+  (x: RpGlobalFunction)  => true
+  (x: RpNewStructTyped)  => true
+  (x: RpStaticObjectRef) => true
+  (o: RParam)            => false)
+
+# The constant an eager global's read stands for (eager_globals made each read
+# a Move of the stub's `value`).
+fun ldReadOf(p: RParam, settled: Dict<String, RParam>): RParam|None => match(p)
+  (of: RpObjectField) => of.field == "value" && of.index is None ? match(of.pointer)
+      (gv: RpGlobalVar) => get(settled, gv.name)
+      (o: RParam)       => None
+    : None
+  (o: RParam)         => None
+
+fun ldSettleIn(a: CgApp, f: CgFunction, settled: Dict<String, RParam>): CgApp
+  let ops = fold(f.fnOps, Array<Op>(), (arr, op) => ldSettleOp(arr, op, settled))
+  ret appPutFunction(a, cgFunctionWith(f, ops, f.fnStackVars))
+
+fun ldSettleOp(arr: Array<Op>, op: Op, settled: Dict<String, RParam>): Array<Op> => match(op)
+  (c: OpCall) => match(ldFetchStub(c.callFunction))
+    (stub: String) => contains(settled, stub) && !c.callMusttail
+      # A read of the global, or its forcing at startup (which reads nothing):
+      # its initialiser has nothing left to do.
+      ? match(c.callRegister)
+          (reg: RParam) => push(arr, OpMove(reg, get(settled, stub) ?? RpNullPointer(), false, Dict()))
+          ()            => arr
+      : push(arr, op)
+    ()             => push(arr, op)
+  (m: OpMove) => match(ldReadOf(m.moveSource, settled))
+    (rp: RParam) => push(arr, with m(moveSource = rp))
+    ()           => push(arr, op)
+  (o: Op)     => push(arr, op)
