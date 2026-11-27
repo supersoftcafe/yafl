@@ -102,7 +102,15 @@ fun assignableFrom(r, left, right)
     # would prematurely filter a valid generic candidate out of overload
     # resolution.
     (g: SGeneric)      => genericFrom(g, right)
-    (n: SNamed)        => None                    # left not resolved yet
+    # A left that names a type resolves its own name and delegates to the
+    # resolved kind's rule (Python NamedSpec.trivially_assignable_from): a
+    # candidate whose parameter is the name `Int`, or `Set<..>`, can never
+    # accept a `Bool` — no need to wait for the declaration to be compiled.
+    (n: SNamed)        => namedFrom(r, n, right)
+
+fun namedFrom(r, n: SNamed, right) => match(compileNamed(n, r).soSpec)
+  (still: SNamed) => None                         # not resolvable yet
+  (sp: Spec)      => assignableFrom(r, sp, right)
 
 fun builtinFrom(b: SBuiltin, right) => match(right)
   (rb: SBuiltin) => b.sbName == rb.sbName

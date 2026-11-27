@@ -168,13 +168,16 @@ fun unresolvedNameErr(nm: PeName, r: Resolver): Set<PErr> => match(head(findHidd
   (f: Found) => oneErr(nm.penLine, privateMessage(nm.refName, namespaceOf(f.fName)))
   ()         => oneErr(nm.penLine, "Failed to resolve " + nm.refName)
 
-fun checkName(nm: PeName, r)
+fun checkName(nm: PeName, r, expected: Spec|None)
   let tpErrs = checkSpecs(nm.refTypeParams, r, noErrs())
-  let datas = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
-                            nm.penTrait, r)
-  if isEmpty(datas)
+  let all = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
+                          nm.penTrait, r)
+  if isEmpty(all)
     ret union(unresolvedNameErr(nm, r), tpErrs)
-  ret match(soleOf(Bag(datas)))
+  let datas = narrowedByCall(all, expected, r)
+  if isEmpty(datas)
+    ret union(noMatchErrs(nm.penLine, nm.refName, expected, all), tpErrs)
+  ret match(soleOf(datas))
     # A generic AMBIENT instance member that never committed a solved scope:
     # the use site could not bind the instance's placeholders — ambience
     # applies to concrete types only, so a name-match alone is NOT a
@@ -188,22 +191,24 @@ fun checkName(nm: PeName, r)
       : union(callerTypeParamErrs(f.fStmt, nm.refTypeParams,
                                    nm.penLine, r),
                tpErrs)
-    ()         => union(oneErr(nm.penLine,
-                    "Ambiguous reference '" + nm.refName
-                    + "' — qualify it. Candidates: "
-                    + join(sort(dedupeStrs(foundNames(datas,
-                                                      List()))),
-                           ", ")),
-             tpErrs)
+    ()         => union(severalNameErrs(nm, datas, expected), tpErrs)
+
+# Several candidates are left. An argument without a type cannot tell them
+# apart: UNDECIDED, and the argument's own error is the cause. Otherwise
+# `name` resolves more than one way — commonly a top-level namespace versus an
+# import-relative one. There is no precedence rule: the user must qualify, and
+# every candidate's fully-qualified name says which reading each one selects.
+fun severalNameErrs(nm: PeName, datas: Bag<Found>, expected: Spec|None): Set<PErr> =>
+  !shapeKnown(expected) ? noErrs()
+    : oneErr(nm.penLine, "Ambiguous reference '" + nm.refName
+                         + "' — qualify it. Candidates: "
+                         + join(dedupeStrs(sort(map(datas, (x) => x.fName))), ", "))
 
 fun unresolvedAmbient(nm: PeName, f: Found) => match(f.fInstanceParams)
   (own: List<String>) => !isEmpty(own) && match(nm.penTrait)
     (c: Spec) => false
     ()        => true
   ()                  => false
-
-fun foundNames(ds: List<Found>, acc): List<String> =>
-  fold(ds, acc, (a, x) => append(a, x.fName))
 
 # _distinct_resolutions: several ROUTES to one statement are one candidate.
 fun distinctFinds(ds: List<Found>) => dfLoop(ds, List(), List())

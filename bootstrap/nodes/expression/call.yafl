@@ -66,22 +66,15 @@ fun checkCall(c: PeCall, r) => match(c.pecOrigin)
 fun originErrs(o: POrigin, lr: PLine, errs: Set<PErr>): Set<PErr>
   let others = filter(errs, (e2) => !sameStart(e2.errLine, lr))
   ret !isEmpty(others) ? others
-    : map(errs, (e2) => PErr(e2.errLine, originReword(o, e2.errMsg), e2.errWarn, e2.errCategory))
+    : map(errs, (e2) => PErr(lr, originReword(o, e2.errMsg), e2.errWarn, e2.errCategory))
 
 fun checkCallPlain(c: PeCall, r)
   let calleeParams = paramShapeOf(exprType(c.function, r))
-  let fnErrs = checkExpr(c.function, r, None)
+  # The callee is LOADED to be called, so its check gets everything this call
+  # knows about it: a function taking these arguments. The load narrows its
+  # overloads by that shape and reports none or several (Python __check).
+  let fnErrs = checkExpr(c.function, r, callShape(c, r))
   let argErrs = checkExpr(c.parameter, r, calleeParams)
-  # Only when the name HAS candidates. A name that resolves to nothing at all
-  # is a different situation with its own correct message; rerouting it here
-  # would change an established diagnostic for no gain.
-  if !isEmpty(fnErrs) && isEmpty(argErrs) && paramShapeMissing(calleeParams)
-       && !isEmpty(calleeCandidates(c, r))
-    ret match(exprType(c.parameter, r))
-      (tp: STuple) => anyCandidateAccepts(c, tp, r)
-        ? union(fnErrs, argErrs)
-        : add(noErrs(), unresolvedCallError2(c, tp, r))
-      ()           => union(fnErrs, argErrs)
   let sub = union(fnErrs, argErrs)
   if !isEmpty(sub)
     ret sub
@@ -97,28 +90,77 @@ fun callShapeErrs(c: PeCall, ptype, r) => match(exprType(c.function, r))
     (o: Spec)       => add(noErrs(), unresolvedCallError(c, ptype, ft, r))
   ()         => add(noErrs(), unresolvedCallError2(c, ptype, r))
 
-fun calleeCandidates(c: PeCall, r) => match(c.function)
-  (nm: PeName) => findData(r, nm.refName).bItems
-  (o: PExpr)   => List()
+fun entryTyped(e: SEntry): Bool => match(e.seType)
+  (sp: Spec) => true
+  ()         => false
 
-fun paramShapeMissing(sp: Spec|None) => match(sp)
-  (s2: Spec) => false
-  ()         => true
+# What this call tells its callee: a function of the argument tuple (None
+# while the arguments have no type to say).
+fun callShape(c: PeCall, r): Spec|None => match(exprType(c.parameter, r))
+  (tp: STuple) => SCallable(tp, None, c.pecLine)
+  ()           => None
 
-# Does at least one overload of the callee accept these arguments? True means
-# the call really IS ambiguous — several readings fit and the author must
-# qualify. False means none fit, a different error with a different fix.
-# Narrowing goes through the same resolveOverloads the compile path uses, so
-# both agree about what "fits" (in particular about a candidate's own generic
-# parameters, which are wildcards it may bind).
-fun anyCandidateAccepts(c: PeCall, ptype, r) => match(c.function)
-  (nm: PeName) => candidatesAccept(findData(r, nm.refName).bItems, ptype, c, r)
-  (o: PExpr)   => false
+# A load's candidates narrowed by the function type it is expected to have (a
+# call's shape, or a function value's type). Any other expected type leaves
+# them alone (Python _narrowed_by_call).
+fun narrowedByCall(cands: List<Found>, expected: Spec|None, r): Bag<Found> => match(expected)
+  (c: SCallable) => resolveOverloads(r, c, cands)
+  (o: Spec)      => Bag(cands)
+  ()             => Bag(cands)
 
-fun candidatesAccept(cands, ptype, c: PeCall,
-                     r) => isEmpty(cands)
-  ? false
-  : !isEmpty(resolveOverloads(r, SCallable(ptype, None, c.pecLine), cands))
+# Can the expected type tell candidates apart? A call whose argument failed
+# has an untyped entry: every candidate might take it, so several left are
+# UNDECIDED, not ambiguous, and the argument's error is the cause (Python
+# _shape_known).
+fun shapeKnown(expected: Spec|None): Bool => match(expected)
+  (c: SCallable) => match(c.scParams2)
+    (tp: STuple) => all(tp.stEntries, entryTyped)
+    (o: Spec)    => true
+  (o: Spec)      => true
+  ()             => true
+
+# Nothing among `cands` has the expected shape: the load's own error (Python
+# _no_overload_error). Only a function type narrows to nothing; any other
+# expected type still reports, never drops, the name it could not resolve.
+fun noMatchErrs(line: PLine, name: String, expected: Spec|None, cands: List<Found>): Set<PErr> =>
+  match(expected)
+    (c: SCallable) => add(noErrs(), noOverloadError(line, name, c, map(cands, candidateSignature)))
+    (o: Spec)      => oneErr(line, "Failed to resolve " + name)
+    ()             => oneErr(line, "Failed to resolve " + name)
+
+# No candidate of `name` has the shape its load is expected to have (Python
+# no_overload_error). Qualifying is impossible here, so say what was asked for
+# (a call's arguments, or a function value's type) and what the candidates are.
+fun noOverloadError(line: PLine, name: String, shape: SCallable,
+                    types: List<Spec|None>): PErr
+  let shown = backTicked(bareOfUnique(name))
+  let sigs = sort(dedupeStrs(fold(types, List(), callableSigStep)))
+  if isEmpty(sigs)
+    ret match(firstSome(types, nonCallableOf))
+      (other: Spec) => PErr(line, shown + " is not a function — it is a " + typeStr(other))
+      ()            => noneFitsError(line, shown, shape, sigs)
+  ret noneFitsError(line, shown, shape, sigs)
+
+fun noneFitsError(line: PLine, shown: String, shape: SCallable, sigs: List<String>) =>
+  PErr(line, "no " + shown + " " + wantedOf(shape) + " — candidates: " + join(sigs, "; "))
+
+# A call's shape leaves the result open; any other expected function type is a
+# whole type the value must have.
+fun wantedOf(shape: SCallable): String => match(shape.scResult)
+  (res: Spec) => "has type " + typeStr2(shape)
+  ()          => "accepts arguments " + typeStr2(shape.scParams2)
+
+fun callableSigStep(a: List<String>, ty: Spec|None) => match(ty)
+  (sp: Spec) => match(sp)
+    (cl: SCallable) => append(a, typeStr(ty))
+    (o: Spec)       => a
+  ()         => a
+
+fun nonCallableOf(ty: Spec|None): Spec|None => match(ty)
+  (sp: Spec) => match(sp)
+    (cl: SCallable) => None
+    (o: Spec)       => sp
+  ()         => None
 
 # The callee didn't resolve to a single callable. Say WHY in the author's
 # terms: the called name, the argument types, the candidate signatures.
@@ -134,40 +176,14 @@ fun unresolvedCallError(c: PeCall, ptype, ft: Spec, r) => match(c.function)
                        + typeStr(ft) + ")")
 
 fun namedCallError(c: PeCall, nm: PeName, ptype, r)
-  let name = backTicked(bareOfUnique(nm.refName))
   let cands = findData(r, nm.refName).bItems
   if isEmpty(cands)
-    ret PErr(c.pecLine, "no function named " + name + " is in scope")
-  let sigs = candidateSigs(cands, List())
-  if isEmpty(sigs)
-    ret match(firstNonCallable(cands))
-      (t2: Spec) => PErr(c.pecLine, name + " is not a function — it is a "
-                                    + typeStr(t2))
-      ()         => PErr(c.pecLine,
-                         "no " + name + " accepts arguments "
-                         + typeStr2(ptype) + " — candidates: ")
-  ret PErr(c.pecLine,
-           "no " + name + " accepts arguments " + typeStr2(ptype)
-           + " — candidates: " + join(sort(dedupeStrs(sigs)), "; "))
+    ret PErr(c.pecLine, "no function named " + backTicked(bareOfUnique(nm.refName))
+                        + " is in scope")
+  ret noOverloadError(c.pecLine, nm.refName, SCallable(ptype, None, c.pecLine),
+                      map(cands, candidateSignature))
 
 fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
-
-fun candidateSigs(cs: List<Found>, acc): List<String> =>
-  fold(cs, acc, candidateSigsStep)
-
-fun candidateSigsStep(a: List<String>, x: Found) => match(stmtType(x.fStmt))
-  (ty: Spec) => match(ty)
-    (cl: SCallable) => append(a, typeStr(ty))
-    (o: Spec) => a
-  () => a
-
-fun firstNonCallable(cs: List<Found>) => firstSome(cs, nonCallableType)
-
-fun nonCallableType(c: Found) => match(stmtType(c.fStmt))
-  (ty: Spec) => match(ty)
-    (cl: SCallable) => None
-    (o: Spec)       => ty
-  ()         => None
 
 # The callee's type as THIS call sees it: tuples its signature leaves unnamed
 # carry the field names the arguments supply (call.py __callee_type).

@@ -28,27 +28,33 @@ fun ddsLoop(ss: List<String>, acc: List<String>) =>
 
 # ── DotExpression ───────────────────────────────────────────────────────────
 
-fun checkDot(d: PeDot, r) => match(exprType(d.base, r))
+fun checkDot(d: PeDot, r, expected: Spec|None) => match(exprType(d.base, r))
   (t2: STuple) => tupleFieldExists(t2.stEntries, d.member)
     ? noErrs()
     : oneErr(d.pedLine, "Could not find field " + d.member)
-  (c2: SClass) => checkClassDot(d, c2, r)
+  (c2: SClass) => checkClassDot(d, c2, r, expected)
   (e2: SEnum)  => checkEnumDot(d, e2, r)
   ()           => noErrs()
 
 fun tupleFieldExists(es: List<SEntry>, name: String) => any(es, (x) => x.seName == name)
 
-fun checkClassDot(d: PeDot, c2: SClass, r) => match(soleItem(findType(r, c2.scName)))
+fun checkClassDot(d: PeDot, c2: SClass, r, expected: Spec|None) => match(soleItem(findType(r, c2.scName)))
   (f: Found) => match(f.fStmt)
-    (cs: PsClass) => classDotErrs(d, classFindData(cs, r, d.member), c2.scName, r)
+    (cs: PsClass) => classDotErrs(d, classFindData(cs, r, d.member), c2.scName, r, expected)
     (o: PStmt)    => noErrs()
   ()         => noErrs()
 
-fun classDotErrs(d: PeDot, datas: List<Found>, owner: String, r: Resolver)
+fun classDotErrs(d: PeDot, datas: List<Found>, owner: String, r: Resolver,
+                 expected: Spec|None)
   if isEmpty(datas)
     ret oneErr(d.pedLine, "Could not find a field named " + d.member)
-  if sizeAtLeast(datas, 2)
-    ret oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
+  let narrowed = narrowedByCall(datas, expected, r)
+  if isEmpty(narrowed)
+    ret noMatchErrs(d.pedLine, d.member, expected, datas)
+  if isMoreThanOne(narrowed)
+    ret shapeKnown(expected)
+      ? oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
+      : noErrs()
   ret memberPrivacy(d, owner, r)
 
 # A member's namespace is its class's or enum's (#17).
