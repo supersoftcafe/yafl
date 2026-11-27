@@ -25,11 +25,13 @@ import Bootstrap::StdlibCandidates
 
 fun inlCutoffComplexity() => 5
 
-# The IR inliner's knob (--inline-threshold): compiler.py's InlineOptions.
-# The small-function cutoff, in ops (-O2 and up).
-class [final] InlineOpts(ioThreshold: Int)
+# The optimiser's knobs, from the command line (compiler.py's
+# OptimiserOptions): the IR inliner's small-function cutoff, in ops (-O2 and
+# up; --inline-threshold), and whether literal discovery runs (-O1 and up;
+# --no-literal-discovery turns it off, to measure what it costs and buys).
+class [final] OptimiserOpts(opThreshold: Int, opLiterals: Bool)
 
-fun inlineDefaults() => InlineOpts(inlCutoffComplexity())
+fun optimiserDefaults() => OptimiserOpts(inlCutoffComplexity(), true)
 
 # ── the pass ─────────────────────────────────────────────────────────────────
 

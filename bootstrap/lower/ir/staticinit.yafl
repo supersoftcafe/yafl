@@ -307,7 +307,9 @@ fun siLazyTargetAdd(acc: Dict<String, CgGlobal>,
 
 # One iteration of: promote NewObjects → inline single-use globals → trim.
 # One iteration of: promote constructions → settle globals whose initialiser
-# is now a constant → inline single-use globals → trim.
-fun convertStaticObjectsPass(a: CgApp, counter): (app: CgApp, counter: Int)
+# is now a constant (literal discovery, unless turned off) → inline
+# single-use globals → trim.
+fun convertStaticObjectsPass(a: CgApp, counter, settle: Bool): (app: CgApp, counter: Int)
   let p2 = siPromoteStaticObjects(a, counter)
-  ret (removedUnusedStuff(siInlineSingleUseGlobals(settleGlobals(p2.app))), p2.counter)
+  let settled = settle ? settleGlobals(p2.app) : p2.app
+  ret (removedUnusedStuff(siInlineSingleUseGlobals(settled)), p2.counter)

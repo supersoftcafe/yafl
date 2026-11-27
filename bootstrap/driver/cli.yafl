@@ -3,7 +3,7 @@
 #
 #   yaflc [-h] [-O LEVEL] [-a OUTFILE] [-c OUTFILE] [-o OUTFILE] [-L DIR]
 #              [--profile] [-W WARNING] [--test] [--inline-threshold OPS]
-#              files [files ...]
+#              [--no-literal-discovery] files [files ...]
 #
 # Same arguments, same errors, same exit codes, same C, same clang command. The
 # port used to have no command line at all — it read a pre-assembled `#FILE#`
@@ -61,11 +61,11 @@ fun progName() => baseName(argv0())
 class [final] CliScan(csHelp: Bool, csOpt: Int, csAsm: String|None, csC: String|None,
                       csOut: String|None, csLibs: List<String>,
                       csProfile: Bool, csWarns: List<String>, csTest: Bool,
-                      csThreshold: Int, csFiles: List<String>, csFormat: Bool, csFormatCheck: Bool,
-                      csLsp: Bool)
+                      csThreshold: Int, csNoLiterals: Bool, csFiles: List<String>, csFormat: Bool,
+                      csFormatCheck: Bool, csLsp: Bool)
 
 fun freshScan() => CliScan(false, 0, None, None, None, List(), false, List(), false,
-                           Bootstrap::Lower::Ir::inlCutoffComplexity(), List(), false, false, false)
+                           Bootstrap::Lower::Ir::inlCutoffComplexity(), false, List(), false, false, false)
 
 # The arguments, in the order main.py declares them (argparse adds -h first).
 fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like tool", List<Arg<CliScan>>()
@@ -92,6 +92,9 @@ fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like too
   |> (l) => append(l, Value(List("--inline-threshold"), "OPS",
                             "Inline functions of fewer than OPS ops at -O2 and above (default 5)",
                             setThreshold))
+  |> (l) => append(l, Flag(List("--no-literal-discovery"),
+                           "Do not run constant calls at compile time (literal discovery, -O1 and above)",
+                           (s: CliScan) => with s(csNoLiterals = true)))
   # The formatter (#91, driver/format.yafl): instead of compiling, put the
   # files in the language's one layout, or report the ones that are not.
   |> (l) => append(l, Flag(List("--format"), "Rewrite the files in the language's one layout instead of compiling",
@@ -130,7 +133,7 @@ fun cliBuild(s: CliScan, enabled: Set<String>, parsed: List<PStmt>): Int|IOError
   ret match(user)
     (why: String)       => exitWithOut(why, 1)
     (u: List<PStmt>)    => projectBuild(u, s.csLibs, s.csOpt, s.csProfile, enabled,
-                                        Bootstrap::Lower::Ir::InlineOpts(s.csThreshold))
+                                        Bootstrap::Lower::Ir::OptimiserOpts(s.csThreshold, !s.csNoLiterals))
       |> (b) => cliEmit(s, b)
 
 # `for w in sorted(set(warnings)): print(w, file=sys.stderr)`, then a failed

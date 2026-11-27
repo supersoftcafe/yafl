@@ -75,6 +75,12 @@ def main():
         help="Inline functions of fewer than OPS ops at -O2 and above (default 5)"
     )
 
+    # Literal discovery's off switch, for measuring what it costs and buys.
+    parser.add_argument(
+        "--no-literal-discovery", action="store_true",
+        help="Do not run constant calls at compile time (literal discovery, -O1 and above)"
+    )
+
     # Input: one or more .yafl files, or a project directory (compiled whole).
     parser.add_argument(
         "files", nargs="+",
@@ -101,7 +107,7 @@ def main():
             profile=args.profile,
             test_mode=args.test,
             enabled_warnings=enabled_warnings,
-            inline=c.InlineOptions(args.inline_threshold))
+            optimiser=c.OptimiserOptions(args.inline_threshold, not args.no_literal_discovery))
     except libraries.LibraryError as e:
         # Printed where compile_project prints its diagnostics, as the port does.
         print(f"error:{e}")

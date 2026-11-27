@@ -234,11 +234,13 @@ def inline_single_use_globals(app: Application) -> Application:
     )
 
 
-def convert_static_objects_pass(app: Application) -> Application:
+def convert_static_objects_pass(app: Application, settle: bool = True) -> Application:
     """One iteration of: promote constructions → settle globals whose
-    initialiser is now a constant → inline single-use globals → trim."""
+    initialiser is now a constant (literal discovery, unless turned off) →
+    inline single-use globals → trim."""
     app = promote_static_objects(app)
-    app = ld.settle_globals(app)
+    if settle:
+        app = ld.settle_globals(app)
     app = inline_single_use_globals(app)
     return lowering.trim.removed_unused_stuff(app)
 

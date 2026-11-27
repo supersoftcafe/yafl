@@ -150,8 +150,8 @@ def _body(code: str, fn: str) -> str:
     return code[m.end():code.index("\n}\n", m.end())]
 
 
-def _c(src: str, level: int) -> str:
-    code = compile_c(src, optimization_level=level)
+def _c(src: str, level: int, args: tuple[str, ...] = ()) -> str:
+    code = compile_c(src, optimization_level=level, args=args)
     assert code, "compilation failed"
     return code
 
@@ -205,3 +205,8 @@ class TestLiteralDiscovery(TestCase):
         code = _c(_AFTER_INLINING, 3)
         self.assertNotIn(_ARRAY_OF, code, "the array is still built at run time")
         self.assertRegex(code, _elements(97, 98), "its elements are not static data")
+
+    def test_it_can_be_turned_off(self):
+        # --no-literal-discovery: the array is built at run time again.
+        code = _c(_IN_FUNCTION, 1, args=("--no-literal-discovery",))
+        self.assertIn(_ARRAY_OF, code, "the constant call was still run by the compiler")
