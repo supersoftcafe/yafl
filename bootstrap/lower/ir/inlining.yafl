@@ -27,8 +27,10 @@ fun inlCutoffComplexity() => 5
 
 # The optimiser's knobs, from the command line (compiler.py's
 # OptimiserOptions): the IR inliner's small-function cutoff, in ops (-O2 and
-# up; --inline-threshold), and whether literal discovery runs (-O1 and up;
-# --no-literal-discovery turns it off, to measure what it costs and buys).
+# up; --inline-threshold), and whether literal discovery runs constant calls
+# at compile time (its stage 1, -O1 and up; --no-literal-discovery turns it
+# off, to measure what it costs and buys — stage 2's statics are made either
+# way).
 class [final] OptimiserOpts(opThreshold: Int, opLiterals: Bool)
 
 fun optimiserDefaults() => OptimiserOpts(inlCutoffComplexity(), true)

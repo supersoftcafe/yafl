@@ -174,8 +174,9 @@ def __ensure_lazy_machinery(a: Application) -> None:
 class OptimiserOptions:
     """The optimiser's knobs, from the command line: the IR inliner's
     small-function cutoff, in ops (-O2 and up; main.py --inline-threshold),
-    and whether literal discovery runs (-O1 and up; --no-literal-discovery
-    turns it off, to measure what it costs and buys)."""
+    and whether literal discovery runs constant calls at compile time (its
+    stage 1, -O1 and up; --no-literal-discovery turns it off, to measure what
+    it costs and buys — stage 2's statics are made either way)."""
     threshold: int = lowering.inlining.CUTOFF_COMPLEXITY
     literal_discovery: bool = True
 
@@ -279,7 +280,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
         # global, then single-use static globals fold into their lazy-init
         # targets.
         for _ in range(4):
-            a = lowering.staticinit.convert_static_objects_pass(a, settle=optimiser.literal_discovery)
+            a = lowering.staticinit.convert_static_objects_pass(a)
 
         # Dead store elimination again: static-init may expose additional dead stores.
         a = lowering.trim.removed_unused_stuff(lowering.deadstores.eliminate_dead_stores(a))

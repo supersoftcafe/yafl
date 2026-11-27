@@ -142,6 +142,20 @@ fun main(): Int
   ret near(97i32, sizeAtLeast(args(), 2) ? 120i32 : 98i32) ? 0 : 1
 """
 
+# A global whose initialiser is a constant — here a function — is settled by
+# stage 2, which runs no calls, so it is settled with stage 1 turned off too.
+_CONSTANT_GLOBAL = """namespace Test
+import System
+
+fun impl(s: String): Int
+  ret length(s)
+
+let h: (:String): Int = impl
+
+fun main(): Int
+  ret h("abc") + h("de") - 5
+"""
+
 
 def _body(code: str, fn: str) -> str:
     """The C body of the function whose definition starts `fn`."""
@@ -210,3 +224,8 @@ class TestLiteralDiscovery(TestCase):
         # --no-literal-discovery: the array is built at run time again.
         code = _c(_IN_FUNCTION, 1, args=("--no-literal-discovery",))
         self.assertIn(_ARRAY_OF, code, "the constant call was still run by the compiler")
+
+    def test_a_constant_global_is_settled_when_turned_off(self):
+        # --no-literal-discovery turns off running calls, not settling.
+        code = _c(_CONSTANT_GLOBAL, 1, args=("--no-literal-discovery",))
+        self.assertNotIn("lambda_Test__h", code, "the global still has a run-time initialiser")
