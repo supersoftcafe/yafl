@@ -140,10 +140,14 @@ static integer_t* _normalize_integer(integer_t* result) {
         result->length -= 1;
     }
 
-    // If the result can be a literal, convert it to a literal
-    if (result->length == 1 && result->array[0] <= UINTPTR_MAX/4) {
-        if (!result->sign || result->array[0] < UINTPTR_MAX/4) {
-            return _TAG_LITERAL(result->sign ? -(intptr_t)result->array[0] : (intptr_t)result->array[0]);
+    // If the result can be a literal, convert it to a literal: inside the
+    // tagged range [INTPTR_MIN/4, INTPTR_MAX/4], exactly as
+    // _integer_from_intptr admits one. (UINTPTR_MAX/4 here once admitted
+    // magnitudes up to 2^62, whose shifted value wrapped.)
+    if (result->length == 1) {
+        uintptr_t m = result->array[0];
+        if (result->sign ? m <= (uintptr_t)INTPTR_MAX/4 + 1 : m <= (uintptr_t)INTPTR_MAX/4) {
+            return _TAG_LITERAL(result->sign ? -(intptr_t)m : (intptr_t)m);
         }
     }
 

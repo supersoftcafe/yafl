@@ -287,7 +287,7 @@ class TestBootstrapCli(TimedTestCase):
         (["--inline-threshold", "x", "a"], 2, "--inline-threshold"),
         (["--inline-threshold=1.5", "a"], 2, "--inline-threshold"),
         (["--inline-threshold"], 2, "--inline-threshold"),
-        (["--inline-threshold", " 1_0 ", "a"], 1, "a"), (["--no", "a"], 2, "--no"),
+        (["--inline-threshold", " 1_0 ", "a"], 1, "a"), (["--nope", "a"], 2, "--nope"),
         (["-h"], 0, None), (["--he"], 0, None), (["-hx"], 0, None), (["-hxyz"], 0, None),
         (["-hO3"], 0, None), (["-hO9"], 0, None), (["-hc", "x"], 0, None),
         (["-O3", "-h", "-O9"], 0, None), (["-o=x", "-hx"], 0, None),

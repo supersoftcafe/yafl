@@ -612,7 +612,7 @@ fun baseHeaders() => prepend("yafl.h", List())
 # order and the program's own last (#136; __iterate_and_compile).
 fun cModeConverge(layers: List<List<PStmt>>, owners: List<Owner>, optLevel, profile,
                   headers: List<System::String>,
-                  enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::InlineOpts): (outs: List<String>, code: Int, warns: String)
+                  enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::OptimiserOpts): (outs: List<String>, code: Int, warns: String)
   let gr = timed("compile", "converge+mono", () => convergeToPostmono(layers, owners, enabledWarnings))
   let warnsText = printedDiagnostics(gr.grWarns)
   ret match(gr.grRes)
@@ -740,7 +740,7 @@ fun projectTestMode(text, optLevel, profile,
 
 fun projectCompile(user, optLevel, profile,
                    enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
-  ret projectBuild(user, List(), optLevel, profile, enabledWarnings, Bootstrap::Lower::Ir::inlineDefaults())
+  ret projectBuild(user, List(), optLevel, profile, enabledWarnings, Bootstrap::Lower::Ir::optimiserDefaults())
     |> (b) => (b.pbOuts, b.pbCode, b.pbWarns)
 
 # compile_project's whole result: the C (or the printed diagnostics), the exit
@@ -751,7 +751,7 @@ class [final] ProjectBuild(pbOuts: List<String>, pbCode: Int, pbWarns: String,
 
 # `extra` is compile_project's `lib_paths`: searched BEFORE YAFL_PATH.
 fun projectBuild(user, extra: List<String>, optLevel, profile,
-                 enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::InlineOpts): ProjectBuild
+                 enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::OptimiserOpts): ProjectBuild
   ret match(timed("compile", "libraries", () => loadProject(user, extra)))
     (why: String)      => ProjectBuild(list1("error:" + why + "\n"), 1, "", None)
     (pe: LoadErrors)  => ProjectBuild(list1(printedDiagnostics(pe.peErrs)), 1, "", None)
@@ -1172,7 +1172,7 @@ fun partText(parts: Dict<String, String>, name: String) => match(get(parts, name
   ()           => ""   # unreachable: the name came from keys(parts)
 
 fun cStage(stmts: List<PStmt>, optLevel, profile,
-           headers: List<System::String>, inl: Bootstrap::Lower::Ir::InlineOpts): (outs: List<String>, code: Int)
+           headers: List<System::String>, inl: Bootstrap::Lower::Ir::OptimiserOpts): (outs: List<String>, code: Int)
   let tl = timed("lower", "lift+hoist+tail", () => stmts
     |> liftCapturedCalls
     |> hoistNestedFunctions
@@ -1218,7 +1218,7 @@ fun cIsBigintRet(ret2: Spec|None) => match(ret2)
 
 fun cEmit(stmts, mainName, optLevel,
           profile,
-          headers: List<System::String>, inl: Bootstrap::Lower::Ir::InlineOpts): (outs: List<String>, code: Int)
+          headers: List<System::String>, inl: Bootstrap::Lower::Ir::OptimiserOpts): (outs: List<String>, code: Int)
   let out = timed("codegen", "create_c_code", () => createCCode(stmts, mainName, optLevel, profile, headers, inl))
   ret isEmpty(out.ccErrors)
     ? (out.ccParts, 0)

@@ -113,8 +113,14 @@ class CoalesceExpression(Expression):
         st = subject.get_type(resolver)
         narrowed = without_none(st) if st is not None else None
         # A placeholder from outside this scope is a hole, not a type: a
-        # partly bound generic call reads `V|None` until V is bound.
-        if narrowed is not None and st.is_concrete() and not t.has_free_placeholders(st, resolver):
+        # partly bound generic call reads `V|None` until V is bound. The
+        # fallback's type must be settled too: the match's arms are converted
+        # into the join of both at the desugar, and only then — a join taken
+        # while the fallback is still untyped is the hit arm alone, and the
+        # fallback arm, an option once it settles, is never converted into it.
+        ft = self.fallback.get_type(resolver)
+        if (narrowed is not None and st.is_concrete() and not t.has_free_placeholders(st, resolver)
+                and ft is not None and ft.is_concrete() and not t.has_free_placeholders(ft, resolver)):
             # Desugar from the ORIGINAL children, and drop `s1`. The match
             # compiles its own subject and arms, so passing the already-compiled
             # ones would compile each twice — and a compile is not idempotent

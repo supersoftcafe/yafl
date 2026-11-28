@@ -391,10 +391,19 @@ class Global:
         if self.object_name and self.init:
             if not isinstance(self.init, p.NewStruct):
                 raise ValueError("init must be NewStruct")
-            if self.init.values and isinstance(self.init.values[-1], p.InitArray):
-                return (f"{storage}struct {{\n"
-                        + "".join(f"    {value.get_type().declare(type_cache)} {name};\n" for name, value in self.init.values) +
-                        f"}}[1] {self.to_c_name()}")
+            if self.init.values and isinstance(self.init.values[-1][1], p.InitArray):
+                # An array instance: its own data type, the object's fields
+                # with the trailing storage sized to the elements it holds.
+                # Declared once, with the prototype, so the definition and
+                # every `&<name>_data` read it the same way.
+                typedef = ""
+                if storage:
+                    fields = "".join(f"    {self.__field_decl(type_cache, name, value)};\n"
+                                     for name, value in self.init.values)
+                    typedef = (f"typedef struct {{\n    object_t* type;\n{fields}}} ALIGNED "
+                               f"{self.to_c_name()}_data_t;\n")
+                return (f"{typedef}{storage}{self.to_c_name()}_data_t {self.to_c_name()}_data;\n"
+                        f"{storage}object_t* {self.to_c_name()}")
             # Static object globals are declared as object_t* pointing to a named
             # struct. Tentatively declare the data struct too, so one static's
             # initialiser can take another's address regardless of emission
@@ -403,6 +412,13 @@ class Global:
             return (f"{storage}{mangle_name(self.object_name)}_t {self.to_c_name()}_data;\n"
                     f"{storage}object_t* {self.to_c_name()}")
         return f"{storage}{self.type.declare(type_cache)} {self.to_c_name()}"
+
+    @staticmethod
+    def __field_decl(type_cache: dict[t.Type, tuple[str, str]], name: str, value: p.RParam) -> str:
+        if isinstance(value, p.InitArray):
+            return (f"struct {{ {value.member_type.declare(type_cache)} a[{len(value.values)}]; }} "
+                    f"{mangle_name(name)}")
+        return f"{value.get_type().declare(type_cache)} {mangle_name(name)}"
 
     def to_c_prototype(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"{self.__prototype(type_cache, 'extern ')};\n"
@@ -431,13 +447,13 @@ class Global:
             # means "forwarding pointer". Written as `(char*)obj_X + 2` and
             # not `| 2` because only pointer arithmetic on an address
             # constant is a C constant expression.
-            if self.init.values and isinstance(self.init.values[-1], p.InitArray):
-                return (f"{self.__prototype(type_cache, '')} = {{\n"
-                 f"    (object_t*)((char*)obj_{mangle_name(self.object_name)} + VTABLE_TAG_BIT)\n"
-                 + "".join(f"  , {value.to_c(type_cache)}\n" for name, value in self.init.values) +
-                 f"}};\n")
-            # Generate a named struct for the data, then a pointer to it.
             data_name = f"{self.to_c_name()}_data"
+            if self.init.values and isinstance(self.init.values[-1][1], p.InitArray):
+                body = ("    (object_t*)((char*)obj_{} + VTABLE_TAG_BIT)\n".format(mangle_name(self.object_name))
+                        + "".join(f"  , {value.to_c(type_cache)}\n" for _, value in self.init.values))
+                return (f"{data_name}_t {data_name} = {{\n{body}}};\n"
+                        f"object_t* {self.to_c_name()} = (object_t*)&{data_name};\n")
+            # Generate a named struct for the data, then a pointer to it.
             struct_body = ("    (object_t*)((char*)obj_{} + VTABLE_TAG_BIT)\n".format(mangle_name(self.object_name))
                            + "".join(f"  , {value.to_c(type_cache)}\n" for _, value in self.init.values))
             return (f"{mangle_name(self.object_name)}_t {data_name} = {{\n"

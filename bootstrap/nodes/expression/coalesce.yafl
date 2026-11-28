@@ -25,11 +25,19 @@ fun compileCoalesce(qq: PeCoalesce, r, expected)
   let subj = compileExpr(qq.qqSubject, r, None)
   ret match(exprType(subj.eoExpr, r))
     # A placeholder from outside this scope is a hole, not a type: a partly
-    # bound generic call reads `V|None` until V is bound.
-    (st: Spec) => isConcrete(st) && !hasFreePlaceholders(st, r)
+    # bound generic call reads `V|None` until V is bound. The fallback's type
+    # must be settled too: the arms are converted into the join of both at the
+    # desugar, and only then — a join taken while the fallback is still
+    # untyped is the hit arm alone, and the fallback arm, an option once it
+    # settles, is never converted into it.
+    (st: Spec) => isConcrete(st) && !hasFreePlaceholders(st, r) && coalesceSettled(exprType(qq.qqFallback, r), r)
       ? coalesceOn(qq, subj, st, r, expected)
       : coalesceStay(qq, subj, r, expected)
     ()         => coalesceStay(qq, subj, r, expected)
+
+fun coalesceSettled(ft: Spec|None, r): Bool => match(ft)
+  (f: Spec) => isConcrete(f) && !hasFreePlaceholders(f, r)
+  ()        => false
 
 fun coalesceOn(qq: PeCoalesce, subj: ExprOut, st, r,
                expected) => match(withoutNone(st))

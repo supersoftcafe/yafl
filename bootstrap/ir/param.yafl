@@ -138,7 +138,7 @@ fun rpGetType(r) => match(r)
   (x: RpGlobalVar) => x.fieldType
   (x: RpObjectField) => x.fieldType
   (x: RpArrayElement) => x.elementType
-  (x: RpInitArray) => CgVoid()   # unreachable: Python's InitArray never overrides get_type()
+  (x: RpInitArray) => CgArray(x.memberType, fold(x.values, 0, (n, v) => n + 1))
   (x: RpFunField) => x.ffPart == "f" ? CgIntPtr(rpFunHasCode(rpGetType(x.ffFun))) : CgDataPointer(false)
   (x: RpMakeFun) => CgFuncPointer(false, false)
   (x: RpNarrowInt) => x.niType

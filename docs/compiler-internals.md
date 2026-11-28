@@ -328,6 +328,8 @@ this is the collected summary. **AST-level**, after the fixpoint and checks:
 |---|---|
 | `ssa_validate` | immediately, to catch generator bugs at the source. |
 | `trim` → `globalfuncs` | dead-code removal runs between most passes; reachability from the entrypoint. |
+| `literal_discovery` (stage 1) | -O1+, after inlining and dead stores, before `staticinit`: a call whose arguments are literals (constants, or objects the function builds from them) is run by a small IR interpreter (10,000 steps, 64 KiB of data), and its value written back as plain constructions — a literal for the next call. Anything else stays a call: nothing is run ahead of where the program runs it. |
+| `staticinit` (stage 2) | a construction of literals becomes a static global (an array trimmed to its length; never a pinned object or another `[pinnable]` one); a lazy global whose initialiser is a constant is settled. Shares the interpreter's reader and emitter. |
 | `inlining` (+`deadstores`, `staticinit`) | -O2/-O3 only, iterated to a shape fixpoint with trim in between: functions under the size threshold (`--inline-threshold`, default 5 ops), and at -O3 `[inline(always)]` ones at any size. A function on a call-graph cycle (`trim.recursive_functions`) is never inlined. |
 | `sync_inference` | proves which functions can never suspend (they keep the C stack convention). |
 | `branch_threading` + `copy_propagation` | collapse ternary/match residue so tail calls become recognisable to async lowering. At -O1+ these iterate to a fixpoint with the three known-value stages below — each unlocks the next, and everything deleted here is a slot the state machine never saves. |
