@@ -102,9 +102,7 @@ static void __attribute__((noinline)) build(object_t** root, vtable_t* vt, size_
             GC_STORE_IN(c, c->item[k], 1, o);
         }
         head = c;
-        gc_root_overwrite(root, 1);
-        *root = (object_t*)head;
-        gc_root_publish(root, 1);
+        GC_ROOT_STORE(*root, 1, (object_t*)head);
     }
 }
 

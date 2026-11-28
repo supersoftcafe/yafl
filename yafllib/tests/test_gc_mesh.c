@@ -330,12 +330,10 @@ static void _entrypoint(object_t* self, fun_t continuation) {
     (void)self;
     _exit_cont = continuation;
     for (int i = 0; i < _workers * CELLS_PER_WORKER; ++i) {
-        _cells[i] = object_create(&cell_vt);
-        gc_root_publish(&_cells[i], 1);
+        GC_ROOT_STORE(_cells[i], 1, object_create(&cell_vt));
     }
     for (int i = 0; i < _workers; ++i) {
-        _stashes[i] = object_create(&stash_vt);
-        gc_root_publish(&_stashes[i], 1);
+        GC_ROOT_STORE(_stashes[i], 1, object_create(&stash_vt));
     }
     atomic_store(&_remaining, _workers);
     pthread_t wd; pthread_create(&wd, NULL, _watchdog, NULL); pthread_detach(wd);

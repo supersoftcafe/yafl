@@ -17,6 +17,13 @@
 //      body does not — the caller's stale copy stays stale.
 //   5. OLD. P's page is old: the fill cards P, and minors keep the value
 //      alive through the card.
+//   6. STATIC. S is a static object, as the code generator lays one out:
+//      its pointer field a declared root. The fast path's pending-scan check
+//      ran before the cycle opened (another thread opened it), so the fill
+//      lands after the open with no barrier and no publication; V is then
+//      dropped before this thread's stack scan. The declared roots are read
+//      after every stack scan, as heap fields are traced, so they see V.
+//      Taken apart as the race takes it apart, as test_gc_static_store does.
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
@@ -43,6 +50,8 @@ static vtable_t node_vt = {
     .array_el_pointer_locations = 0, .functions_mask = 0, .array_len_offset = 0,
     .is_mutable = 0, .name = "ps_node", .implements_array = VTABLE_IMPLEMENTS(0),
 };
+// S (case 6): a static object, its slot a declared root (_decl).
+static struct node s_static = { { VTABLE_TAG_CONST(&node_vt) }, NULL, 6 };
 // Half a page, so P's page is never sparse and the compactor leaves it alone.
 struct parent { object_t parent; object_t* slot; char pad[8192 - sizeof(object_t) - sizeof(object_t*)]; };
 static vtable_t parent_vt = {
@@ -82,6 +91,7 @@ static roots_declaration_func_t _prev;
 static void _decl(void(*declare)(object_t**)) {
     _prev(declare);
     for (int i = 0; i < ROOTS; ++i) declare(&_roots[i]);
+    declare(&s_static.slot);
 }
 
 // The addresses, where the collector does not look: a local holding one
@@ -283,6 +293,25 @@ static void old_target(void) {
     }
 }
 
+// ── 6: static ───────────────────────────────────────────────────────────────
+
+// The fast path's store, its check passed before the cycle opened.
+static void __attribute__((noinline)) fill_half(void) {
+    GC_PUBLISH_FENCE();
+    s_static.slot = (object_t*)g_V;
+}
+
+static void static_target(void) {
+    new_leaf(&g_V);
+    scrub();
+    step_to(GC_STAGE_SCAN_ROOTS);   // open: this thread's own scan still pending
+    fill_half();
+    scrub();
+    step_to(GC_STAGE_IDLE);
+    if (s_static.slot != (object_t*)g_V) fail("the fill did not land in the static", 0);
+    if (state(g_V) != 1) fail("a value filled into a static as the cycle opened was reclaimed", state(g_V));
+}
+
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
@@ -293,6 +322,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     peer_pin();
     moved();
     old_target();
+    static_target();
 
     printf("test_gc_pin_set: OK\n");
     fflush(stdout);

@@ -31,12 +31,13 @@
 //
 // STAGES  (enum gc_stage, gc_internal.h; `stage` is the atomic word):
 //
-//   IDLE -> START -> SCAN_ROOTS -> MARK_SWEEP -> PRUNE -> IDLE ...
+//   IDLE -> START -> STARTING -> SCAN_ROOTS -> MARK_SWEEP -> PRUNE -> IDLE ...
 //
 //   There are NO dedicated GC threads: every allocating worker drives the
 //   machine through gc_fsa(), paced by its own allocation (see pacing below).
-//   START and SCAN_ROOTS are EXCLUSIVE — one executor at a time under
-//   fsa_lock. MARK_SWEEP and PRUNE are PARALLEL — every caller becomes an
+//   START, STARTING and SCAN_ROOTS are EXCLUSIVE — one executor at a time
+//   under fsa_lock (STARTING's acknowledgements take no lock: THE OPENING
+//   HANDSHAKE). MARK_SWEEP and PRUNE are PARALLEL — every caller becomes an
 //   executor, takes no lock, and claims work page-by-page.
 //
 // OWNERSHIP  Page claims are the unit of parallelism: an executor pops a page
@@ -646,6 +647,38 @@ alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &page
 // a mark after the opening; x86 orders it anyway. Stamps wrap after 2^31
 // cycles: a major, the only cycle that looks at old pages, restamps each one
 // white as it takes it in.
+
+// THE OPENING HANDSHAKE. A store's barrier reads gc_write_barrier_requested
+// and its store follows, with no safe point in between: the store macros
+// (yafl.h) evaluate the value first, so nothing between the read and the
+// store can allocate. A thread can read the flag down, the cycle open, and
+// only then the store land, overwriting a value it never shaded. Were any
+// thread scanned before that store, a value it loaded from the slot after its
+// scan would be seen by nothing: not its stack (scanned before the load), not
+// the slot (overwritten), not the barrier (it read the flag down)
+// (test_gc_start_handshake). So no scan begins until every thread has
+// acknowledged the open cycle: START raises the flag, and STARTING waits.
+//
+//   * A thread acknowledges at its own safe point (gc_fsa_impl), with or
+//     without fsa_lock, by recording the cycle in acked_cycle. Its stage load
+//     is an acquire of the release that published STARTING after the flag
+//     went up, so every barrier it runs from then on reads the flag up.
+//   * A thread that is SUSPENDED is in a safe place by definition: the
+//     collector acknowledges for it (gc_fsa_starting). Its resume is a
+//     seq_cst CAS on the state the collector read, after the flag went up,
+//     so its barriers read the flag up too.
+//   * A thread registering mid-cycle has run no barrier: it starts
+//     acknowledged (gc_declare_thread).
+//
+// GC_SAFE_POINT_SCAN_ROOTS, set at START, brings each running thread to
+// gc_fsa, where it acknowledges, and later to its root scan. From the end of
+// STARTING every overwrite shades what it overwrites: the snapshot is taken
+// there. The declared roots (static objects' slots, the scheduler queues) are
+// read after every stack, at the end of SCAN_ROOTS. A value a thread stores
+// into one before its own scan, and then drops, is read there, or shaded by
+// the store that overwrites it first. So a root slot owes a marker nothing a
+// heap field does not, and a store into a static object or a root slot needs
+// nothing after it.
 
 // Cycles OPENED, bumped at START; gc_cycle_count counts cycles completed, at
 // the end of prune. Between cycles they are equal; during one, this is one
@@ -1492,16 +1525,20 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
 
     // Listed under fsa_lock, which every move into and out of the root scan
     // holds: so the cycle this thread's first scan falls in is known here,
-    // and its pages are stamped for it (see THE HAND-OFF). Mid-scan, this
-    // cycle's, still to scan it — and until then the thread allocates black
-    // and shades what it stores, like every thread the cycle opened on
-    // (GC_SAFE_POINT_SCAN_ROOTS); otherwise the next one's.
+    // and its pages are stamped for it (see THE HAND-OFF). Opening or
+    // mid-scan, this cycle's, still to scan it — and until then the thread
+    // allocates black and shades what it stores, like every thread the cycle
+    // opened on (GC_SAFE_POINT_SCAN_ROOTS); otherwise the next one's.
     for (bool expected = false;
          !atomic_compare_exchange_weak(&fsa_lock, &expected, true);
          expected = false)
         cpu_relax();
+    // It has run no barrier, so it starts out acknowledging the cycle open
+    // now, if any (THE OPENING HANDSHAKE).
     uint32_t cycle = atomic_load_explicit(&gc_handoff_cycle, memory_order_relaxed);
-    if (atomic_load_explicit(&stage, memory_order_relaxed) == GC_STAGE_SCAN_ROOTS) {
+    atomic_store_explicit(&gc_thread_info.acked_cycle, cycle, memory_order_relaxed);
+    enum gc_stage st = atomic_load_explicit(&stage, memory_order_relaxed);
+    if (st == GC_STAGE_STARTING || st == GC_STAGE_SCAN_ROOTS) {
         gc_thread_info.scanned_cycle = cycle - 1;
         atomic_fetch_or(&gc_alloc_tl.safe_point_request, GC_SAFE_POINT_SCAN_ROOTS);
     } else {
@@ -1771,19 +1808,12 @@ EXPORT void gc_store_before(object_t **slot, ptr_mask_t mask) {
     if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier_in2(slot, mask);
     GC_PUBLISH_FENCE();
 }
-EXPORT void gc_store_static_after(object_t **slot, ptr_mask_t mask) {
-    gc_publish_slots(slot, mask);
-}
 // The atomic stores (yafl.h, "The atomic stores"). Before each attempt: the
-// overwrite's barrier and the shade of `expected`. After a landed CAS into a
-// static slot: publish.
+// overwrite's barrier and the shade of `expected`.
 EXPORT bool gc_cas(_Atomic(object_t*) *slot, object_t **expected, object_t *desired) {
     gc_store_before((object_t**)slot, 1);
     if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(*expected);
-    if (!atomic_compare_exchange_strong(slot, expected, desired))
-        return false;
-    if (UNLIKELY(!gc_in_heap((void*)slot))) gc_store_static_after((object_t**)slot, 1);
-    return true;
+    return atomic_compare_exchange_strong(slot, expected, desired);
 }
 EXPORT object_t *gc_exchange(_Atomic(object_t*) *slot, object_t *desired) {
     object_t *old = atomic_load(slot);
@@ -2226,27 +2256,33 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     gc_handoff_open_cycle();
     atomic_thread_fence(memory_order_release);
     gc_write_barrier_requested = true;
-    // Pairs with the fence in gc_root_publish: a store into a root slot is
-    // either read by the snapshot below or published under the flag.
+    // The flag before any thread's state is read (gc_fsa_starting): a thread
+    // seen suspended resumes after it, and reads it up.
     atomic_thread_fence(memory_order_seq_cst);
 
-    // EARLY declared-roots pass, with the deletion barrier already ON: the
-    // SATB root snapshot. A late-only read (end of SCAN_ROOTS) is unsound —
-    // a ratcheting root moves onto a birth-protected page between a
-    // thread's take and any later read, hiding the chain's tail on taken
-    // pages: the test_gc_pressure DANGLE. From this point on, root
-    // MUTATIONS carry an obligation, exactly as heap fields do:
-    // gc_root_overwrite shades a slot's outgoing occupant before a store,
-    // gc_root_publish what the slot holds after it, which its thread may drop
-    // before its take-time stack scan. See yafl.h, "The mutable-root contract".
-    declare_roots_yafl(atomic_gc_object_seen_by_field);
-    declare_roots_thread(atomic_gc_object_seen_by_field);
-
+    // Every thread to a safe point: to acknowledge the cycle, then for its
+    // root scan (THE OPENING HANDSHAKE).
     for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
         atomic_fetch_or(&thread->alloc->safe_point_request, GC_SAFE_POINT_SCAN_ROOTS);
         thread->roots_scanned = false;
     }
 
+    return GC_STAGE_STARTING;
+}
+
+// No scan until every thread has acknowledged the open cycle (THE OPENING
+// HANDSHAKE). The caller acknowledged on its way in (gc_fsa_impl); a
+// suspended thread is acknowledged here, for it. A running thread that has
+// not yet reached a safe point holds the cycle here.
+static NOINLINE_DEBUG enum gc_stage gc_fsa_starting() {
+    uint32_t cycle = atomic_load_explicit(&gc_handoff_cycle, memory_order_relaxed);
+    for (struct gc_thread_info *thread = threads; thread != NULL; thread = thread->next) {
+        if (atomic_load_explicit(&thread->acked_cycle, memory_order_acquire) == cycle)
+            continue;
+        if (atomic_load(&thread->thread_state) == THREAD_STATE_RUNNING)
+            return GC_STAGE_STARTING;
+        atomic_store_explicit(&thread->acked_cycle, cycle, memory_order_relaxed);
+    }
     return GC_STAGE_SCAN_ROOTS;
 }
 
@@ -2368,17 +2404,11 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         if (!thread->roots_scanned)
             return GC_STAGE_SCAN_ROOTS;
 
-    // The declared roots are NOT re-scanned here. They were read once, at
-    // cycle open (gc_fsa_start), with the deletion barrier already on —
-    // the SATB root snapshot (the original design). Root mutations after
-    // that carry the obligation, exactly as heap fields do:
-    // gc_root_overwrite / gc_root_publish (yafl.h, "The mutable-root
-    // contract"); the scheduler queues, IO slots, the lazy-init machinery
-    // and the C tests all comply. A late pass used to run here; an earlier
-    // "the late pass is load-bearing" finding was an artefact of a broken
-    // experiment that had deleted the EARLY pass calls — with the early
-    // pass present, the whole suite (and 20-run pressure soaks) is green
-    // without it.
+    // The declared roots, after every stack (THE OPENING HANDSHAKE): what a
+    // slot holds now, and what any store since the cycle opened overwrote,
+    // which that store's barrier shaded.
+    declare_roots_yafl(atomic_gc_object_seen_by_field);
+    declare_roots_thread(atomic_gc_object_seen_by_field);
 
     // The carded old objects are roots of a minor (late writes made before
     // their writer's scan among them).
@@ -3763,6 +3793,14 @@ static NOINLINE_DEBUG bool gc_fsa_impl() {
         return true;
     }
 
+    // A thread at a safe point while the cycle opens acknowledges it, whether
+    // or not it gets the lock (THE OPENING HANDSHAKE). The acquire load above
+    // read the release that published STARTING, after the flag went up.
+    if (st == GC_STAGE_STARTING)
+        atomic_store_explicit(&gc_thread_info.acked_cycle,
+                              atomic_load_explicit(&gc_handoff_cycle, memory_order_relaxed),
+                              memory_order_release);
+
     // EXCLUSIVE stages: the original single-executor path.
     bool expected = false;
     if (!atomic_compare_exchange_strong(&fsa_lock, &expected, true)) {
@@ -3801,6 +3839,11 @@ static NOINLINE_DEBUG bool gc_fsa_impl() {
         case GC_STAGE_START:
             LOG(TRACE, "GC_STAGE_START");
             atomic_store_explicit(&stage, gc_fsa_start(), memory_order_release);
+            break;
+
+        case GC_STAGE_STARTING:
+            LOG(TRACE, "GC_STAGE_STARTING");
+            atomic_store_explicit(&stage, gc_fsa_starting(), memory_order_release);
             break;
 
         case GC_STAGE_SCAN_ROOTS:
@@ -3961,8 +4004,8 @@ EXPORT void _gc_safe_point2() {
 
 // Barrier slow paths (see yafl.h). _gc_write_barrier2 is field-based so a
 // stale pointer to a relocated object follows (and snaps) the forwarding
-// chain, exactly like the root scan's own marking; the root-publish contract
-// (gc_root_publish, gc_root_overwrite) uses it too.
+// chain, exactly like the root scan's own marking; gc_root_overwrite uses it
+// too.
 EXPORT void _gc_mark_as_seen2(object_t *object) {
     object = gc_ref(object);
     if (gc_object_is_on_heap_fast(object)) {

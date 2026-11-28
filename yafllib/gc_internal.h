@@ -38,6 +38,12 @@ struct gc_thread_info {
     void* thread_roots_context;
 
     bool roots_scanned;
+    // The GC cycle this thread last acknowledged as open: at a safe point of
+    // its own, or by the collector while the thread was suspended (object.c,
+    // THE OPENING HANDSHAKE). A cycle number, not a flag, so an
+    // acknowledgement never needs clearing and cannot be mistaken for a
+    // later cycle's.
+    _Atomic(uint32_t) acked_cycle;
     // The GC cycle of this thread's last root scan: its pages are born
     // outside that cycle (object.c, THE HAND-OFF). Set at the scan, while
     // the thread is held, and at registration.

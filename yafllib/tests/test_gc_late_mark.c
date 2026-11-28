@@ -84,9 +84,7 @@ static void __attribute__((noinline)) build(void) {
     object_t* c = object_create(&leaf_vt);
     memset(((struct leaf*)c)->pad, 0x5a, sizeof ((struct leaf*)c)->pad);
     GC_STORE_IN(h, ((struct holder*)h)->child, 1, c);
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = h;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, h);
     g_H = (uintptr_t)h;
     g_C = (uintptr_t)c;
 }

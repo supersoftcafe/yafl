@@ -95,8 +95,7 @@ static void then(object_t* result, void (*next)(object_t*)) {
     }
     _next_step = next;
     task_obj_t* t = (task_obj_t*)TASK_UNTAG(result);
-    _in_flight_task = (object_t*)t;
-    gc_root_publish(&_in_flight_task, 1);   // t may leave this stack before the take
+    GC_ROOT_STORE(_in_flight_task, 1, (object_t*)t);
     task_on_complete((object_t*)t, (fun_t){.f=(void*)_trampoline, .o=NULL});
 }
 #endif // USE_TASKS

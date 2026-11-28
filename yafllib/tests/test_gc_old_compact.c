@@ -149,15 +149,22 @@ static int gen(uintptr_t o)    { return gc_debug_object_generation((object_t*)o)
 static int state(uintptr_t o)  { return gc_debug_object_state((object_t*)o); }
 static int carded(uintptr_t o) { return gc_debug_object_carded((object_t*)o); }
 
+// R as its root holds it now. R may be compacted too, at a major (its page in
+// a sparse block): the root then follows it, and g_R is only where R was born.
+static object_t* __attribute__((noinline)) current_r(void) {
+    return object_resolve(_roots[FILLERS]);
+}
+
 // R reaches a live O with its id, through any forwarders.
 static void __attribute__((noinline)) check_r(const char* when) {
-    object_t* f = ((struct parent*)g_R)->f;
+    object_t* r = current_r();
+    object_t* f = ((struct parent*)r)->f;
     object_t* o = object_resolve(f);
     if (state((uintptr_t)f) != 1 || state((uintptr_t)o) != 1 || ((struct node*)o)->id != O_ID) {
         fprintf(stderr, "test_gc_old_compact: %s\n", when);
         fail("an old referrer lost its referent", state((uintptr_t)o));
     }
-    if (gen(g_R) != 1) fail("R left the old generation", gen(g_R));
+    if (gen((uintptr_t)r) != 1) fail("R left the old generation", gen((uintptr_t)r));
 }
 
 static void __attribute__((noinline)) capture_copy(void) {
@@ -215,7 +222,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     scrub();
     run_one_cycle();
     check_r("after the next major");
-    if ((uintptr_t)((struct parent*)g_R)->f != g_C) fail("a major did not rewrite an old field past its forwarder", 0);
+    if ((uintptr_t)((struct parent*)current_r())->f != g_C) fail("a major did not rewrite an old field past its forwarder", 0);
     gc_debug_request_major();
     scrub();
     run_one_cycle();

@@ -67,9 +67,7 @@ static void __attribute__((noinline)) build(void) {
         GC_STORE_IN(n, n->next, 1, head);
         head = n;
     }
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = (object_t*)head;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, (object_t*)head);
 }
 
 // The largest census of the node type in any snapshot.

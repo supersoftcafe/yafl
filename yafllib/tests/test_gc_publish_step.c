@@ -1,23 +1,21 @@
-// Deterministic, single-threaded test of the root-publish contract.
-//
-// A value stored into a declared root AFTER the cycle's root snapshot is
-// marked only by gc_root_publish. test_gc_step stores an object allocated
-// inside the cycle's opening window, which allocate-black already marks, so
-// it passes with the publish removed. The case the publish exists for is an
-// object allocated BEFORE the cycle opens:
+// Deterministic, single-threaded test: a value stored into a declared root
+// after the cycle opens, and dropped before this thread's root scan, is kept
+// by the root read that follows every stack (THE OPENING HANDSHAKE,
+// object.c). test_gc_step stores an object allocated inside the cycle's
+// opening window, which allocate-black already marks. Here the object is
+// allocated BEFORE the cycle opens:
 //
 //   1. O is allocated before the cycle opens, so it is not allocated black,
 //      and its page will join this cycle's pool at this thread's take.
-//   2. The cycle opens: the root snapshot reads the slot while it is NULL.
-//   3. O is stored into the slot and published, then dropped. Its only
-//      reference is the slot; its address is parked in a plain global the
-//      collector never scans.
-//   4. The take, marking and prune run. Only the publish marked O.
+//   2. The cycle opens, as far as the root scan.
+//   3. O is stored into the slot, then dropped. Its only reference is the
+//      slot; its address is parked in a plain global the collector never
+//      scans.
+//   4. The take, the root read, marking and prune run. Only the root read
+//      marks O.
 //
-// This is the window test_gc_min2_window opens with a sleep, made exact by
-// driving the collector by hand (gc_debug_step, gc_debug_manual_mode). With
-// the publish's shading removed, O is reclaimed while the slot still points
-// at it.
+// Driven by hand (gc_debug_step, gc_debug_manual_mode). With the root read
+// made before the stacks, O is reclaimed while the slot still points at it.
 // Run with YAFL_THREADS=1.
 
 #include "../yafl.h"
@@ -54,7 +52,7 @@ static __attribute__((noinline)) void allocate(void) {
     g_O = (uintptr_t)object_create(&obj_vt);
 }
 
-static __attribute__((noinline)) void store_and_publish(void) {
+static __attribute__((noinline)) void store_root(void) {
     GC_ROOT_STORE(_slots[0], 1, (object_t*)g_O);
 }
 
@@ -84,11 +82,11 @@ static void _entrypoint(object_t* self, fun_t cont) {
     scrub();
     printf("test_gc_publish_step: O=%p allocated before the cycle\n", (void*)g_O);
 
-    // (2) Open the cycle: the snapshot reads _slots[0] while it is NULL.
+    // (2) Open the cycle.
     step_to(GC_STAGE_SCAN_ROOTS);
 
-    // (3) Store and publish after the snapshot, then drop.
-    store_and_publish();
+    // (3) Store, then drop.
+    store_root();
     scrub();
 
     // (4) The take, marking and prune.
@@ -100,7 +98,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     printf("test_gc_publish_step: after prune O_state=%d (1=live, 2=reclaimed); _slots[0]=%p\n",
            st, (void*)_slots[0]);
     if (st == 2)
-        printf("test_gc_publish_step: *** BUG: a published root's object was reclaimed ***\n");
+        printf("test_gc_publish_step: *** BUG: a root's object was reclaimed ***\n");
     fflush(stdout);
 
     ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, integer_from_int32(st == 1 ? 0 : 7));

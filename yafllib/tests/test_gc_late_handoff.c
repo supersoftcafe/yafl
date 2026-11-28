@@ -92,9 +92,7 @@ static void __attribute__((noinline)) scrub(void) {
 }
 
 static void __attribute__((noinline)) root_h(void) {
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = (object_t*)g_H;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, (object_t*)g_H);
 }
 
 static void _entrypoint(object_t* self, fun_t cont) {
