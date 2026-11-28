@@ -21,6 +21,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -33,7 +34,6 @@ extern int  gc_debug_object_generation(object_t* o);   // -1 not-heap, 0 young, 
 extern int  gc_debug_object_carded(object_t* o);       // -1 not-heap, 0 no, 1 yes
 extern void gc_debug_request_major(void);
 
-enum { ST_IDLE = 1 };
 enum { FILLERS = 300, O_ID = 0x0c0de };
 
 struct node { object_t parent; object_t* f; intptr_t id; };
@@ -92,11 +92,11 @@ static void fail(const char* what, int got) {
 }
 
 static void run_one_cycle(void) {
-    for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() == GC_STAGE_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    for (int guard = 0; gc_debug_stage() != ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() != GC_STAGE_IDLE; ++guard) {
         if (guard > 1000000) fail("cycle did not finish", gc_debug_stage());
         gc_debug_step();
     }
@@ -173,8 +173,8 @@ static void __attribute__((noinline)) capture_copy(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     // (1) O among its fillers; O, R old.
     create();

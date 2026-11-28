@@ -26,6 +26,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode, as test_gc_gen does.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,9 +37,6 @@ extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);        // 0 not-heap, 1 live, 2 reclaimed
 extern int  gc_debug_object_generation(object_t* o);   // -1 not-heap, 0 young, 1 old
-
-// Must match enum gc_stage in object.c.
-enum { ST_IDLE = 1, ST_SCAN_ROOTS = 3 };
 
 // Half a page, so P's page is never sparse and the compactor leaves it alone.
 struct parent { object_t parent; object_t* slot; char pad[8192 - sizeof(object_t) - sizeof(object_t*)]; };
@@ -88,11 +86,11 @@ static void step_to(int target) {
 }
 
 static void run_one_cycle(void) {
-    for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() == GC_STAGE_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
 }
 
 // Each step runs in a frame of its own, so no copy of an address lingers for
@@ -137,8 +135,8 @@ static int C_state(void)      { return gc_debug_object_state((object_t*)g_C); }
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    step_to(ST_IDLE);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    step_to(GC_STAGE_IDLE);
 
     // (1) P onto an old page.
     create_and_root_parent();
@@ -155,7 +153,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     scrub();
 
     // (3) Open the cycle; stop before this thread's root scan.
-    step_to(ST_SCAN_ROOTS);
+    step_to(GC_STAGE_SCAN_ROOTS);
     if (P_generation() != 1) fail("P's page left the old generation early", P_generation());
 
     // (4) The late write, then drop C.
@@ -163,7 +161,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     scrub();
 
     // (5) Finish the cycle.
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
     int st = C_state();
     printf("test_gc_old_late_write: after the cycle C_state=%d (1=live, 2=reclaimed)\n", st);
     if (st != 1) fail("a late write into an old page before its writer's scan lost its value", st);

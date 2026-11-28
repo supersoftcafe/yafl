@@ -18,6 +18,7 @@
 // Run with YAFL_THREADS=1 and YAFL_GC_POISON=1.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,9 +28,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);
-
-// Must match enum gc_stage in object.c.
-enum { ST_IDLE = 1 };
 
 enum { MARK = 0x5a, OFFSET = 4 };
 
@@ -50,11 +48,11 @@ static void fail(const char* what, long got) {
 }
 
 static void run_one_cycle(void) {
-    for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() == GC_STAGE_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    for (int guard = 0; gc_debug_stage() != ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() != GC_STAGE_IDLE; ++guard) {
         if (guard > 1000000) fail("cycle did not finish", gc_debug_stage());
         gc_debug_step();
     }
@@ -108,8 +106,8 @@ static void __attribute__((noinline)) scenario(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     scenario();
     printf("test_gc_misaligned_root: OK\n");

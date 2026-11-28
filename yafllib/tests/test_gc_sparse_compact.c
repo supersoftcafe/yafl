@@ -14,6 +14,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -25,7 +26,6 @@ extern int    gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 rec
 extern size_t memory_watermark(void);
 extern size_t memory_run_floor(void);
 
-enum { ST_IDLE = 1 };
 enum { ZONE = 32, MAX_ROOTS = 1024, H_ID = 0x5ba25e, H2_ID = 0xb05e };
 
 // Half a page: above the ordinary 33% compaction threshold.
@@ -66,11 +66,11 @@ static void fail(const char* what, int got) {
 }
 
 static void run_one_cycle(void) {
-    for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() == GC_STAGE_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    for (int guard = 0; gc_debug_stage() != ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() != GC_STAGE_IDLE; ++guard) {
         if (guard > 1000000) fail("cycle did not finish", gc_debug_stage());
         gc_debug_step();
     }
@@ -131,8 +131,8 @@ static void __attribute__((noinline)) check_root(int root, intptr_t id, const ch
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     create();
     scrub();

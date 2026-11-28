@@ -20,6 +20,7 @@
 // YAFL_THREADS=1.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -28,9 +29,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-// Must match enum gc_stage in object.c.
-enum { ST_IDLE = 1, ST_SCAN_ROOTS = 3, ST_MARK_SWEEP = 4 };
 
 struct holder { object_t parent; object_t* f; };
 static vtable_t holder_vt = {
@@ -67,8 +65,8 @@ static bool inline_store(object_t* obj) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);
-    step_to(ST_IDLE);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);
+    step_to(GC_STAGE_IDLE);
 
     object_t* p = object_create(&holder_vt);
     GC_ROOT_STORE(_slots[0], 1, p);
@@ -79,12 +77,12 @@ static void _entrypoint(object_t* self, fun_t cont) {
     g_V = (uintptr_t)v;
 
     // (1) Marking, this thread not yet scanned.
-    step_to(ST_SCAN_ROOTS);
+    step_to(GC_STAGE_SCAN_ROOTS);
     if (!gc_write_barrier_requested) fail("no cycle marking in SCAN_ROOTS");
     if (inline_store(p)) fail("a write-once store stayed inline with this thread's scan pending");
 
     // (2) Marking, this thread scanned.
-    step_to(ST_MARK_SWEEP);
+    step_to(GC_STAGE_MARK_SWEEP);
     if (!gc_write_barrier_requested) fail("no cycle marking in MARK_SWEEP");
     if (!inline_store(p)) fail("a write-once store called out after this thread's scan");
     if (inline_store(q)) fail("a store overwriting a value stayed inline while marking");
@@ -92,7 +90,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     // (3) The store, then the rest of the cycle.
     GC_STORE_IN(p, ((struct holder*)p)->f, 1, v);
     v = NULL;
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
     if (gc_debug_object_state((object_t*)g_V) != 1) fail("the stored value was reclaimed");
     if (((struct holder*)_slots[0])->f != (object_t*)g_V) fail("the slot lost the stored value");
 

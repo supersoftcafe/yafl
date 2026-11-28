@@ -19,6 +19,7 @@
 // Run with YAFL_THREADS=1.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -31,7 +32,7 @@ extern void gc_debug_request_major(void);
 extern size_t memory_total_pages(void);
 extern size_t memory_count(void);
 
-enum { ST_IDLE = 1, ITEMS = 60 };
+enum { ITEMS = 60 };
 
 // Two to a page (a page holds SLOTS_PER_PAGE slots), so a page of them is
 // full and never compacted.
@@ -83,8 +84,8 @@ static void run_one_cycle(void) {
     do {
         gc_debug_step();
         if (++guard > 100000) fail("cycle did not start", gc_debug_stage());
-    } while (gc_debug_stage() == ST_IDLE);
-    while (gc_debug_stage() != ST_IDLE) {
+    } while (gc_debug_stage() == GC_STAGE_IDLE);
+    while (gc_debug_stage() != GC_STAGE_IDLE) {
         gc_debug_step();
         if (++guard > 10000000) fail("cycle did not finish", gc_debug_stage());
     }
@@ -133,8 +134,8 @@ static void __attribute__((noinline)) scrub(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     size_t total = memory_total_pages();
     size_t old_pages = total * 45 / 100, live_pages = total * 55 / 100;

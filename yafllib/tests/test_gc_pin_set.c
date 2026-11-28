@@ -20,6 +20,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,8 +34,6 @@ extern int  gc_debug_object_state(object_t* o);        // 0 not-heap, 1 live, 2 
 extern int  gc_debug_object_generation(object_t* o);   // -1 not-heap, 0 young, 1 old
 extern int  gc_debug_object_carded(object_t* o);
 
-// Must match enum gc_stage in object.c.
-enum { ST_IDLE = 1, ST_SCAN_ROOTS = 3 };
 enum { FILLERS = 300 };
 
 struct node { object_t parent; object_t* slot; intptr_t id; };
@@ -104,11 +103,11 @@ static void step_to(int target) {
 }
 
 static void run_one_cycle(void) {
-    for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() == GC_STAGE_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
 }
 
 static void __attribute__((noinline)) scrub(void) {
@@ -155,7 +154,7 @@ static void __attribute__((noinline)) create_y(void) {
 static void pending_then_taken(void) {
     new_leaf(&g_V);                 // while idle: not born marked
     scrub();
-    step_to(ST_SCAN_ROOTS);
+    step_to(GC_STAGE_SCAN_ROOTS);
     if (!(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
           & GC_SAFE_POINT_SCAN_ROOTS))
         fail("this thread's root scan is not pending: the test cannot reach its case", 0);
@@ -163,7 +162,7 @@ static void pending_then_taken(void) {
     if (fill(g_Y, offsetof(struct node, slot), g_V) != NULL)
         fail("an empty slot did not answer NULL", 0);
     scrub();
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
     if (state(g_V) != 1) fail("a value filled before this thread's scan was reclaimed", state(g_V));
     if (((struct node*)g_Y)->slot != (object_t*)g_V) fail("the pending fill did not store", 0);
 
@@ -287,8 +286,8 @@ static void old_target(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    step_to(ST_IDLE);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    step_to(GC_STAGE_IDLE);
 
     pending_then_taken();
     peer_pin();

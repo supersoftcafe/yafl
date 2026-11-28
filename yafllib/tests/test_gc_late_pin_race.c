@@ -29,6 +29,7 @@
 // sparse (the compactor leaves them alone and addresses stay stable).
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,8 +40,6 @@ extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);        // 0 not-heap, 1 live, 2 reclaimed
 extern int  gc_debug_object_generation(object_t* o);   // -1 not-heap, 0 young, 1 old
-
-enum { ST_IDLE = 1 };
 
 // Parent: one late-written slot, padded to half a page. The slot starts NULL
 // and is filled exactly once, inside the probe window, mirroring a memoize
@@ -124,8 +123,8 @@ static void run_one_cycle(void) {
     do {
         gc_debug_step();
         if (++guard > 100000) fail("cycle did not start", gc_debug_stage());
-    } while (gc_debug_stage() == ST_IDLE);
-    while (gc_debug_stage() != ST_IDLE) {
+    } while (gc_debug_stage() == GC_STAGE_IDLE);
+    while (gc_debug_stage() != GC_STAGE_IDLE) {
         gc_debug_step();
         if (++guard > 1000000) fail("cycle did not finish", gc_debug_stage());
     }
@@ -161,7 +160,7 @@ static void __attribute__((noinline)) churn_filler(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
 
     create_and_root();
     scrub();

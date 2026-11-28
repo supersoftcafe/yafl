@@ -18,6 +18,7 @@
  */
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -25,8 +26,6 @@
 extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
-
-enum { ST_IDLE = 1 };
 
 struct leaf { object_t parent; char pad[32 - sizeof(object_t)]; };
 static vtable_t leaf_vt = {
@@ -112,8 +111,8 @@ static void run_one_cycle(void) {
     do {
         gc_debug_step();
         if (++guard > 100000) fail("cycle did not start");
-    } while (gc_debug_stage() == ST_IDLE);
-    while (gc_debug_stage() != ST_IDLE) {
+    } while (gc_debug_stage() == GC_STAGE_IDLE);
+    while (gc_debug_stage() != GC_STAGE_IDLE) {
         gc_debug_step();
         if (++guard > 1000000) fail("cycle did not finish");
     }
@@ -165,7 +164,7 @@ static void __attribute__((noinline)) check_compacted(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);
 
     check_hand_built();
 

@@ -15,6 +15,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include "../heapprof.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +27,7 @@ extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 
 #define MASSIF_PATH "test_heapprof_chain.massif"
-enum { ST_IDLE = 1, N = 2000 };
+enum { N = 2000 };
 
 struct node { object_t parent; struct node* next; char pad[16]; };   // one 32-byte slot
 static vtable_t node_vt = {
@@ -49,11 +50,11 @@ static void fail(const char* what, long got) {
 
 static void run_one_cycle(void) {
     int guard = 0;
-    while (gc_debug_stage() == ST_IDLE) {
+    while (gc_debug_stage() == GC_STAGE_IDLE) {
         if (++guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    while (gc_debug_stage() != ST_IDLE) {
+    while (gc_debug_stage() != GC_STAGE_IDLE) {
         if (++guard > 1000000) fail("cycle did not finish", gc_debug_stage());
         gc_debug_step();
     }
@@ -91,8 +92,8 @@ static long node_bytes(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     build();
     run_one_cycle();

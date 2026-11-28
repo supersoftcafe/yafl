@@ -22,6 +22,7 @@
 // with YAFL_GC_HANDOFF_PROBE, for the test helpers.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -32,8 +33,6 @@ extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);        // 0 not-heap, 1 live, 2 reclaimed
 extern int  gc_debug_object_generation(object_t* o);   // -1 not-heap, 0 young, 1 old
 extern void gc_test_mutator_mark_unfiltered(object_t* o);
-
-enum { ST_IDLE = 1, ST_SCAN_ROOTS = 3 };
 
 struct node { object_t parent; object_t* next; intptr_t id; };
 static vtable_t node_vt = {
@@ -76,11 +75,11 @@ static void run_until(int want) {
 }
 
 static void run_one_cycle(void) {
-    for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() == GC_STAGE_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    run_until(ST_IDLE);
+    run_until(GC_STAGE_IDLE);
 }
 
 static gc_page_t* page_of(uintptr_t o) {
@@ -121,8 +120,8 @@ static int gen(uintptr_t o)   { return gc_debug_object_generation((object_t*)o);
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    run_until(ST_IDLE);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    run_until(GC_STAGE_IDLE);
 
     // (1) Z -> Y on one page, aged until the page is old.
     build();
@@ -136,12 +135,12 @@ static void _entrypoint(object_t* self, fun_t cont) {
     }
 
     // (2) A minor opens; in its root scan, the held-over barrier marks Z.
-    run_until(ST_SCAN_ROOTS);
+    run_until(GC_STAGE_SCAN_ROOTS);
     straggler();
     scrub();
 
     // (3) The minor runs to its end.
-    run_until(ST_IDLE);
+    run_until(GC_STAGE_IDLE);
     int y = state(g_Y);
     printf("test_gc_late_old_mark: after the minor Y_state=%d (1=live, 2=reclaimed) generation=%d\n",
            y, gen(g_Y));

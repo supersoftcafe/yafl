@@ -23,6 +23,7 @@
 // publish does — that case fails without it.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -31,10 +32,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-// Must match enum gc_stage in object.c.
-enum { ST_NOT_STARTED = 0, ST_IDLE = 1, ST_START = 2,
-       ST_SCAN_ROOTS = 3, ST_MARK_SWEEP = 4, ST_PRUNE = 5 };
 
 // The global stub's flag field, declared as a root as the compilers declare it.
 static object_t*                _flag[2];
@@ -73,7 +70,7 @@ static void step_to(int target) {
 // One cycle: W allocated before it opens, enqueued at `stage`, then dropped.
 static int one_case(int which, int stage, const char* name) {
     g_case = which;
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
 
     // (1) Before the cycle opens: this thread holds the gate.
     if (lazy_acquire(NULL, (object_t*)&_flag[which]) != NULL) {
@@ -95,9 +92,9 @@ static int one_case(int which, int stage, const char* name) {
     }
 
     // (4) The rest of the cycle.
-    if (stage < ST_MARK_SWEEP) step_to(ST_MARK_SWEEP);
-    step_to(ST_PRUNE);
-    step_to(ST_IDLE);
+    if (stage < GC_STAGE_MARK_SWEEP) step_to(GC_STAGE_MARK_SWEEP);
+    step_to(GC_STAGE_PRUNE);
+    step_to(GC_STAGE_IDLE);
 
     int st = gc_debug_object_state((object_t*)g_W);
     printf("test_gc_lazy_step: enqueued at %s: after prune W_state=%d (1=live, 2=reclaimed, 0=page released); flag=%p\n",
@@ -112,10 +109,10 @@ static void _entrypoint(object_t* self, fun_t cont) {
     (void)self;
     _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector to exist
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector to exist
 
-    int ok = one_case(0, ST_SCAN_ROOTS, "SCAN_ROOTS");
-    ok &= one_case(1, ST_MARK_SWEEP, "MARK_SWEEP");
+    int ok = one_case(0, GC_STAGE_SCAN_ROOTS, "SCAN_ROOTS");
+    ok &= one_case(1, GC_STAGE_MARK_SWEEP, "MARK_SWEEP");
 
     ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, integer_from_int32(ok ? 0 : 7));
 }

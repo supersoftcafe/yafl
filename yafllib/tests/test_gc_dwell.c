@@ -11,14 +11,13 @@
 // Run with YAFL_THREADS=1, so no other worker steps the collector.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
 extern int gc_debug_stage(void);
 
-// Must match enum gc_stage in object.c.
-enum { ST_IDLE = 1 };
 enum { IDLE_PAGES = 64, CYCLES = 4 };
 
 // More than half a page's slots, so no two share a page.
@@ -40,7 +39,7 @@ static void fail(const char* what, long value) {
 
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
 
     long pages = 0, idle_at = -1;
     int gaps = 0, prev = gc_debug_stage();
@@ -49,9 +48,9 @@ static void _entrypoint(object_t* self, fun_t cont) {
         (void)object_create(&big_vt);
         pages += 1;
         int now = gc_debug_stage();
-        if (now == ST_IDLE && prev != ST_IDLE) {
+        if (now == GC_STAGE_IDLE && prev != GC_STAGE_IDLE) {
             idle_at = pages;                       // a cycle ended
-        } else if (now != ST_IDLE && prev == ST_IDLE && idle_at >= 0) {
+        } else if (now != GC_STAGE_IDLE && prev == GC_STAGE_IDLE && idle_at >= 0) {
             long gap = pages - idle_at;            // the next one opened
             if (gap < IDLE_PAGES - 2) fail("a cycle opened inside the dwell: gap", gap);
             gaps += 1;

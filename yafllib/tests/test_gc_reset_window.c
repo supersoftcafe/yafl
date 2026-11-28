@@ -39,6 +39,7 @@
 // with YAFL_GC_RESET_PROBE.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,7 +57,7 @@ extern void gc_test_pump_ring(void);
 extern bool gc_test_page_done(void* page);
 extern bool gc_test_object_seen(object_t* o);
 
-enum { ST_IDLE = 1, RING = 16, N = RING + 2, LATE = RING + 1 };
+enum { RING = 16, N = RING + 2, LATE = RING + 1 };
 
 // Mutable: never relocated, so the addresses stay stable. Over half a page,
 // so no two share one.
@@ -164,11 +165,11 @@ static void step(void) {
 
 static void run_one_cycle(void) {
     int guard = 0;
-    while (gc_debug_stage() == ST_IDLE) {
+    while (gc_debug_stage() == GC_STAGE_IDLE) {
         if (++guard > 100000) fail("cycle did not start", gc_debug_stage());
         step();
     }
-    while (gc_debug_stage() != ST_IDLE) {
+    while (gc_debug_stage() != GC_STAGE_IDLE) {
         if (++guard > 1000000) fail("cycle did not finish", gc_debug_stage());
         step();
     }
@@ -206,8 +207,8 @@ static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
     _prev = add_roots_declaration_func(_decl);
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     build_below();
     for (int i = 0; i < N; ++i)

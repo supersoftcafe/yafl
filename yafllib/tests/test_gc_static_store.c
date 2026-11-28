@@ -25,6 +25,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,9 +35,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-// Must match enum gc_stage in object.c.
-enum { ST_IDLE = 1, ST_SCAN_ROOTS = 3 };
 
 struct holder { object_t parent; object_t* child; };
 static vtable_t holder_vt = {
@@ -103,16 +101,16 @@ static int V_state(void) { return gc_debug_object_state((object_t*)g_V); }
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    step_to(ST_IDLE);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    step_to(GC_STAGE_IDLE);
 
     allocate();            // (1)
     scrub();
     barrier_half();        // (2) flag down
-    step_to(ST_SCAN_ROOTS);   // (3) the snapshot reads S.child == NULL
+    step_to(GC_STAGE_SCAN_ROOTS);   // (3) the snapshot reads S.child == NULL
     store_half();          // (4)
     scrub();
-    step_to(ST_IDLE);      // (5)
+    step_to(GC_STAGE_IDLE);      // (5)
 
     int st = V_state();
     printf("test_gc_static_store: after the cycle V_state=%d (1=live, 2=reclaimed)\n", st);

@@ -21,6 +21,7 @@
 // Run with YAFL_THREADS=1.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -29,10 +30,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-// Must match enum gc_stage in object.c.
-enum { ST_NOT_STARTED = 0, ST_IDLE = 1, ST_START = 2,
-       ST_SCAN_ROOTS = 3, ST_MARK_SWEEP = 4, ST_PRUNE = 5 };
 
 struct obj { object_t parent; object_t* f; };
 static vtable_t obj_vt = {
@@ -79,8 +76,8 @@ static void _entrypoint(object_t* self, fun_t cont) {
     (void)self;
     _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector to exist
-    step_to(ST_IDLE);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector to exist
+    step_to(GC_STAGE_IDLE);
 
     // (1) Before the cycle opens.
     allocate();
@@ -88,16 +85,16 @@ static void _entrypoint(object_t* self, fun_t cont) {
     printf("test_gc_publish_step: O=%p allocated before the cycle\n", (void*)g_O);
 
     // (2) Open the cycle: the snapshot reads _slots[0] while it is NULL.
-    step_to(ST_SCAN_ROOTS);
+    step_to(GC_STAGE_SCAN_ROOTS);
 
     // (3) Store and publish after the snapshot, then drop.
     store_and_publish();
     scrub();
 
     // (4) The take, marking and prune.
-    step_to(ST_MARK_SWEEP);
-    step_to(ST_PRUNE);
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_MARK_SWEEP);
+    step_to(GC_STAGE_PRUNE);
+    step_to(GC_STAGE_IDLE);
 
     int st = O_state();
     printf("test_gc_publish_step: after prune O_state=%d (1=live, 2=reclaimed); _slots[0]=%p\n",
