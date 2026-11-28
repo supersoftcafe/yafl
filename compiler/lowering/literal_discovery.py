@@ -22,14 +22,13 @@ interpreter does not model, or makes too much data stays exactly where it is:
 nothing is ever run ahead of where the program runs it.
 
 The interpreter executes the pre-async IR as C would: fixed-width integers
-wrap, a failed bounds check, a division by zero or a SwitchJump with no case
-aborts. Int (bigint) add, subtract, multiply, divide and compare are exact;
+wrap; a failed bounds check or a division by zero aborts. Int (bigint) add, subtract, multiply, divide and compare are exact;
 String hashing and equality are the runtime's (yafllib str_hash, str_eq), so a
 Dict or Set keyed by strings is a literal too. The stdlib's pin and unpin are
 a lock the run needs no part of, and a late write under the pin
 (object_pin_set) fills an empty field as the runtime does. Values are Python
-ints, `Ref` (a static object), `Obj` (one the run built), `Fun`, `Code` (a
-closure's code word), `Struct`, `Atom` (a constant it carries whole: a bigint
+ints, `Ref` (a static object), `Obj` (one the run built), `Fun` (a
+closure), `Struct`, `Atom` (a constant it carries whole: a bigint
 or string literal, a float, a zero) and `NULL`.
 
 A [pinnable] object with a capacity (an array buffer) is trimmed to its
@@ -45,10 +44,9 @@ import re
 
 from codegen.gen import Application
 from codegen.ir import Function, Global, Object
-from codegen.ops import (Abort, AssertNotTask, Call, Jump, JumpIf, Label, Move, NewObject,
-                         Phi, Return, ReturnVoid, SwitchJump)
-from codegen.param import (ArrayElement, FunField, GlobalFunction, GlobalVar, InitArray,
-                           IntEqConst, Integer, MakeFun, NarrowInt, NewStruct, NewStructTyped,
+from codegen.ops import Call, Jump, JumpIf, Label, Move, NewObject, Phi, Return
+from codegen.param import (ArrayElement, GlobalFunction, GlobalVar, InitArray,
+                           IntEqConst, Integer, NewStruct, NewStructTyped,
                            NullPattern, NullPointer, ObjectField, ObjVtableEq, RParam,
                            RuntimeInvoke, StackVar, StaticObjectRef, String, Float, StructField,
                            VirtualFunction, VtableDiscriminator, ZeroOf, FieldOffset)
@@ -97,14 +95,12 @@ class Ref:
 
 
 class Obj:
-    """An object the run built. `frozen` once it is part of a finished value:
-    no later run may write it."""
+    """An object the run built."""
     def __init__(self, cls: str, items: list | None):
         self.cls = cls
         self.fields: dict[str, object] = {}
         self.items = items
         self.pinned = False
-        self.frozen = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -112,12 +108,6 @@ class Fun:
     """A closure: code `name` over environment `env` (NULL for none)."""
     name: str | None
     env: object
-
-
-@dataclasses.dataclass(frozen=True)
-class Code:
-    """A closure's code word read on its own (FunField "f")."""
-    name: str | None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -278,9 +268,6 @@ class Machine:
         self.app = app
         self.steps = 0
         self.depth = 0
-        self.settled: dict[str, object] = {}     # stub -> its value
-        self.settling: set[str] = set()
-        self.unsettled: set[str] = set()
         self.labels: dict[str, dict[str, int]] = {}
         self.statics: dict[str, dict] = {}
         self.written: set[int] = set()      # the objects this run has written
@@ -369,7 +356,7 @@ class Machine:
         return items[index]
 
     def write(self, ptr: object, field: str, index: object | None, value: object) -> None:
-        if not isinstance(ptr, Obj) or ptr.frozen:
+        if not isinstance(ptr, Obj):
             raise Stop(EFFECT if isinstance(ptr, Ref) else OPAQUE)
         self.written.add(id(ptr))
         if index is None:
@@ -414,11 +401,6 @@ class Machine:
                 if c == 0 and (x is NULL or isinstance(x, (Obj, Ref))):
                     return 1 if x is NULL else 0           # a pointer against NULL
                 raise Stop(OPAQUE)
-            case NarrowInt(value=v, value_type=ty):
-                x = self.eval(v, env)
-                if not isinstance(x, int):
-                    raise Stop(OPAQUE)
-                return _wrap(x, ty.precision)
             case VtableDiscriminator(value=v):
                 return self.app.objects[self.class_of(self.eval(v, env))].discriminator
             case ObjVtableEq(value=v, class_name=cls) if cls is not None:
@@ -432,16 +414,6 @@ class Machine:
                     if null != is_null:
                         return 0
                 return 1
-            case FunField(fun=fp, part=part):
-                f = self.eval(fp, env)
-                if not isinstance(f, Fun):
-                    raise Stop(OPAQUE)
-                return Code(f.name) if part == "f" else f.env
-            case MakeFun(code=cp, env=ep):
-                c = self.eval(cp, env)
-                if not isinstance(c, Code):
-                    raise Stop(OPAQUE)
-                return Fun(c.name, self.eval(ep, env))
         return self.constant(p)
 
     def runtime(self, name: str, params: object) -> object:
@@ -482,31 +454,7 @@ class Machine:
             return i
         if name == "object_same" and len(args) == 2:
             return 1 if _same(args[0], args[1]) else 0
-        if name == "object_resolve" and args:
-            return args[0]
         raise Stop(OPAQUE)
-
-    def fetch(self, stub: str) -> object:
-        """The value of lazy global `stub`, settling it first."""
-        if stub in self.settled:
-            return self.settled[stub]
-        if stub in self.settling or stub in self.unsettled:
-            raise Stop(OPAQUE)
-        g = self.app.globals.get(stub)
-        closure = dict(g.init.values).get("closure") if g is not None and isinstance(g.init, NewStruct) else None
-        if not isinstance(closure, GlobalFunction) or closure.object is not None:
-            raise Stop(OPAQUE)
-        self.settling.add(stub)
-        try:
-            value = self.call(closure.name, NULL, [])
-        except Stop:
-            self.unsettled.add(stub)
-            raise
-        finally:
-            self.settling.discard(stub)
-        _freeze(value, set())
-        self.settled[stub] = value
-        return value
 
     def target(self, f: RParam, env: dict) -> tuple[str, object]:
         match f:
@@ -593,7 +541,7 @@ class Machine:
                     # objects: the end of a construction's early pin.
                     o = self.eval(ps, env)
                     o = next(iter(o.fields.values()), None) if isinstance(o, Struct_) else None
-                    if not isinstance(o, Obj) or o.frozen:
+                    if not isinstance(o, Obj):
                         raise Stop(OPAQUE)
                     o.pinned = False
                     self.store(t, o, env)
@@ -607,12 +555,6 @@ class Machine:
                         raise Stop(OPAQUE)
                     if (v != 0) != inv:
                         pc = labels[n]
-                case SwitchJump(condition=c, cases=cases):
-                    v = self.eval(c, env)
-                    target = dict(cases).get(v)
-                    if target is None:
-                        raise Stop(ABORT if isinstance(v, int) else OPAQUE)
-                    pc = labels[target]
                 case NewObject(name=cls, register=reg, size=size, pinned=pinned):
                     obj = self.app.objects.get(cls)
                     if obj is None or obj.is_mutable or obj.is_foreign:
@@ -642,24 +584,14 @@ class Machine:
                 case Call(function=f, parameters=ps, register=reg, impure=impure):
                     if impure or getattr(f, "impure", False):
                         raise Stop(EFFECT)
-                    if (isinstance(f, GlobalFunction) and f.name.startswith(_FETCH_PREFIX)
-                            and isinstance(f.object, GlobalVar)):
-                        result = self.fetch(f.object.name)
-                    else:
-                        name, callee_this = self.target(f, env)
-                        args = self.eval(ps, env)
-                        result = self.call(name, callee_this,
-                                           list(args.fields.values()) if isinstance(args, Struct_) else [])
+                    name, callee_this = self.target(f, env)
+                    args = self.eval(ps, env)
+                    result = self.call(name, callee_this,
+                                       list(args.fields.values()) if isinstance(args, Struct_) else [])
                     if reg is not None:
                         self.store(reg, result, env)
                 case Return(value=v):
                     return self.eval(v, env)
-                case ReturnVoid():
-                    return None
-                case Abort():
-                    raise Stop(ABORT)
-                case AssertNotTask():
-                    pass
                 case _:
                     raise Stop(OPAQUE)
 
@@ -765,14 +697,6 @@ class Emitter:
                                     object_name=o.cls)
         return name
 
-    def size(self) -> int:
-        total = 0
-        for g in self.globals.values():
-            for _, v in (g.init.values if isinstance(g.init, NewStruct) else ()):
-                total += 8 * (len(v.values) if isinstance(v, InitArray) else 1)
-            total += 8
-        return total
-
 
 def _shape(obj: Object, o: Obj, shared: bool) -> tuple[dict, list | None]:
     """An object's fields and items as a literal holds them.
@@ -816,23 +740,6 @@ def _same(a: object, b: object) -> bool:
     if isinstance(a, (Ref, _Null)) and isinstance(b, (Ref, _Null)):
         return a == b
     raise Stop(OPAQUE)
-
-
-def _freeze(v: object, seen: set[int]) -> None:
-    if isinstance(v, Obj):
-        if id(v) in seen:
-            return
-        seen.add(id(v))
-        v.frozen = True
-        for x in v.fields.values():
-            _freeze(x, seen)
-        for x in v.items or ():
-            _freeze(x, seen)
-    elif isinstance(v, Struct_):
-        for x in v.fields.values():
-            _freeze(x, seen)
-    elif isinstance(v, Fun):
-        _freeze(v.env, seen)
 
 
 # ── A function's constants ───────────────────────────────────────────────────

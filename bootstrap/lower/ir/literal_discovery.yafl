@@ -50,23 +50,21 @@ fun ldLarge() => "large"
 enum LdVal
   enum LdInt(liV: Int)
   enum LdNull()
-  enum LdNone()                                     # a ReturnVoid's "value"
+  enum LdNone()                                     # no value (an absent field)
   enum LdRef(lrName: String)                        # an existing static object
   enum LdObj(loId: Int)                             # an object the run built
   enum LdFun(lfName: String|None, lfEnv: LdVal)     # a closure
-  enum LdCode(lcName: String|None)                  # a closure's code word
   # A constant it cannot look inside, and the global that holds it, if one
   # does: a bigint or string literal is static data in an initialiser but a
   # compound literal — stack storage — in code, so code reads it from a global.
   enum LdAtom(laRp: RParam, laHome: String|None)
   enum LdStruct(lsNames: List<String>, lsVals: Dict<String, LdVal>)
 
-# An object the run built. Frozen once part of a finished value.
+# An object the run built.
 class [final] LdHeapObj(hoCls: String, hoFields: Dict<String, LdVal>, hoArray: Bool,
-                        hoItems: Dict<Int, LdVal>, hoLen: Int, hoPinned: Bool, hoFrozen: Bool)
+                        hoItems: Dict<Int, LdVal>, hoLen: Int, hoPinned: Bool)
 
 class [final] LdSt(stHeap: Dict<Int, LdHeapObj>, stNext: Int, stSteps: Int,
-                   stSettled: Dict<String, LdVal>, stSettling: StrSet, stUnsettled: StrSet,
                    stWritten: Set<Int>)      # the objects this run has written
 
 class [final] LdFail(lfWhy: String)
@@ -75,7 +73,7 @@ class [final] LdStop(lsWhy: String, lsSt: LdSt)
 class [final] LdNext(nxFrame: LdFrame, nxSt: LdSt)
 class [final] LdTarget(tgName: String, tgThis: LdVal)
 
-fun ldStEmpty() => LdSt(Dict(), 0, 0, Dict(), setEmpty(), setEmpty(), Set())
+fun ldStEmpty() => LdSt(Dict(), 0, 0, Set())
 
 fun ldStructGet(s2: LdStruct, n: String): LdVal|LdFail => match(get(s2.lsVals, n))
   (v: LdVal) => v
@@ -274,8 +272,7 @@ fun ldRuntime(name: String, params: LdVal): LdVal|LdFail
     ()          => startsWith(name, "integer_") ? ldRuntimeBig(slice(name, length("integer_"), length(name)), args)
       : name == "str_hash" || name == "str_eq" ? ldRuntimeStr(name, args)
       : name == "array_index_check" ? ldIndexCheck(args)
-      : name == "object_same" ? ldObjectSame(args)
-      : name == "object_resolve" ? (head(args) ?? LdFail(ldOpaque())) : LdFail(ldOpaque())
+      : name == "object_same" ? ldObjectSame(args) : LdFail(ldOpaque())
 
 # Answers the index when 0 <= index < bound, and aborts otherwise.
 fun ldIndexCheck(args: List<LdVal>): LdVal|LdFail
@@ -561,10 +558,10 @@ fun ldBuildCons(a: CgApp, st: LdSt, c: LdConsts, cons: LdCons): LdOk|LdFail
       (sz: RParam) => match(ldEval(a, st, env, sz))
         (n: LdInt)  => n.liV < 0 ? LdFail(ldOpaque())
           : ldBuildFill(a, st, env, cons, LdHeapObj(cons.cnNew.newObjName, Dict(), true,
-                                                   ldFill(Dict(), 0, n.liV, ldZero(ldElemType(obj))), n.liV, false, false))
+                                                   ldFill(Dict(), 0, n.liV, ldZero(ldElemType(obj))), n.liV, false))
         (e: LdFail) => e
         (o: LdVal)  => LdFail(ldOpaque())
-      ()           => ldBuildFill(a, st, env, cons, LdHeapObj(cons.cnNew.newObjName, Dict(), false, Dict(), 0, false, false))
+      ()           => ldBuildFill(a, st, env, cons, LdHeapObj(cons.cnNew.newObjName, Dict(), false, Dict(), 0, false))
     ()              => LdFail(ldOpaque())
 
 fun ldBuildFill(a: CgApp, st: LdSt, env: LdEnv, cons: LdCons, h0: LdHeapObj): LdOk|LdFail
@@ -622,11 +619,6 @@ fun ldEval(a: CgApp, st: LdSt, env: LdEnv, p: RParam): LdVal|LdFail => match(p)
     (o: LdObj)  => ie.constVal == 0 ? LdInt(0) : LdFail(ldOpaque())
     (r: LdRef)  => ie.constVal == 0 ? LdInt(0) : LdFail(ldOpaque())
     (o: LdVal)  => LdFail(ldOpaque())
-  (ni: RpNarrowInt)     => ldEval(a, st, env, ni.niValue) ?> (x: LdVal) => match(x)
-    (i: LdInt) => match(ni.niType)
-      (t2: CgInt) => LdInt(ldWrap(i.liV, t2.precision))
-      (o: CgType) => LdFail(ldOpaque())
-    (o: LdVal) => LdFail(ldOpaque())
   (vd: RpVtableDiscriminator) => ldEval(a, st, env, vd.value) ?> (x: LdVal) =>
     ldClassOf(a, st, x) ?> (c: String) => match(appObject(a, c))
       (obj: CgObject) => LdInt(obj.objDiscriminator)
@@ -635,12 +627,6 @@ fun ldEval(a: CgApp, st: LdSt, env: LdEnv, p: RParam): LdVal|LdFail => match(p)
     (cls: String) => ldEval(a, st, env, ve.value) ?> (x: LdVal) => ldIsA(a, st, x, cls)
     ()            => LdFail(ldOpaque())
   (np: RpNullPattern)   => ldNullPattern(a, st, env, np.tests)
-  (ff: RpFunField)      => ldEval(a, st, env, ff.ffFun) ?> (f: LdVal) => match(f)
-    (fv: LdFun) => ff.ffPart == "f" ? LdCode(fv.lfName) : fv.lfEnv
-    (o: LdVal)  => LdFail(ldOpaque())
-  (mf: RpMakeFun)       => ldEval(a, st, env, mf.mfCode) ?> (c: LdVal) => match(c)
-    (cv: LdCode) => ldEval(a, st, env, mf.mfEnv) ?> (e: LdVal) => LdFun(cv.lcName, e)
-    (o: LdVal)   => LdFail(ldOpaque())
   (o: RParam)           => ldConstant(a, p)
 
 fun ldEvalStruct(a: CgApp, st: LdSt, env: LdEnv, vs: List<RpNamedValue>): LdVal|LdFail =>
@@ -668,16 +654,6 @@ fun ldTick(st: LdSt): LdSt => with st(stSteps = st.stSteps + 1)
 
 fun ldPutObj(st: LdSt, id: Int, h: LdHeapObj): LdSt => with st(stHeap = put(st.stHeap, id, h))
 
-# The value of lazy global `stub`, settling it first.
-fun ldFetch(a: CgApp, st: LdSt, depth: Int, stub: String): LdOk|LdStop
-  if contains(st.stSettled, stub)
-    ret LdOk(st, get(st.stSettled, stub) ?? LdNone())
-  if setHas(st.stSettling, stub) || setHas(st.stUnsettled, stub)
-    ret LdStop(ldOpaque(), st)
-  ret match(ldClosureOf(a, stub))
-    (fname: String) => ldFetchRun(a, with st(stSettling = setAdd(st.stSettling, stub)), depth, stub, fname)
-    ()              => LdStop(ldOpaque(), st)
-
 fun ldClosureOf(a: CgApp, stub: String): String|None => match(appGlobal(a, stub))
   (g2: CgGlobal) => match(g2.globalInit)
     (ns: RpNewStruct) => match(gfNamedValue(ns.values, "closure"))
@@ -688,32 +664,6 @@ fun ldClosureOf(a: CgApp, stub: String): String|None => match(appGlobal(a, stub)
     (o: RParam)       => None
     ()                => None
   ()             => None
-
-fun ldFetchRun(a: CgApp, st: LdSt, depth: Int, stub: String, fname: String): LdOk|LdStop
-  ret match(ldCall(a, st, depth, fname, LdNull(), List()))
-    (ok: LdOk)   => ldSettle(ok, stub)
-    (s2: LdStop) => LdStop(s2.lsWhy, with s2.lsSt(stSettling = setRemove(s2.lsSt.stSettling, stub),
-                                                  stUnsettled = setAdd(s2.lsSt.stUnsettled, stub)))
-
-fun setRemove(s2: StrSet, name: String): StrSet => StrSet(remove(s2.setIx, name))
-
-fun ldSettle(ok: LdOk, stub: String): LdOk
-  let st = ldFreeze(ok.okSt, ok.okV)
-  ret LdOk(with st(stSettling = setRemove(st.stSettling, stub),
-                   stSettled = put(st.stSettled, stub, ok.okV)), ok.okV)
-
-# Every object of a finished value, frozen: no later run may write it.
-fun ldFreeze(st: LdSt, v: LdVal): LdSt => match(v)
-  (o: LdObj)    => match(get(st.stHeap, o.loId))
-    (h: LdHeapObj) => h.hoFrozen ? st : ldFreezeObj(ldPutObj(st, o.loId, with h(hoFrozen = true)), h)
-    ()             => st
-  (s2: LdStruct) => fold(ldStructValues(s2), st, ldFreeze)
-  (f: LdFun)    => ldFreeze(st, f.lfEnv)
-  (x: LdVal)    => st
-
-fun ldFreezeObj(st: LdSt, h: LdHeapObj): LdSt
-  let st2 = fold(sort(keys(h.hoFields)), st, (s, k) => ldFreeze(s, get(h.hoFields, k) ?? LdNone()))
-  ret h.hoArray ? fold(ldItemsList(h), st2, ldFreeze) : st2
 
 fun ldTarget(a: CgApp, st: LdSt, env: LdEnv, f: RParam): LdTarget|LdFail => match(f)
   (vf: RpVirtualFunction) => ldEval(a, st, env, vf.object) ?> (this: LdVal) =>
@@ -754,14 +704,187 @@ fun [tail] ldLabelLoop(ops: Array<Op>, i: Int, acc: Dict<String, Int>): Dict<Str
       (l: OpLabel) => put(acc, l.labelName, i)
       (o: Op)      => acc)
 
-fun ldRun(a: CgApp, st: LdSt, depth: Int, fn: CgFunction, this: LdVal, args: List<LdVal>): LdOk|LdStop
+# Run `fn` on `this` and `args`. The step loop and the op handlers are nested,
+# so the app and the call depth are the run's, not every helper's parameters.
+fun ldRun(a: CgApp, st0: LdSt, depth: Int, fn: CgFunction, this: LdVal, args: List<LdVal>): LdOk|LdStop
+  fun [tail] ldStep(fr: LdFrame, st1: LdSt): LdOk|LdStop
+    let st = ldTick(st1)
+    if st.stSteps > ldStepLimit()
+      ret LdStop(ldBudget(), st)
+    if fr.frPc >= size(fr.frOps)
+      ret LdStop(ldOpaque(), st)
+    ret match(ldExec(fr, st, LdLocals(fr.frVars), fr.frOps[fr.frPc], ldAt(fr, fr.frPc + 1)))
+      (n: LdNext) => ldStep(n.nxFrame, n.nxSt)
+      (ok: LdOk)  => ok
+      (s2: LdStop) => s2
+
+  # One op: where execution goes next (LdNext), or the run's end. Never calls
+  # ldStep itself, so a run of any length is a loop, not a recursion.
+  fun ldExec(fr: LdFrame, st: LdSt, env: LdEnv, op: Op, next: LdFrame): LdNext|LdOk|LdStop
+    ret match(op)
+      (l: OpLabel)    => LdNext(with next(frPrev = fr.frCur, frCur = l.labelName), st)
+      (p: OpPhi)      => ldPhis(next, st, list1(p))
+      (m: OpMove)     => ldMoveOp(next, st, env, m)
+      (j: OpJump)     => LdNext(ldJump(next, j.jumpName), st)
+      (j: OpJumpIf)   => match(ldEval(a, st, env, j.jumpIfCondition))
+        (i: LdInt)  => LdNext((i.liV != 0) != j.jumpIfInvert ? ldJump(next, j.jumpIfLabel) : next, st)
+        (e: LdFail) => ldStop(e, st)
+        (o: LdVal)  => LdStop(ldOpaque(), st)
+      (no: OpNewObject) => ldNewObject(next, st, env, no)
+      (c: OpCall)     => ldCallOp(next, st, env, c)
+      (r: OpReturn)   => match(ldEval(a, st, env, r.returnValue))
+        (v: LdVal)  => LdOk(st, v)
+        (e: LdFail) => ldStop(e, st)
+      (o: Op)         => LdStop(ldOpaque(), st)
+
+  # The joined values all read the edge just taken, together.
+  fun [tail] ldPhis(fr: LdFrame, st: LdSt, phis: List<OpPhi>): LdNext|LdOk|LdStop
+    if fr.frPc < size(fr.frOps)
+      let more = match(fr.frOps[fr.frPc])
+        (p: OpPhi) => p
+        (o: Op)    => None
+      if !(more is None)
+        ret ldPhis(ldAt(fr, fr.frPc + 1), st, append(phis, more ?? OpPhi(RpNullPointer(), List(), Dict())))
+    let env = LdLocals(fr.frVars)
+    let values = mapAll(phis, (p) => match(firstWhere(p.phiSources, (s2) => s2.sourceLabel == fr.frPrev))
+      (src: OpPhiSource) => match(ldEval(a, st, env, src.sourceValue))
+        (v: LdVal)  => v
+        (e: LdFail) => None
+      ()                 => None)
+    ret match(values)
+      (vs: List<LdVal>) => ldPhiAssign(fr, st, phis, vs)
+      ()                => ldPhiStop(fr, st, phis)
+
+  # Which reason the first failing source gives, as Python raises it.
+  fun ldPhiStop(fr: LdFrame, st: LdSt, phis: List<OpPhi>): LdStop
+    let env = LdLocals(fr.frVars)
+    ret fold<OpPhi, LdStop|None>(phis, None, (acc: LdStop|None, p) => match(acc)
+      (s2: LdStop) => s2
+      ()           => match(firstWhere(p.phiSources, (s3) => s3.sourceLabel == fr.frPrev))
+        (src: OpPhiSource) => match(ldEval(a, st, env, src.sourceValue))
+          (e: LdFail) => ldStop(e, st)
+          (v: LdVal)  => None
+        ()                 => LdStop(ldOpaque(), st)) ?? LdStop(ldOpaque(), st)
+
+  fun ldPhiAssign(fr: LdFrame, st: LdSt, phis: List<OpPhi>, vs: List<LdVal>): LdNext|LdOk|LdStop
+    let targets = mapAll(phis, (p) => match(p.phiTarget)
+      (sv: RpStackVar) => sv.name
+      (o: RParam)      => None)
+    ret match(targets)
+      (ns: List<String>) => LdNext(zipFold(ns, vs, fr, (f2, n, v) => ldSet(f2, n, v)), st)
+      ()                 => LdStop(ldOpaque(), st)
+
+  fun ldMoveOp(fr: LdFrame, st: LdSt, env: LdEnv, m: OpMove): LdNext|LdOk|LdStop => match(m.moveSource)
+    (ri: RpRuntimeInvoke) => ri.function == "object_unpin"
+      ? ldUnpin(fr, st, env, m, ri)
+      : ri.function == "object_pin_set" ? ldPinSetOp(fr, st, env, m, ri)
+      : ldMoveValue(fr, st, env, m)
+    (o: RParam)           => ldMoveValue(fr, st, env, m)
+
+  # A late write under the pin: the field is filled only if still empty, and
+  # the answer is what it held.
+  fun ldPinSetOp(fr: LdFrame, st: LdSt, env: LdEnv, m: OpMove, ri: RpRuntimeInvoke): LdNext|LdOk|LdStop =>
+    match(ri.parameters)
+      (ns: RpNewStruct) => match(ldPinSetParts(ns.values))
+        (parts: LdPinSet) => ldPinSet(fr, st, env, m, parts)
+        ()                => ldMoveValue(fr, st, env, m)
+      (o: RParam)       => ldMoveValue(fr, st, env, m)
+
+  fun ldPinSet(fr: LdFrame, st: LdSt, env: LdEnv, m: OpMove, parts: LdPinSet): LdNext|LdOk|LdStop
+    let filled = ldEval(a, st, env, parts.psObj) ?> (o: LdVal) =>
+      ldEval(a, st, env, parts.psValue) ?> (v: LdVal) =>
+        ldRead(a, st, o, parts.psField, None) ?> (held: LdVal) => match(held)
+          (n: LdNull) => ldWrite(st, o, parts.psField, None, v) ?> (st2: LdSt) => LdStored(fr, st2, held)
+          (x: LdVal)  => LdStored(fr, st, held)
+    ret match(filled)
+      (out: LdStored) => ldStoreThen(fr, out.sdSt, env, m.moveTarget, out.sdHeld)
+      (e: LdFail)     => ldStop(e, st)
+
+  fun ldMoveValue(fr: LdFrame, st: LdSt, env: LdEnv, m: OpMove): LdNext|LdOk|LdStop =>
+    match(ldEval(a, st, env, m.moveSource))
+      (v: LdVal)  => ldStoreThen(fr, st, env, m.moveTarget, v)
+      (e: LdFail) => ldStop(e, st)
+
+  # The one runtime operation with an effect on the run's objects: the end of
+  # a construction's early pin.
+  fun ldUnpin(fr: LdFrame, st: LdSt, env: LdEnv, m: OpMove, ri: RpRuntimeInvoke): LdNext|LdOk|LdStop =>
+    match(ldEval(a, st, env, ri.parameters))
+      (s2: LdStruct) => match(head(ldStructValues(s2)))
+        (o: LdObj) => match(get(st.stHeap, o.loId))
+          (h: LdHeapObj) => ldStoreThen(fr, ldPutObj(st, o.loId, with h(hoPinned = false)), env, m.moveTarget, o)
+          ()             => LdStop(ldOpaque(), st)
+        ()         => LdStop(ldOpaque(), st)
+      (e: LdFail)    => ldStop(e, st)
+      (o: LdVal)     => LdStop(ldOpaque(), st)
+
+  fun ldStoreThen(fr: LdFrame, st: LdSt, env: LdEnv, target: RParam, v: LdVal): LdNext|LdOk|LdStop =>
+    match(ldStore(a, fr, st, env, target, v))
+      (out: LdStored) => LdNext(out.sdFrame, out.sdSt)
+      (e: LdFail)     => ldStop(e, st)
+
+  fun ldNewObject(fr: LdFrame, st: LdSt, env: LdEnv, no: OpNewObject): LdNext|LdOk|LdStop
+    ret match(appObject(a, no.newObjName))
+      (obj: CgObject) => obj.objIsMutable || obj.objIsForeign ? LdStop(ldOpaque(), st) : match(no.newObjSize)
+        (sz: RParam) => match(ldEval(a, st, env, sz))
+          (n: LdInt)  => n.liV < 0 ? LdStop(ldOpaque(), st)
+            : n.liV * 8 > ldDataLimit() ? LdStop(ldLarge(), st)
+            : ldAllocate(fr, st, env, no, true, n.liV, ldZero(ldElemType(obj)))
+          (e: LdFail) => ldStop(e, st)
+          (o: LdVal)  => LdStop(ldOpaque(), st)
+        ()           => ldAllocate(fr, st, env, no, false, 0, LdNone())
+      ()              => LdStop(ldOpaque(), st)
+
+  fun ldAllocate(fr: LdFrame, st: LdSt, env: LdEnv, no: OpNewObject,
+                 isArray: Bool, n: Int, zero: LdVal): LdNext|LdOk|LdStop
+    let id = st.stNext
+    let h = LdHeapObj(no.newObjName, Dict(), isArray, ldFill(Dict(), 0, n, zero), n, no.newObjPinned)
+    ret ldStoreThen(fr, ldPutObj(with st(stNext = id + 1), id, h), env, no.newObjRegister, LdObj(id))
+
+  # The stdlib's pin and unpin (System::Internal): a lock the run, alone,
+  # needs no part of. Its writes are its own.
+  fun ldCallOp(fr: LdFrame, st: LdSt, env: LdEnv, c: OpCall): LdNext|LdOk|LdStop => match(ldPinCall(c.callFunction))
+    (sym: String) => ldPinOp(fr, st, env, c, sym)
+    ()            => ldCallOpPlain(fr, st, env, c)
+
+  fun ldCallOpPlain(fr: LdFrame, st: LdSt, env: LdEnv, c: OpCall): LdNext|LdOk|LdStop
+    if c.callImpure || ldImpureTarget(c.callFunction)
+      ret LdStop(ldEffect(), st)
+    ret match(ldCallTarget(st, env, c))
+      (ok: LdOk)   => match(c.callRegister)
+        (reg: RParam) => ldStoreThen(fr, ok.okSt, env, reg, ok.okV)
+        ()            => LdNext(fr, ok.okSt)
+      (s2: LdStop) => s2
+
+  fun ldPinOp(fr: LdFrame, st: LdSt, env: LdEnv, c: OpCall, sym: String): LdNext|LdOk|LdStop
+    let target = match(ldEval(a, st, env, c.callParameters))
+      (s2: LdStruct) => match(head(ldStructValues(s2)))
+        (o: LdObj) => o
+        (r: LdRef) => r
+        (x: LdVal) => LdFail(ldOpaque())
+        ()         => LdFail(ldOpaque())
+      (e: LdFail)    => e
+      (x: LdVal)     => LdFail(ldOpaque())
+    ret match(target)
+      (v: LdVal)  => match(c.callRegister)
+        (reg: RParam) => ldStoreThen(fr, st, env, reg, sym == "yafl_pin" ? v : LdStruct(List(), Dict()))
+        ()            => LdNext(fr, st)
+      (e: LdFail) => ldStop(e, st)
+
+  fun ldCallTarget(st: LdSt, env: LdEnv, c: OpCall): LdOk|LdStop =>
+    match(ldTarget(a, st, env, c.callFunction))
+      (t: LdTarget) => match(ldEval(a, st, env, c.callParameters))
+        (s2: LdStruct) => ldCall(a, st, depth, t.tgName, t.tgThis, ldStructValues(s2))
+        (e: LdFail)    => ldStop(e, st)
+        (o: LdVal)     => ldCall(a, st, depth, t.tgName, t.tgThis, List())
+      (e: LdFail)   => ldStop(e, st)
+
   let params = cgFieldsOfOrEmpty(fn.fnParams)
   if !sizeAtLeast(params, 1) || !(sizeAtLeast(params, 1 + ldCount(args)) && sizeAtMost(params, 1 + ldCount(args)))
-    ret LdStop(ldOpaque(), st)
+    ret LdStop(ldOpaque(), st0)
   let first = head(params) ?? CgField("this", CgDataPointer(false))
   let vars = zipFold(dropOne(params), args, put(Dict<String, LdVal>(), first.fieldName, this),
                      (d, p, v) => put(d, p.fieldName, v))
-  ret ldStep(a, LdFrame(fn.fnOps, ldLabels(fn.fnOps), vars, 0, "", ""), st, depth)
+  ret ldStep(LdFrame(fn.fnOps, ldLabels(fn.fnOps), vars, 0, "", ""), st0)
 
 fun ldCount<T>(xs: List<T>): Int => fold(xs, 0, (n, x) => n + 1)
 
@@ -774,101 +897,6 @@ fun ldJump(fr: LdFrame, label: String): LdFrame => with fr(frPc = get(fr.frLabel
 
 fun ldSet(fr: LdFrame, n: String, v: LdVal): LdFrame => with fr(frVars = put(fr.frVars, n, v))
 
-fun [tail] ldStep(a: CgApp, fr: LdFrame, st0: LdSt, depth: Int): LdOk|LdStop
-  let st = ldTick(st0)
-  if st.stSteps > ldStepLimit()
-    ret LdStop(ldBudget(), st)
-  if fr.frPc >= size(fr.frOps)
-    ret LdStop(ldOpaque(), st)
-  let env = LdLocals(fr.frVars)
-  let op = fr.frOps[fr.frPc]
-  let next = ldAt(fr, fr.frPc + 1)
-  ret match(ldExec(a, fr, st, depth, env, op, next))
-    (n: LdNext) => ldStep(a, n.nxFrame, n.nxSt, depth)
-    (ok: LdOk)  => ok
-    (s2: LdStop) => s2
-
-# One op: where execution goes next (LdNext), or the run's end. Never calls
-# ldStep itself, so a run of any length is a loop, not a recursion.
-fun ldExec(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, op: Op, next: LdFrame): LdNext|LdOk|LdStop
-  ret match(op)
-    (l: OpLabel)    => LdNext(with next(frPrev = fr.frCur, frCur = l.labelName), st)
-    (p: OpPhi)      => ldPhis(a, next, st, depth, list1(p))
-    (m: OpMove)     => ldMoveOp(a, next, st, depth, env, m)
-    (j: OpJump)     => LdNext(ldJump(next, j.jumpName), st)
-    (j: OpJumpIf)   => match(ldEval(a, st, env, j.jumpIfCondition))
-      (i: LdInt)  => LdNext((i.liV != 0) != j.jumpIfInvert ? ldJump(next, j.jumpIfLabel) : next, st)
-      (e: LdFail) => ldStop(e, st)
-      (o: LdVal)  => LdStop(ldOpaque(), st)
-    (s2: OpSwitchJump) => match(ldEval(a, st, env, s2.switchCondition))
-      (i: LdInt)  => match(firstWhere(s2.switchCases, (c) => c.caseValue == i.liV))
-        (c: OpCase) => LdNext(ldJump(next, c.caseLabel), st)
-        ()          => LdStop(ldAbort(), st)
-      (e: LdFail) => ldStop(e, st)
-      (o: LdVal)  => LdStop(ldOpaque(), st)
-    (no: OpNewObject) => ldNewObject(a, next, st, depth, env, no)
-    (c: OpCall)     => ldCallOp(a, next, st, depth, env, c)
-    (r: OpReturn)   => match(ldEval(a, st, env, r.returnValue))
-      (v: LdVal)  => LdOk(st, v)
-      (e: LdFail) => ldStop(e, st)
-    (r: OpReturnVoid) => LdOk(st, LdNone())
-    (x: OpAbort)    => LdStop(ldAbort(), st)
-    (x: OpAssertNotTask) => LdNext(next, st)
-    (o: Op)         => LdStop(ldOpaque(), st)
-
-# The joined values all read the edge just taken, together.
-fun [tail] ldPhis(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, phis: List<OpPhi>): LdNext|LdOk|LdStop
-  if fr.frPc < size(fr.frOps)
-    let more = match(fr.frOps[fr.frPc])
-      (p: OpPhi) => p
-      (o: Op)    => None
-    if !(more is None)
-      ret ldPhis(a, ldAt(fr, fr.frPc + 1), st, depth, append(phis, more ?? OpPhi(RpNullPointer(), List(), Dict())))
-  let env = LdLocals(fr.frVars)
-  let values = mapAll(phis, (p) => match(firstWhere(p.phiSources, (s2) => s2.sourceLabel == fr.frPrev))
-    (src: OpPhiSource) => match(ldEval(a, st, env, src.sourceValue))
-      (v: LdVal)  => v
-      (e: LdFail) => None
-    ()                 => None)
-  ret match(values)
-    (vs: List<LdVal>) => ldPhiAssign(a, fr, st, depth, phis, vs)
-    ()                => ldPhiStop(a, fr, st, phis)
-
-# Which reason the first failing source gives, as Python raises it.
-fun ldPhiStop(a: CgApp, fr: LdFrame, st: LdSt, phis: List<OpPhi>): LdStop
-  let env = LdLocals(fr.frVars)
-  ret fold<OpPhi, LdStop|None>(phis, None, (acc: LdStop|None, p) => match(acc)
-    (s2: LdStop) => s2
-    ()           => match(firstWhere(p.phiSources, (s3) => s3.sourceLabel == fr.frPrev))
-      (src: OpPhiSource) => match(ldEval(a, st, env, src.sourceValue))
-        (e: LdFail) => ldStop(e, st)
-        (v: LdVal)  => None
-      ()                 => LdStop(ldOpaque(), st)) ?? LdStop(ldOpaque(), st)
-
-fun ldPhiAssign(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, phis: List<OpPhi>, vs: List<LdVal>): LdNext|LdOk|LdStop
-  let targets = mapAll(phis, (p) => match(p.phiTarget)
-    (sv: RpStackVar) => sv.name
-    (o: RParam)      => None)
-  ret match(targets)
-    (ns: List<String>) => LdNext(zipFold(ns, vs, fr, (f2, n, v) => ldSet(f2, n, v)), st)
-    ()                 => LdStop(ldOpaque(), st)
-
-fun ldMoveOp(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove): LdNext|LdOk|LdStop => match(m.moveSource)
-  (ri: RpRuntimeInvoke) => ri.function == "object_unpin"
-    ? ldUnpin(a, fr, st, depth, env, m, ri)
-    : ri.function == "object_pin_set" ? ldPinSetOp(a, fr, st, depth, env, m, ri)
-    : ldMoveValue(a, fr, st, depth, env, m)
-  (o: RParam)           => ldMoveValue(a, fr, st, depth, env, m)
-
-# A late write under the pin: the field is filled only if still empty, and the
-# answer is what it held.
-fun ldPinSetOp(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove, ri: RpRuntimeInvoke): LdNext|LdOk|LdStop =>
-  match(ri.parameters)
-    (ns: RpNewStruct) => match(ldPinSetParts(ns.values))
-      (parts: LdPinSet) => ldPinSet(a, fr, st, depth, env, m, parts)
-      ()                => ldMoveValue(a, fr, st, depth, env, m)
-    (o: RParam)       => ldMoveValue(a, fr, st, depth, env, m)
-
 class [final] LdPinSet(psObj: RParam, psField: String, psValue: RParam)
 
 fun ldPinSetParts(vs: List<RpNamedValue>): LdPinSet|None
@@ -880,39 +908,6 @@ fun ldPinSetParts(vs: List<RpNamedValue>): LdPinSet|None
   ret match(off.value)
     (fo: RpFieldOffset) => LdPinSet(o.value, fo.field, v.value)
     (x: RParam)         => None
-
-fun ldPinSet(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove, parts: LdPinSet): LdNext|LdOk|LdStop
-  let filled = ldEval(a, st, env, parts.psObj) ?> (o: LdVal) =>
-    ldEval(a, st, env, parts.psValue) ?> (v: LdVal) =>
-      ldRead(a, st, o, parts.psField, None) ?> (held: LdVal) => match(held)
-        (n: LdNull) => ldWrite(st, o, parts.psField, None, v) ?> (st2: LdSt) => LdStored(fr, st2, held)
-        (x: LdVal)  => LdStored(fr, st, held)
-  ret match(filled)
-    (out: LdStored) => ldStoreThen(a, fr, out.sdSt, depth, env, m.moveTarget, out.sdHeld)
-    (e: LdFail)     => ldStop(e, st)
-
-fun ldMoveValue(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove): LdNext|LdOk|LdStop =>
-  match(ldEval(a, st, env, m.moveSource))
-    (v: LdVal)  => ldStoreThen(a, fr, st, depth, env, m.moveTarget, v)
-    (e: LdFail) => ldStop(e, st)
-
-# The one runtime operation with an effect on the run's objects: the end of a
-# construction's early pin.
-fun ldUnpin(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, m: OpMove, ri: RpRuntimeInvoke): LdNext|LdOk|LdStop =>
-  match(ldEval(a, st, env, ri.parameters))
-    (s2: LdStruct) => match(head(ldStructValues(s2)))
-      (o: LdObj) => match(get(st.stHeap, o.loId))
-        (h: LdHeapObj) => h.hoFrozen ? LdStop(ldOpaque(), st)
-          : ldStoreThen(a, fr, ldPutObj(st, o.loId, with h(hoPinned = false)), depth, env, m.moveTarget, o)
-        ()             => LdStop(ldOpaque(), st)
-      ()         => LdStop(ldOpaque(), st)
-    (e: LdFail)    => ldStop(e, st)
-    (o: LdVal)     => LdStop(ldOpaque(), st)
-
-fun ldStoreThen(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, target: RParam, v: LdVal): LdNext|LdOk|LdStop =>
-  match(ldStore(a, fr, st, env, target, v))
-    (out: LdStored) => LdNext(out.sdFrame, out.sdSt)
-    (e: LdFail)     => ldStop(e, st)
 
 class [final] LdStored(sdFrame: LdFrame, sdSt: LdSt, sdHeld: LdVal)
 
@@ -927,7 +922,7 @@ fun ldStore(a: CgApp, fr: LdFrame, st: LdSt, env: LdEnv, target: RParam, v: LdVa
 
 fun ldWrite(st: LdSt, ptr: LdVal, field: String, index: LdVal|None, v: LdVal): LdSt|LdFail => match(ptr)
   (o: LdObj) => match(get(st.stHeap, o.loId))
-    (h: LdHeapObj) => h.hoFrozen ? LdFail(ldOpaque()) : match(index)
+    (h: LdHeapObj) => match(index)
       (iv: LdVal) => match(iv)
         (i: LdInt) => h.hoArray && i.liV >= 0 && i.liV < h.hoLen
           ? ldPutObj(ldMarkWritten(st, o.loId), o.loId, with h(hoItems = put(h.hoItems, i.liV, v)))
@@ -940,73 +935,21 @@ fun ldWrite(st: LdSt, ptr: LdVal, field: String, index: LdVal|None, v: LdVal): L
 
 fun ldMarkWritten(st: LdSt, id: Int): LdSt => with st(stWritten = add(st.stWritten, id))
 
-fun ldNewObject(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, no: OpNewObject): LdNext|LdOk|LdStop
-  ret match(appObject(a, no.newObjName))
-    (obj: CgObject) => obj.objIsMutable || obj.objIsForeign ? LdStop(ldOpaque(), st) : match(no.newObjSize)
-      (sz: RParam) => match(ldEval(a, st, env, sz))
-        (n: LdInt)  => n.liV < 0 ? LdStop(ldOpaque(), st)
-          : n.liV * 8 > ldDataLimit() ? LdStop(ldLarge(), st)
-          : ldAllocate(a, fr, st, depth, env, no, true, n.liV, ldZero(ldElemType(obj)))
-        (e: LdFail) => ldStop(e, st)
-        (o: LdVal)  => LdStop(ldOpaque(), st)
-      ()           => ldAllocate(a, fr, st, depth, env, no, false, 0, LdNone())
-    ()              => LdStop(ldOpaque(), st)
-
 fun ldElemType(obj: CgObject): CgType => match(head(takeLastOne(ldObjFields(obj))))
   (f: CgField) => match(f.fieldType)
     (arr: CgArray) => arr.elemType
     (o: CgType)    => f.fieldType
   ()           => CgVoid()
 
-fun ldAllocate(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, no: OpNewObject,
-               isArray: Bool, n: Int, zero: LdVal): LdNext|LdOk|LdStop
-  let items = ldFill(Dict(), 0, n, zero)
-  let id = st.stNext
-  let h = LdHeapObj(no.newObjName, Dict(), isArray, items, n, no.newObjPinned, false)
-  ret ldStoreThen(a, fr, ldPutObj(with st(stNext = id + 1), id, h), depth, env, no.newObjRegister, LdObj(id))
-
 fun [tail] ldFill(acc: Dict<Int, LdVal>, i: Int, n: Int, zero: LdVal): Dict<Int, LdVal> => i >= n
   ? acc
   : ldFill(put(acc, i, zero), i + 1, n, zero)
-
-# The stdlib's pin and unpin (System::Internal): a lock the run, alone, needs
-# no part of. Its writes are its own.
-fun ldCallOp(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, c: OpCall): LdNext|LdOk|LdStop => match(ldPinCall(c.callFunction))
-  (sym: String) => ldPinOp(a, fr, st, depth, env, c, sym)
-  ()            => ldCallOpPlain(a, fr, st, depth, env, c)
-
-fun ldCallOpPlain(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, c: OpCall): LdNext|LdOk|LdStop
-  if c.callImpure || ldImpureTarget(c.callFunction)
-    ret LdStop(ldEffect(), st)
-  let result = match(ldFetchStub(c.callFunction))
-    (stub: String) => ldFetch(a, st, depth, stub)
-    ()             => ldCallTarget(a, st, depth, env, c)
-  ret match(result)
-    (ok: LdOk)   => match(c.callRegister)
-      (reg: RParam) => ldStoreThen(a, fr, ok.okSt, depth, env, reg, ok.okV)
-      ()            => LdNext(fr, ok.okSt)
-    (s2: LdStop) => s2
 
 fun ldPinCall(f: RParam): String|None => match(f)
   (gf: RpGlobalFunction) => match(gf.cSymbol)
     (sym: String) => sym == "yafl_pin" || sym == "yafl_unpin" ? sym : None
     ()            => None
   (o: RParam)            => None
-
-fun ldPinOp(a: CgApp, fr: LdFrame, st: LdSt, depth: Int, env: LdEnv, c: OpCall, sym: String): LdNext|LdOk|LdStop
-  let target = match(ldEval(a, st, env, c.callParameters))
-    (s2: LdStruct) => match(head(ldStructValues(s2)))
-      (o: LdObj) => o
-      (r: LdRef) => r
-      (x: LdVal) => LdFail(ldOpaque())
-      ()         => LdFail(ldOpaque())
-    (e: LdFail)    => e
-    (x: LdVal)     => LdFail(ldOpaque())
-  ret match(target)
-    (v: LdVal)  => match(c.callRegister)
-      (reg: RParam) => ldStoreThen(a, fr, st, depth, env, reg, sym == "yafl_pin" ? v : LdStruct(List(), Dict()))
-      ()            => LdNext(fr, st)
-    (e: LdFail) => ldStop(e, st)
 
 fun ldImpureTarget(f: RParam): Bool => match(f)
   (gf: RpGlobalFunction) => gf.impure
@@ -1020,14 +963,6 @@ fun ldFetchStub(f: RParam): String|None => match(f)
       ()          => None
     : None
   (o: RParam)            => None
-
-fun ldCallTarget(a: CgApp, st: LdSt, depth: Int, env: LdEnv, c: OpCall): LdOk|LdStop =>
-  match(ldTarget(a, st, env, c.callFunction))
-    (t: LdTarget) => match(ldEval(a, st, env, c.callParameters))
-      (s2: LdStruct) => ldCall(a, st, depth, t.tgName, t.tgThis, ldStructValues(s2))
-      (e: LdFail)    => ldStop(e, st)
-      (o: LdVal)     => ldCall(a, st, depth, t.tgName, t.tgThis, List())
-    (e: LdFail)                      => ldStop(e, st)
 
 # ── emitting a finished value as constants ───────────────────────────────────
 
@@ -1273,13 +1208,6 @@ fun [tail] ldItemOps(items: List<RParam>, reg: RParam, cls: String, field: Strin
                             append<Op>(acc, OpMove(RpObjectField(elem, reg, cls, field, RpInteger(i, 32), true, false),
                                                    rp, false, Dict())))
   ()           => acc
-
-fun ldEmSize(em: LdEm): Int => fold(em.emGlobals, 0, (total, g2) => total + 8 + match(g2.globalInit)
-  (ns: RpNewStruct) => fold(ns.values, 0, (t, nv) => t + 8 * match(nv.value)
-    (ia: RpInitArray) => ldCount(ia.values)
-    (o: RParam)       => 1)
-  (o: RParam)       => 0
-  ()                => 0)
 
 # ── stage 1: a literal and a call make a new literal ────────────────────────
 
