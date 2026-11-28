@@ -24,14 +24,13 @@
 // Run with YAFL_THREADS=1.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 
 extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-enum { ST_IDLE = 1, ST_SCAN_ROOTS = 3, ST_MARK_SWEEP = 4, ST_PRUNE = 5 };
 
 struct holder { object_t parent; object_t* child; };
 static vtable_t holder_vt = {
@@ -89,13 +88,13 @@ static void _entrypoint(object_t* self, fun_t cont) {
 
     // (1) gc_fsa_start done; promotion + (after-stacks) root scan happen on the
     //     NEXT step. Create K and C now, before promotion.
-    step_to(ST_SCAN_ROOTS);
+    step_to(GC_STAGE_SCAN_ROOTS);
     make_keeper_and_child();
     printf("test_gc_step2: created K(->_slots[1]) and C=%p (C only in a hidden global); C_state=%d\n",
            (void*)g_C, Cstate());
 
     // (2) Promotion (K & C's page enters scan set) + root scan (marks K, not C) -> MARK_SWEEP.
-    step_to(ST_MARK_SWEEP);
+    step_to(GC_STAGE_MARK_SWEEP);
     printf("test_gc_step2: promoted+root-scanned; C_state=%d (C unmarked, page in scan set)\n", Cstate());
 
     // (3) DURING mark: holder on a fresh unpromoted page; H->child=C; publish H.
@@ -104,9 +103,9 @@ static void _entrypoint(object_t* self, fun_t cont) {
            (void*)g_H, Hstate(), Cstate());
 
     // (4) Finish mark, then prune.
-    step_to(ST_PRUNE);
+    step_to(GC_STAGE_PRUNE);
     printf("test_gc_step2: after mark; C_state=%d\n", Cstate());
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
 
     int cs = Cstate(), hs = Hstate();
     printf("test_gc_step2: after prune; H_state=%d (1=live), C_state=%d (2=RECLAIMED); "

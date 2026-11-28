@@ -20,6 +20,7 @@
 // Run with YAFL_THREADS=1.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <unistd.h>
 
@@ -27,10 +28,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-// Must match enum gc_stage in object.c.
-enum { ST_NOT_STARTED = 0, ST_IDLE = 1, ST_START = 2,
-       ST_SCAN_ROOTS = 3, ST_MARK_SWEEP = 4, ST_PRUNE = 5 };
 
 struct obj { object_t parent; object_t* f; };
 static vtable_t obj_vt = {
@@ -75,12 +72,12 @@ static void _entrypoint(object_t* self, fun_t cont) {
        entrypoint can outrun. Stepping through NOT_STARTED is a no-op, so a
        fast spin exhausts the step guard before the collector exists: wait
        for it (yielding, so the registering threads get scheduled). */
-    while (gc_debug_stage() == 0) usleep(1000);   // allocations no longer drive the FSA
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // allocations no longer drive the FSA
 
     printf("test_gc_step: start stage=%d (IDLE=1)\n", gc_debug_stage());
 
     // (1) Drive to just-after gc_fsa_start: global roots scanned, _slots[0]==NULL.
-    step_to(ST_SCAN_ROOTS);
+    step_to(GC_STAGE_SCAN_ROOTS);
     printf("test_gc_step: roots scanned; _slots[0]=%p\n", (void*)_slots[0]);
 
     // (2) Now create O and store into the (already-scanned) root.
@@ -89,15 +86,15 @@ static void _entrypoint(object_t* self, fun_t cont) {
            (void*)g_O, O_state());
 
     // (3) Finish SCAN_ROOTS: stack scan + promote new_pages (O's page enters scan set).
-    step_to(ST_MARK_SWEEP);
+    step_to(GC_STAGE_MARK_SWEEP);
     printf("test_gc_step: after stacks+promotion; O_state=%d\n", O_state());
 
     // (4) Mark.
-    step_to(ST_PRUNE);
+    step_to(GC_STAGE_PRUNE);
     printf("test_gc_step: after mark; O_state=%d\n", O_state());
 
     // (5) Prune.
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
     int st = O_state();
     printf("test_gc_step: after prune; O_state=%d; _slots[0]=%p (still points at O=%p)\n",
            st, (void*)_slots[0], (void*)g_O);

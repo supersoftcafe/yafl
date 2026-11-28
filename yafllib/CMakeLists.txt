@@ -120,30 +120,25 @@ add_yafl_test(test_gc_ring)
 # into the current cycle, with no birth protection). Closed by the allocate-
 # black-in-window guard in _object_alloc — this test is its regression test.
 add_yafl_test(test_gc_min2)
-# test_gc_min2_window: the same, with a 20 us sleep between storing a holder
-# into its root slot and publishing it, so collections open inside that
-# window. Publishing BEFORE the store, the old contract, failed every run:
-# a cycle opening between the barrier's flag read and the store snapshotted
-# the slot's previous occupant, and the holder — dropped from its thread's
-# stack before that thread's take — was never marked. gc_root_publish now
-# takes the slot and runs after the store.
+# test_gc_min2_window: the same, with a 20 us sleep between a root store's
+# barrier and the store, so collections open inside that window. One opening
+# there must wait for the store (THE OPENING HANDSHAKE, object.c): a cycle
+# that scanned a thread before it landed could lose the slot's previous
+# occupant, loaded by that thread after its scan.
 add_executable(test_gc_min2_window tests/test_gc_min2.c ${TEST_SRC_FILES})
 target_include_directories(test_gc_min2_window PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(test_gc_min2_window PRIVATE m)
 target_compile_options(test_gc_min2_window PRIVATE -Wall -Wextra -Werror)
-target_compile_definitions(test_gc_min2_window PRIVATE PUBLISH_WINDOW_NS=20000)
+target_compile_definitions(test_gc_min2_window PRIVATE BARRIER_WINDOW_NS=20000)
 add_test(NAME test_gc_min2_window COMMAND test_gc_min2_window)
 set_tests_properties(test_gc_min2_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1")
-# test_gc_publish_step: the same window, stepped by hand. An object allocated
-# before the cycle opens is stored into a root after the snapshot; only
-# gc_root_publish marks it. (test_gc_step's object is allocated inside the
-# opening window, so allocate-black marks it and that test cannot see the
-# publish.) With the publish's shading removed, it reports the object
-# reclaimed.
+# test_gc_publish_step: stepped by hand. An object allocated before the cycle
+# opens is stored into a root after it opens and dropped before this thread's
+# scan; only the root read that follows every stack marks it. (test_gc_step's
+# object is allocated inside the opening window, so allocate-black marks it.)
 add_yafl_test(test_gc_publish_step)
-# test_gc_lazy_step: the same window for a waiter CASed into a global lazy
-# stub's flag root by lazy_enqueue_waiter. Unpublished, it is reclaimed while
-# the flag still points at it.
+# test_gc_lazy_step: the same for a waiter CASed into a global lazy stub's
+# flag root by lazy_enqueue_waiter, before and after this thread's scan.
 add_yafl_test(test_gc_lazy_step)
 # test_gc_tagged_task: a task referenced only by a TASK-tagged word — a pending
 # result, in a heap field or a stack slot — survives a cycle.
@@ -288,10 +283,14 @@ set_tests_properties(test_gc_late_pin_race_unstamped PROPERTIES ENVIRONMENT "YAF
 # which hooks that window.
 add_yafl_test(test_lazy_runner)
 target_compile_definitions(test_lazy_runner PRIVATE YAFL_LAZY_RACE_PROBE=1)
+# test_gc_start_handshake: stepped, with a declared peer thread. The cycle
+# opens only once every thread has acknowledged it at a safe point, so a
+# store whose barrier read the flag down cannot land after a scan.
+add_yafl_test(test_gc_start_handshake)
+set_tests_properties(test_gc_start_handshake PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_static_store: stepped. A store into a static object (a global's lazy
-# stub) whose barrier ran before the cycle opened is seen only because the
-# object store macros publish after the store when the container is outside
-# the heap.
+# stub) whose barrier ran before the cycle opened, landing after, is seen by
+# the declared-roots read that follows every stack.
 add_yafl_test(test_gc_static_store)
 set_tests_properties(test_gc_static_store PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_late_requeue: stepped. A rescan request that arrives after marking

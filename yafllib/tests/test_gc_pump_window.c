@@ -23,6 +23,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,8 +37,6 @@ extern void gc_test_mutator_mark(object_t* o);
 extern void gc_test_mark_tail(void);
 extern bool gc_test_page_done(void* page);
 extern bool gc_test_object_seen(object_t* o);
-
-enum { ST_IDLE = 1 };
 
 // Mutable: never relocated, so the addresses stay stable.
 struct holder { object_t parent; object_t* child; char pad[8192 - sizeof(object_t) - sizeof(object_t*)]; };
@@ -88,11 +87,11 @@ static void fail(const char* what, int got) {
 
 static void run_one_cycle(void) {
     int guard = 0;
-    while (gc_debug_stage() == ST_IDLE) {
+    while (gc_debug_stage() == GC_STAGE_IDLE) {
         if (++guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    while (gc_debug_stage() != ST_IDLE) {
+    while (gc_debug_stage() != GC_STAGE_IDLE) {
         if (++guard > 1000000) fail("cycle did not finish", gc_debug_stage());
         gc_debug_step();
     }
@@ -128,8 +127,8 @@ static void __attribute__((noinline)) scrub(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     build_below();
     scrub();

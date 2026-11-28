@@ -2,27 +2,27 @@
 // stub must survive the cycle it was enqueued in.
 //
 // A global stub's `flag` field is a declared root. lazy_enqueue_waiter CASes
-// the waiter into it, and lazy_acquire's caller keeps only the TAGGED waiter,
-// which the collector does not see: the flag is then the waiter's only
-// reference. That is a root store like any other, so it needs the
-// root-publish contract (see gc_root_publish in yafl.h):
+// the waiter into it, and the waiter may then leave its thread's stack: the
+// flag is its only reference. That is a root store like any other, read by
+// the root read that follows every stack (THE OPENING HANDSHAKE, object.c):
 //
-//   1. The gate is taken (LAZY_HELD); W is allocated before the cycle opens,
-//      so it is not allocated black.
-//   2. The cycle opens: the root snapshot reads the flag while it is HELD.
+//   1. The gate is taken (LAZY_HELD).
+//   2. The cycle opens, as far as `stage`.
 //   3. W is enqueued, then dropped. Its address is parked in a plain global
 //      the collector never scans.
-//   4. The take, marking and prune run. Only a publish of the flag marks W.
-//
-// Unpublished, W is reclaimed while the flag still points at it, and the
-// release later walks a freed task. Same shape as test_gc_publish_step.
+//   4. The rest of the cycle runs.
 //
 // Run twice, on two stubs. Enqueued during SCAN_ROOTS, before this thread's
-// own scan, the hybrid barrier's insertion half also shades W (GC_CAS runs the
-// mutable store's barrier); enqueued at MARK_SWEEP, after the scan, only the
-// publish does — that case fails without it.
+// own scan, W is allocated before the cycle opens, so it is not allocated
+// black: only the root read marks it. Enqueued at MARK_SWEEP, after the scan,
+// W is allocated there too, as lazy_acquire's caller allocates its waiter: a
+// scanned thread stores only what its scan saw, or what it allocated since,
+// which is outside the cycle. Either way, if W is reclaimed while the flag
+// still points at it, the release later walks a freed task. Same shape as
+// test_gc_publish_step.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -31,10 +31,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-// Must match enum gc_stage in object.c.
-enum { ST_NOT_STARTED = 0, ST_IDLE = 1, ST_START = 2,
-       ST_SCAN_ROOTS = 3, ST_MARK_SWEEP = 4, ST_PRUNE = 5 };
 
 // The global stub's flag field, declared as a root as the compilers declare it.
 static object_t*                _flag[2];
@@ -70,21 +66,29 @@ static void step_to(int target) {
     }
 }
 
-// One cycle: W allocated before it opens, enqueued at `stage`, then dropped.
+// One cycle: W enqueued at `stage`, then dropped. Allocated before the cycle
+// opens, unless `stage` is after this thread's scan.
 static int one_case(int which, int stage, const char* name) {
     g_case = which;
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
 
     // (1) Before the cycle opens: this thread holds the gate.
     if (lazy_acquire(NULL, (object_t*)&_flag[which]) != NULL) {
         fprintf(stderr, "test_gc_lazy_step: the first acquire of a free gate did not hold it\n");
         abort();
     }
-    allocate();
-    scrub();
+    bool scanned_by_then = stage >= GC_STAGE_MARK_SWEEP;
+    if (!scanned_by_then) {
+        allocate();
+        scrub();
+    }
 
-    // (2) Open the cycle: the snapshot reads the flag while it is HELD.
+    // (2) Open the cycle.
     step_to(stage);
+    if (scanned_by_then) {
+        allocate();
+        scrub();
+    }
 
     // (3) Enqueue as the first waiter, then drop W.
     enqueue();
@@ -95,9 +99,9 @@ static int one_case(int which, int stage, const char* name) {
     }
 
     // (4) The rest of the cycle.
-    if (stage < ST_MARK_SWEEP) step_to(ST_MARK_SWEEP);
-    step_to(ST_PRUNE);
-    step_to(ST_IDLE);
+    if (stage < GC_STAGE_MARK_SWEEP) step_to(GC_STAGE_MARK_SWEEP);
+    step_to(GC_STAGE_PRUNE);
+    step_to(GC_STAGE_IDLE);
 
     int st = gc_debug_object_state((object_t*)g_W);
     printf("test_gc_lazy_step: enqueued at %s: after prune W_state=%d (1=live, 2=reclaimed, 0=page released); flag=%p\n",
@@ -112,10 +116,10 @@ static void _entrypoint(object_t* self, fun_t cont) {
     (void)self;
     _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector to exist
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector to exist
 
-    int ok = one_case(0, ST_SCAN_ROOTS, "SCAN_ROOTS");
-    ok &= one_case(1, ST_MARK_SWEEP, "MARK_SWEEP");
+    int ok = one_case(0, GC_STAGE_SCAN_ROOTS, "SCAN_ROOTS");
+    ok &= one_case(1, GC_STAGE_MARK_SWEEP, "MARK_SWEEP");
 
     ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, integer_from_int32(ok ? 0 : 7));
 }

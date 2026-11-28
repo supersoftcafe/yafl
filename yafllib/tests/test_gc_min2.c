@@ -33,10 +33,11 @@
 #ifndef MAX_WORKERS_T
 #define MAX_WORKERS_T 32
 #endif
-// Nanoseconds to sleep between storing a holder into its root slot and
-// publishing it — the window in which a collection can open. 0 = none.
-#ifndef PUBLISH_WINDOW_NS
-#define PUBLISH_WINDOW_NS 0
+// Nanoseconds to sleep between a root store's barrier and the store — the
+// window in which a collection can open, which must not get past its opening
+// until the store lands (THE OPENING HANDSHAKE, object.c). 0 = none.
+#ifndef BARRIER_WINDOW_NS
+#define BARRIER_WINDOW_NS 0
 #endif
 
 static int NWORKERS = 4;
@@ -51,11 +52,8 @@ static vtable_t holder_vt = {
 };
 
 // Shared and rooted. Worker w PRODUCES only into its own block,
-// _slots[w*NSLOTS .. w*NSLOTS+NSLOTS-1]: a root slot has one writer, as the
-// publish contract requires (gc_root_publish shades what the slot holds, so a
-// second writer's store between another's store and publish would leave the
-// first value unshaded). Consumers read any slot, so holders still cross
-// threads.
+// _slots[w*NSLOTS .. w*NSLOTS+NSLOTS-1], so a root slot has one writer.
+// Consumers read any slot, so holders still cross threads.
 static object_t*                _slots[MAX_WORKERS_T * NSLOTS];
 static roots_declaration_func_t _prev;
 static void _decl(void(*declare)(object_t**)) {
@@ -110,12 +108,11 @@ static __attribute__((noinline)) void _work(int w) {
         // pointer. Plain accesses work on x86 (TSO); on aarch64 a reader can
         // see the pointer first and fail `gc_is_container_of`.
         gc_root_overwrite(&_slots[sp], 1);
-        __atomic_store_n(&_slots[sp], (object_t*)h, __ATOMIC_RELEASE);
-        if (PUBLISH_WINDOW_NS) {
-            struct timespec w = { 0, PUBLISH_WINDOW_NS };
+        if (BARRIER_WINDOW_NS) {
+            struct timespec w = { 0, BARRIER_WINDOW_NS };
             nanosleep(&w, NULL);
         }
-        gc_root_publish(&_slots[sp], 1);
+        __atomic_store_n(&_slots[sp], (object_t*)h, __ATOMIC_RELEASE);
 
         // CONSUME: read a holder (maybe created on another thread) and hang a
         // fresh child — created on THIS thread — off it. The holder is shared

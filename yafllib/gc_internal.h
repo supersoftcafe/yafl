@@ -7,6 +7,7 @@
 
 #define OBJECT_HEADER_EXCLUSIONS
 #include "yafl.h"
+#include "gc_stage.h"
 #include <setjmp.h>
 #include <time.h>
 
@@ -17,27 +18,6 @@ typedef struct list_element {
 } list_element_t;
 
 // ── Core collector state (defined in object.c) ──────────────────────────────
-
-enum gc_stage {
-    GC_STAGE_NOT_STARTED,
-    GC_STAGE_IDLE,       // Nothing happening, waiting for GC to start
-    GC_STAGE_START,      // First setup
-    GC_STAGE_SCAN_ROOTS, // Trying to scan stack. Globals scanned as we exited idle.
-    GC_STAGE_MARK_SWEEP, // Walk the graph, mark things as seen and scan as we go
-    GC_STAGE_PRUNE
-};
-// For reports. A switch, so a stage added without a name is a -Wswitch warning.
-static inline const char *gc_stage_name(enum gc_stage s) {
-    switch (s) {
-    case GC_STAGE_NOT_STARTED: return "not-started";
-    case GC_STAGE_IDLE:        return "idle";
-    case GC_STAGE_START:       return "start";
-    case GC_STAGE_SCAN_ROOTS:  return "scan-roots";
-    case GC_STAGE_MARK_SWEEP:  return "mark-sweep";
-    case GC_STAGE_PRUNE:       return "prune";
-    }
-    return "?";
-}
 
 enum thread_state {
     THREAD_STATE_RUNNING,               // Busy running, don't interrupt
@@ -58,6 +38,12 @@ struct gc_thread_info {
     void* thread_roots_context;
 
     bool roots_scanned;
+    // The GC cycle this thread last acknowledged as open: at a safe point of
+    // its own, or by the collector while the thread was suspended (object.c,
+    // THE OPENING HANDSHAKE). A cycle number, not a flag, so an
+    // acknowledgement never needs clearing and cannot be mistaken for a
+    // later cycle's.
+    _Atomic(uint32_t) acked_cycle;
     // The GC cycle of this thread's last root scan: its pages are born
     // outside that cycle (object.c, THE HAND-OFF). Set at the scan, while
     // the thread is held, and at registration.

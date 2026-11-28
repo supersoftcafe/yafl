@@ -21,6 +21,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -33,7 +34,6 @@ extern int  gc_debug_object_generation(object_t* o);   // -1 not-heap, 0 young, 
 extern int  gc_debug_object_carded(object_t* o);       // -1 not-heap, 0 no, 1 yes
 extern void gc_debug_request_major(void);
 
-enum { ST_IDLE = 1 };
 enum { FILLERS = 300, O_ID = 0x0c0de };
 
 struct node { object_t parent; object_t* f; intptr_t id; };
@@ -92,11 +92,11 @@ static void fail(const char* what, int got) {
 }
 
 static void run_one_cycle(void) {
-    for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() == GC_STAGE_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    for (int guard = 0; gc_debug_stage() != ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() != GC_STAGE_IDLE; ++guard) {
         if (guard > 1000000) fail("cycle did not finish", gc_debug_stage());
         gc_debug_step();
     }
@@ -149,15 +149,22 @@ static int gen(uintptr_t o)    { return gc_debug_object_generation((object_t*)o)
 static int state(uintptr_t o)  { return gc_debug_object_state((object_t*)o); }
 static int carded(uintptr_t o) { return gc_debug_object_carded((object_t*)o); }
 
+// R as its root holds it now. R may be compacted too, at a major (its page in
+// a sparse block): the root then follows it, and g_R is only where R was born.
+static object_t* __attribute__((noinline)) current_r(void) {
+    return object_resolve(_roots[FILLERS]);
+}
+
 // R reaches a live O with its id, through any forwarders.
 static void __attribute__((noinline)) check_r(const char* when) {
-    object_t* f = ((struct parent*)g_R)->f;
+    object_t* r = current_r();
+    object_t* f = ((struct parent*)r)->f;
     object_t* o = object_resolve(f);
     if (state((uintptr_t)f) != 1 || state((uintptr_t)o) != 1 || ((struct node*)o)->id != O_ID) {
         fprintf(stderr, "test_gc_old_compact: %s\n", when);
         fail("an old referrer lost its referent", state((uintptr_t)o));
     }
-    if (gen(g_R) != 1) fail("R left the old generation", gen(g_R));
+    if (gen((uintptr_t)r) != 1) fail("R left the old generation", gen((uintptr_t)r));
 }
 
 static void __attribute__((noinline)) capture_copy(void) {
@@ -173,8 +180,8 @@ static void __attribute__((noinline)) capture_copy(void) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     // (1) O among its fillers; O, R old.
     create();
@@ -215,7 +222,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     scrub();
     run_one_cycle();
     check_r("after the next major");
-    if ((uintptr_t)((struct parent*)g_R)->f != g_C) fail("a major did not rewrite an old field past its forwarder", 0);
+    if ((uintptr_t)((struct parent*)current_r())->f != g_C) fail("a major did not rewrite an old field past its forwarder", 0);
     gc_debug_request_major();
     scrub();
     run_one_cycle();

@@ -896,7 +896,7 @@ EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
 //
 //   GC_STORE_IN(obj, field, mask, value)          a field of the object `obj`,
 //       on the heap or static (an object with a vtable outside the heap, such
-//       as a global's lazy stub, which the macro detects and publishes after)
+//       as a global's lazy stub)
 //   GC_STORE_MUTABLE_IN(obj, field, mask, value)  the same, where the caller
 //       knows `obj` is MUTABLE (its class's is_mutable). Nothing a store owes
 //       turns on that today, so it is GC_STORE_IN.
@@ -921,17 +921,21 @@ EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
 //   GC_WRITE_BARRIER_MUTABLE_IN     the same
 //   GC_PUBLISH_IN           after   shades the value now stored, read back
 //                                   from the field
-//   GC_PUBLISH_IF_STATIC_IN after   GC_PUBLISH_IN when `obj` is outside the
-//                                   heap (every object store ends with it)
 //   gc_root_overwrite       before  GC_WRITE_BARRIER_IN for a root slot
-//   gc_root_publish         after   GC_PUBLISH_IN for a root slot
 //   GC_MARK_SEEN(value)     any     shades a value handed over other than by
 //                                   a plain store
 //
 // The rules they keep:
 //   * SNAPSHOT (SATB, deletion barrier): while a cycle marks, a value a store
 //     overwrites is shaded first — the snapshot keeps everything reachable at
-//     cycle open.
+//     cycle open. No safe point falls between a barrier's flag read and its
+//     store: each macro evaluates the value BEFORE the barrier, so a value
+//     that allocates cannot put one there. The cycle opens only once every
+//     thread has passed a safe point (THE OPENING HANDSHAKE, object.c), so no
+//     store that read the flag down lands after any thread's scan.
+//   * DECLARED ROOTS (static objects' slots, root slots) are read after every
+//     thread's stack, at the end of the root scan, so a store into one owes
+//     what a heap store owes, and nothing after it.
 //   * RAGGED SNAPSHOT (insertion half): a thread whose own root scan is still
 //     to come may move a value from its stack into a container the cycle never
 //     traces (one born after its thread's scan) and then drop it. A store that
@@ -1076,9 +1080,8 @@ INLINE object_t* object_pin_set(object_t* o, size_t offset, object_t* v) {
 }
 
 // ── Argument checks: plain asserts, stripped by NDEBUG ───────────────────────
-// A heap store names its CONTAINER, whose address decides whether it is
-// static (GC_PUBLISH_IF_STATIC_IN), so `obj` must truly be the BASE of an
-// allocated object and `slot` must lie inside it. A ROOT slot, the other way
+// A heap store names its CONTAINER, so `obj` must truly be the BASE of an
+// allocated object, or an aligned static one, and `slot` must lie inside it. A ROOT slot, the other way
 // round, must not be in the heap at all.
 EXTERN size_t object_get_size(object_t* ptr);
 EXTERN size_t object_get_extent(object_t* ptr);
@@ -1104,11 +1107,10 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
     return (char*)slot >= (char*)obj && (char*)slot < (char*)obj + object_get_extent(obj);
 }
 
-// The out-of-line halves of the object stores: everything a store owes
+// The out-of-line half of the object stores: everything a store owes
 // besides the store itself (object.c). A site inlines only the fast path
-// that needs no call, the store, and a range check.
+// that needs no call, and the store.
 EXTERN void gc_store_before(object_t **slot, ptr_mask_t mask);
-EXTERN void gc_store_static_after(object_t **slot, ptr_mask_t mask);
 
 // ── The parts ────────────────────────────────────────────────────────────────
 // The inline half of GC_WRITE_BARRIER_IN: true when the store owes nothing but
@@ -1154,34 +1156,21 @@ INLINE void gc_publish_slots(object_t **slot, ptr_mask_t mask) {
     do { assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
          gc_publish_slots((object_t**)&(field), (mask)); } while (false)
 
-// AFTER every object store: publish when `obj` is STATIC — an object with a
-// vtable outside the heap, such as a global's lazy stub, whose fields are
-// declared roots read once, at cycle open. Its barrier ran before the store
-// and may have read the flag down just before the cycle opened; the
-// snapshot then read the slot's old value, and the stored one would be seen
-// by nothing (test_gc_static_store). A heap container needs nothing more: the
-// cycle traces it, or it was born during the cycle, so its barrier saw the
-// flag up and the hybrid barrier shades the stored value.
-#define GC_PUBLISH_IF_STATIC_IN(obj, field, mask)\
-    do { if (UNLIKELY(!gc_in_heap(obj))) gc_store_static_after((object_t**)&(field), (mask)); } while (false)
-
 // A value handed to the runtime or another thread other than by a plain store
 // (a CAS, a swap): shaded while a cycle marks.
 #define GC_MARK_SEEN(value)\
     do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value); } while (false)
 
-// Declared roots are scanned ONCE, at cycle open (the snapshot), so a store
-// into one owes the marker what a heap store does. A root is shared, so the
-// publication fence too. Field-based shading follows, and may snap, a
-// forwarder that compaction left, exactly as the root scan itself does.
+// Declared roots are read after every thread's stack (the end of the root
+// scan), so a store into one owes the marker the snapshot's deletion shade
+// and no more: what it stores is read there, or shaded by the next store. A
+// root is shared, so the publication fence too. Field-based shading follows,
+// and may snap, a forwarder that compaction left, exactly as the root scan
+// itself does.
 INLINE void gc_root_overwrite(object_t **slot, ptr_mask_t mask) {
     assert(!gc_in_heap(slot));   // heap slots take GC_WRITE_BARRIER_IN
     if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
     GC_PUBLISH_FENCE();
-}
-INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
-    assert(!gc_in_heap(slot));
-    gc_publish_slots(slot, mask);
 }
 
 // ── The stores ───────────────────────────────────────────────────────────────
@@ -1189,17 +1178,21 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
 // gc_obj_ / gc_field_, and the parts take those. The generated code passes
 // expressions, not names — a [pinnable] class's store passes
 // `object_resolve(p)` as `obj` and again inside `field` — and every part
-// naming them would otherwise repeat the loop.
+// naming them would otherwise repeat the loop. The value is evaluated next,
+// into gc_value_, BEFORE the barrier: an allocation there would be a safe
+// point between the barrier's flag read and its store (THE OPENING
+// HANDSHAKE, object.c).
 #define GC_STORE_IN(obj, field, mask, ...)\
     do { object_t *gc_obj_ = (object_t*)(obj); __typeof__(field) *gc_field_ = &(field);\
+         __typeof__(field) gc_value_ = (__VA_ARGS__);\
          GC_WRITE_BARRIER_IN(gc_obj_, *gc_field_, mask);\
-         *gc_field_ = (__VA_ARGS__);\
-         GC_PUBLISH_IF_STATIC_IN(gc_obj_, *gc_field_, mask); } while (false)
+         *gc_field_ = gc_value_; (void)gc_obj_; } while (false)
 #define GC_STORE_MUTABLE_IN(obj, field, mask, ...) GC_STORE_IN(obj, field, mask, __VA_ARGS__)
 #define GC_STORE_PUBLISH_IN(obj, field, mask, ...)\
     do { object_t *gc_obj_ = (object_t*)(obj); __typeof__(field) *gc_field_ = &(field);\
+         __typeof__(field) gc_value_ = (__VA_ARGS__);\
          GC_WRITE_BARRIER_IN(gc_obj_, *gc_field_, mask);\
-         *gc_field_ = (__VA_ARGS__);\
+         *gc_field_ = gc_value_;\
          GC_PUBLISH_IN(gc_obj_, *gc_field_, mask); (void)gc_obj_; } while (false)
 #define GC_FILL_STORE_IN(obj, field, mask, ...)\
     do { __typeof__(field) *gc_field_ = &(field);\
@@ -1208,9 +1201,9 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
          *gc_field_ = (__VA_ARGS__); } while (false)
 #define GC_ROOT_STORE(field, mask, ...)\
     do { __typeof__(field) *gc_field_ = &(field);\
+         __typeof__(field) gc_value_ = (__VA_ARGS__);\
          gc_root_overwrite((object_t**)gc_field_, (mask));\
-         *gc_field_ = (__VA_ARGS__);\
-         gc_root_publish((object_t**)gc_field_, (mask)); } while (false)
+         *gc_field_ = gc_value_; } while (false)
 
 // ── The atomic stores ────────────────────────────────────────────────────────
 // A compare-and-swap of one pointer slot, and an exchange built on it: the
@@ -1227,8 +1220,7 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
 // All of it before the CAS, never after: a thread whose root scan is done
 // holds up nothing, so preempted between a CAS and its shade it can see the
 // cycle finish marking, and prune the displaced value, in between.
-// AFTER a CAS that lands in a static slot: publish, as GC_PUBLISH_IF_STATIC_IN
-// does for a store — a static slot is a declared root, read once at cycle open.
+// Nothing after it: a static slot is a declared root, read after every stack.
 //
 // An exchange is a CAS loop, never atomic_exchange: an exchange learns the
 // value it displaced only after displacing it, too late to shade it first.

@@ -15,6 +15,7 @@
 // stays a few MiB of filler.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -25,8 +26,6 @@ extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);        // 0 not-heap, 1 live, 2 reclaimed
 extern int  gc_debug_object_generation(object_t* o);   // -1 not-heap, 0 young, 1 old
 extern void gc_debug_request_major(void);
-
-enum { ST_IDLE = 1 };
 
 // Big enough (8 KB = half a 16 KB page) that K's page is never sparse, so the
 // compactor leaves it alone — compacted pages are excluded from promotion and
@@ -77,8 +76,8 @@ static void run_one_cycle(void) {
     do {
         gc_debug_step();
         if (++guard > 100000) fail("cycle did not start", gc_debug_stage());
-    } while (gc_debug_stage() == ST_IDLE);
-    while (gc_debug_stage() != ST_IDLE) {
+    } while (gc_debug_stage() == GC_STAGE_IDLE);
+    while (gc_debug_stage() != GC_STAGE_IDLE) {
         gc_debug_step();
         if (++guard > 1000000) fail("cycle did not finish", gc_debug_stage());
     }
@@ -119,7 +118,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
        entrypoint can outrun. Stepping through NOT_STARTED is a no-op, so a
        fast spin exhausts the step guard before the collector exists: wait
        for it (yielding, so the registering threads get scheduled). */
-    while (gc_debug_stage() == 0) usleep(1000);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);
 
     // (1) Allocate + root K.
     create_and_root();

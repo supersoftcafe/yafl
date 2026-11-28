@@ -1,30 +1,29 @@
 // Deterministic, single-stepped test: a store into a STATIC object (a global
 // lazy stub is one: an object with a vtable, outside the heap, its fields
-// declared roots) whose barrier ran before the cycle opened.
+// declared roots) whose barrier read the flag down, landing after the cycle
+// opened.
 //
-// A heap container needs nothing after its store: the cycle traces it, or it
-// was born during the cycle, which means the barrier saw the flag up and the
-// hybrid barrier shades the new value. A static object is scanned once, at
-// cycle open. A store whose barrier read the flag DOWN — before the cycle
-// opened — and which lands after the snapshot leaves the value reachable only
-// through a slot the cycle has already read. So the object store macros
-// publish after the store when the container is not in the heap
-// (GC_PUBLISH_IF_STATIC_IN, yafl.h).
+// The declared roots are read after every thread's stack, at the end of the
+// root scan (THE OPENING HANDSHAKE, object.c), so a store into a static
+// object owes nothing after it: what it stores is read there.
 //
 //   1. V (mutable, so young and never moved) is allocated while idle — not
 //      allocated black — and parked where the collector does not look.
 //   2. The store's barrier runs while idle: flag down, nothing shaded.
-//   3. The cycle opens: the snapshot reads the static slot while it is NULL.
-//   4. The store, then the macro's after-store part; V is dropped.
+//   3. The cycle opens, as far as the root scan.
+//   4. The store; V is dropped.
 //   5. The cycle finishes. The static slot is V's only reference: V must be
 //      live.
 //
-// Steps 2 and 4 are GC_STORE_MUTABLE_IN taken apart, as the race takes it
-// apart: a store macro has no safe point inside it, but another thread can
-// open the cycle between its flag read and its store.
+// Steps 2 and 4 are GC_STORE_MUTABLE_IN taken apart. Stepping the collector
+// between them puts a safe point where no store has one, so this thread
+// acknowledges the cycle with its store still to come: the late read alone
+// must find the value. (Across threads, the handshake keeps the cycle from
+// opening there at all: test_gc_start_handshake.)
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,9 +33,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-// Must match enum gc_stage in object.c.
-enum { ST_IDLE = 1, ST_SCAN_ROOTS = 3 };
 
 struct holder { object_t parent; object_t* child; };
 static vtable_t holder_vt = {
@@ -89,7 +85,6 @@ static void __attribute__((noinline)) barrier_half(void) {
 
 static void __attribute__((noinline)) store_half(void) {
     S.child = (object_t*)g_V;
-    GC_PUBLISH_IF_STATIC_IN(&S, S.child, 1);
 }
 
 static void __attribute__((noinline)) scrub(void) {
@@ -103,16 +98,16 @@ static int V_state(void) { return gc_debug_object_state((object_t*)g_V); }
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    step_to(ST_IDLE);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    step_to(GC_STAGE_IDLE);
 
     allocate();            // (1)
     scrub();
     barrier_half();        // (2) flag down
-    step_to(ST_SCAN_ROOTS);   // (3) the snapshot reads S.child == NULL
+    step_to(GC_STAGE_SCAN_ROOTS);   // (3)
     store_half();          // (4)
     scrub();
-    step_to(ST_IDLE);      // (5)
+    step_to(GC_STAGE_IDLE);      // (5)
 
     int st = V_state();
     printf("test_gc_static_store: after the cycle V_state=%d (1=live, 2=reclaimed)\n", st);

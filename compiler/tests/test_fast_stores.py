@@ -299,7 +299,7 @@ fun main(): System::Int
   ret System::Containers::size(boxes(4)) > 0 && pick(3).v > 0 ? 0 : 1
 """
 _BARRIER_PARTS = re.compile(r"\b(GC_WRITE_BARRIER_IN|GC_PUBLISH_IN|GC_MARK_SEEN"
-                            r"|GC_PUBLISH_FENCE\w*|gc_root_overwrite|gc_root_publish)\(")
+                            r"|GC_PUBLISH_FENCE\w*|gc_root_overwrite)\(")
 
 
 class TestStoresGoThroughTheStoreMacros(TestCase):
@@ -313,7 +313,7 @@ class TestStoresGoThroughTheStoreMacros(TestCase):
                 # stub's value) and an array tabulation (fill). Not
                 # GC_STORE_PUBLISH_IN: that is the runtime's, for handing
                 # values between threads; a static container (a global's stub)
-                # is detected inside the object store macros.
+                # takes the same object store macros as a heap one.
                 for macro in ("GC_STORE_IN(", "GC_FILL_STORE_IN("):
                     self.assertIn(macro, emitted)
                 self.assertNotIn("GC_STORE_PUBLISH_IN(", emitted)

@@ -17,6 +17,7 @@
 //      live frame — the conservative scan.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -25,10 +26,6 @@ extern bool gc_debug_manual_mode;
 extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
-
-// Must match enum gc_stage in object.c.
-enum { ST_NOT_STARTED = 0, ST_IDLE = 1, ST_START = 2,
-       ST_SCAN_ROOTS = 3, ST_MARK_SWEEP = 4, ST_PRUNE = 5 };
 
 // The holder: a declared root naming a mutable object (a task: its
 // callback.o is a traced pointer field).
@@ -55,10 +52,10 @@ static void step_to(int target) {
 }
 
 static void full_cycle(void) {
-    step_to(ST_SCAN_ROOTS);
-    step_to(ST_MARK_SWEEP);
-    step_to(ST_PRUNE);
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_SCAN_ROOTS);
+    step_to(GC_STAGE_MARK_SWEEP);
+    step_to(GC_STAGE_PRUNE);
+    step_to(GC_STAGE_IDLE);
 }
 
 static int verdict(const char* name) {
@@ -81,7 +78,7 @@ static __attribute__((noinline)) void heap_setup(void) {
 }
 
 static int heap_case(void) {
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
     heap_setup();
     scrub();
     full_cycle();
@@ -97,7 +94,7 @@ static __attribute__((noinline)) void stack_setup(volatile uintptr_t* slot) {
 
 static __attribute__((noinline)) int stack_case(void) {
     volatile uintptr_t tagged = 0;
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
     stack_setup(&tagged);
     scrub();
     full_cycle();
@@ -110,7 +107,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     (void)self;
     _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector to exist
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector to exist
 
     int ok = heap_case();
     ok &= stack_case();

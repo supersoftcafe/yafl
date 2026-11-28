@@ -20,6 +20,7 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode, as test_gc_gen does.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,8 +33,6 @@ extern int  gc_debug_object_state(object_t* o);        // 0 not-heap, 1 live, 2 
 extern int  gc_debug_object_generation(object_t* o);   // -1 not-heap, 0 young, 1 old
 extern int  gc_debug_object_carded(object_t* o);       // -1 not-heap, 0 no, 1 yes
 
-// Must match enum gc_stage in object.c.
-enum { ST_IDLE = 1 };
 enum { B_ID = 0x5eed };
 
 // Half a page: A's page is never sparse, so the compactor leaves it alone.
@@ -85,11 +84,11 @@ static void step_to(int target) {
 }
 
 static void run_one_cycle(void) {
-    for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
+    for (int guard = 0; gc_debug_stage() == GC_STAGE_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    step_to(ST_IDLE);
+    step_to(GC_STAGE_IDLE);
 }
 
 static gc_page_t* page_of(uintptr_t o) {
@@ -165,8 +164,8 @@ static void __attribute__((noinline)) check_a(const char* when) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    step_to(ST_IDLE);
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    step_to(GC_STAGE_IDLE);
 
     // (1) A onto an old page.
     create_parent();

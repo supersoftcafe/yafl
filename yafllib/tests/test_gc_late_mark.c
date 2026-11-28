@@ -20,6 +20,7 @@
 // with YAFL_GC_HANDOFF_PROBE, for the test helpers.
 
 #include "../yafl.h"
+#include "../gc_stage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,8 +31,6 @@ extern int  gc_debug_stage(void);
 extern void gc_debug_step(void);
 extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 reclaimed
 extern void gc_test_mutator_mark(object_t* o);
-
-enum { ST_IDLE = 1 };
 
 // Mutable: never relocated, so the addresses stay stable. H fills a page, so
 // no other object's mark can hand its page over.
@@ -68,11 +67,11 @@ static void fail(const char* what, int got) {
 
 static void run_one_cycle(void) {
     int guard = 0;
-    while (gc_debug_stage() == ST_IDLE) {
+    while (gc_debug_stage() == GC_STAGE_IDLE) {
         if (++guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
     }
-    while (gc_debug_stage() != ST_IDLE) {
+    while (gc_debug_stage() != GC_STAGE_IDLE) {
         if (++guard > 1000000) fail("cycle did not finish", gc_debug_stage());
         gc_debug_step();
     }
@@ -85,9 +84,7 @@ static void __attribute__((noinline)) build(void) {
     object_t* c = object_create(&leaf_vt);
     memset(((struct leaf*)c)->pad, 0x5a, sizeof ((struct leaf*)c)->pad);
     GC_STORE_IN(h, ((struct holder*)h)->child, 1, c);
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = h;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, h);
     g_H = (uintptr_t)h;
     g_C = (uintptr_t)c;
 }
@@ -109,8 +106,8 @@ static int __attribute__((noinline)) state(volatile uintptr_t* a) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
-    while (gc_debug_stage() != ST_IDLE) gc_debug_step();
+    while (gc_debug_stage() == GC_STAGE_NOT_STARTED) usleep(1000);   // wait for the collector
+    while (gc_debug_stage() != GC_STAGE_IDLE) gc_debug_step();
 
     build();
     scrub();
